@@ -32,16 +32,17 @@
  * beats daily use by one, which beats one look by many.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { Types } from "mongoose";
 import {
-  AppProject,
-  AppUsageDaily,
-  AppUsageEvent,
   type AppUsagePlacement,
   type AppUsageReferrerKind,
   type AppUsageUaClass,
 } from "../database/workspace-schema";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../repositories/apps-metadata";
 import { authRepo } from "../repositories/auth";
+import { usageStatsRepo } from "../repositories/usage-stats";
 import { loggers } from "../logging";
 import { loadAppsIndex } from "./app-index.service";
 import { canSeeIndexedApp } from "./app-authorization";
@@ -192,8 +193,8 @@ export async function recordAppUsage(
   const at = input.at ?? new Date();
   const uaClass = input.uaClass ?? "unknown";
   const anonId = input.userId ? null : (input.anonId ?? null);
-  const event = AppUsageEvent.create({
-    workspaceId: new Types.ObjectId(input.workspaceId),
+  const event = usageStatsRepo.createAppUsageEvent({
+    workspaceId: input.workspaceId,
     appId: input.appId,
     at,
     kind: input.kind,
@@ -212,26 +213,19 @@ export async function recordAppUsage(
     await event;
     return;
   }
-  const inc: Record<string, number> =
-    input.kind === "open"
-      ? { opens: 1, [`sources.${input.source}`]: 1 }
-      : { activeSeconds: HEARTBEAT_SECONDS };
   await Promise.all([
     event,
-    AppUsageDaily.updateOne(
-      {
-        workspaceId: new Types.ObjectId(input.workspaceId),
-        appId: input.appId,
-        userId: input.userId ?? anonId,
-        day: utcDay(at),
-      },
-      {
-        $inc: inc,
-        $min: { firstAt: at },
-        $max: { lastAt: at },
-      },
-      { upsert: true },
-    ),
+    usageStatsRepo.bumpAppUsageDaily({
+      workspaceId: input.workspaceId,
+      appId: input.appId,
+      userId: input.userId,
+      anonId,
+      day: utcDay(at),
+      kind: input.kind,
+      source: input.source,
+      heartbeatSeconds: HEARTBEAT_SECONDS,
+      at,
+    }),
   ]);
   if (input.kind === "open") {
     // An open resumes paused binding schedules and cancels a pending stale
@@ -527,13 +521,15 @@ export function invalidateCommitAuthors(workspaceId?: string): void {
 export async function getAppAuthors(
   workspaceId: string,
 ): Promise<Map<string, Set<string>>> {
-  const [snapshot, rows] = await Promise.all([
+  const [snapshot, projects] = await Promise.all([
     loadAppsIndex(workspaceId, { freshen: false }),
-    AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) })
-      .select("_id owner_id createdBy")
-      .lean(),
+    appsMetadataRepo.listProjectsByWorkspace(workspaceId),
   ]);
-  return appAuthorsFrom(workspaceId, snapshot.apps, rows);
+  return appAuthorsFrom(
+    workspaceId,
+    snapshot.apps,
+    projects.map(p => toAppProjectCompat(p)),
+  );
 }
 
 /** getAppAuthors over an index and state rows the caller already read. */
@@ -685,34 +681,7 @@ export function loadUsageRollups(
   workspaceId: string,
   since: string,
 ): Promise<AppUsageRollup[]> {
-  return AppUsageDaily.aggregate<AppUsageRollup>([
-    {
-      $match: {
-        workspaceId: new Types.ObjectId(workspaceId),
-        day: { $gte: since },
-      },
-    },
-    {
-      $group: {
-        _id: { appId: "$appId", userId: "$userId" },
-        days: { $addToSet: "$day" },
-        opens: { $sum: "$opens" },
-        activeSeconds: { $sum: "$activeSeconds" },
-        lastAt: { $max: "$lastAt" },
-      },
-    },
-    {
-      $project: {
-        _id: 0,
-        appId: "$_id.appId",
-        userId: "$_id.userId",
-        days: 1,
-        opens: 1,
-        activeSeconds: 1,
-        lastAt: 1,
-      },
-    },
-  ]);
+  return usageStatsRepo.loadAppUsageRollups(workspaceId, since);
 }
 
 /**
@@ -752,23 +721,16 @@ export async function getRecentlyViewedApps(
 ): Promise<Array<{ appId: string; lastOpenedAt: string }>> {
   const now = opts.now ?? new Date();
   const limit = Math.max(1, Math.min(opts.limit ?? 20, 100));
-  const rows = await AppUsageDaily.aggregate<{ _id: string; lastAt: Date }>([
-    {
-      $match: {
-        workspaceId: new Types.ObjectId(workspaceId),
-        userId,
-        lastAt: {
-          $gte: new Date(now.getTime() - RECENT_LOOKBACK_DAYS * DAY_MS),
-        },
-      },
-    },
-    { $group: { _id: "$appId", lastAt: { $max: "$lastAt" } } },
-    { $sort: { lastAt: -1 } },
-    { $limit: limit },
-  ]);
+  const since = new Date(now.getTime() - RECENT_LOOKBACK_DAYS * DAY_MS);
+  const rows = await usageStatsRepo.getRecentlyViewedApps(
+    workspaceId,
+    userId,
+    since,
+    limit,
+  );
   return rows.map(r => ({
-    appId: r._id,
-    lastOpenedAt: r.lastAt.toISOString(),
+    appId: r.appId,
+    lastOpenedAt: r.lastOpenedAt.toISOString(),
   }));
 }
 
@@ -786,11 +748,9 @@ export async function visibleIndexedAppIds(
 ): Promise<Set<string>> {
   const [snapshot, rows] = await Promise.all([
     loadAppsIndex(workspaceId, { freshen: false }),
-    AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) })
-      .select("_id access workspaceRole sharedWith owner_id createdBy")
-      .lean(),
+    appsMetadataRepo.listProjectsByWorkspace(workspaceId),
   ]);
-  const stateById = new Map(rows.map(r => [r._id.toString(), r]));
+  const stateById = new Map(rows.map(r => [r.id, toAppProjectCompat(r)]));
   return new Set(
     snapshot.apps
       .filter(app =>

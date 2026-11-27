@@ -15,7 +15,6 @@
  * their personal tree, is invisible, as it is to app_list_apps.
  */
 import { tool, type ToolSet } from "ai";
-import { Types } from "mongoose";
 import { z } from "zod";
 import { canSeeIndexedApp } from "../../apps/app-authorization";
 import { listArchivedApps } from "../../apps/app-archive.service";
@@ -31,8 +30,11 @@ import {
 } from "../../apps/repository.service";
 import { loadOwnerDirectory } from "../../apps/user-handles.service";
 import { boundRepoDirIfExists } from "../../apps/workspace-repo-required";
-import { AppProject, AppWorktree } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../../repositories/apps-metadata";
 import { workspaceService } from "../../services/workspace.service";
 import {
   GREP_MAX_LINE_CHARS,
@@ -128,13 +130,15 @@ async function openRepoView(
     if (!role) return { error: "You are not a member of this workspace." };
     const [snapshot, docs, directory, archived] = await Promise.all([
       loadAppsIndex(workspaceId),
-      AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) }),
+      appsMetadataRepo.listProjectsByWorkspace(workspaceId),
       loadOwnerDirectory(workspaceId, { forUserId: userId }),
       // The Archived chip's rule: canSeeIndexedApp over the original
       // location. A failure hides the whole archive.
       listArchivedApps(workspaceId, userId, role).catch(() => []),
     ]);
-    const stateById = new Map(docs.map(doc => [doc._id.toString(), doc]));
+    const stateById = new Map(
+      docs.map(doc => [doc.id, toAppProjectCompat(doc)]),
+    );
     const hiddenAppRoots: string[] = [];
     const visibleAppRoots: string[] = [];
     for (const app of snapshot.apps) {
@@ -157,11 +161,8 @@ async function openRepoView(
   // The user's session branch when the repo has it, else main.
   let branch = DEFAULT_BRANCH;
   if (userId) {
-    const worktree = await AppWorktree.findOne(
-      { workspaceId: new Types.ObjectId(workspaceId), userId },
-      { branch: 1 },
-    )
-      .lean()
+    const worktree = await appsMetadataRepo
+      .findWorktree(workspaceId, userId)
       .catch(() => null);
     const sessionBranch = worktree?.branch;
     if (

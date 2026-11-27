@@ -26,10 +26,10 @@ import { inngest } from "../client";
 import { loadAppsIndex } from "../../apps/app-index.service";
 import { loggers } from "../../logging";
 import {
-  AppIndexEntry,
-  AppProject,
-  type IAppIndexEntry,
-} from "../../database/workspace-schema";
+  appsMetadataRepo,
+  toAppProjectCompat,
+  type AppIndexScheduleJson,
+} from "../../repositories/apps-metadata";
 import {
   getBindingState,
   materializeAppBinding,
@@ -117,29 +117,24 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
       // Every workspace with a state row: restricted or shared apps are
       // scheduled too (a row appears when an app is published, restricted
       // or shared), not only published ones.
-      const workspacesWithApps = await AppProject.distinct("workspaceId");
+      const workspacesWithApps =
+        await appsMetadataRepo.listDistinctProjectWorkspaceIds();
       for (const ws of workspacesWithApps) {
         try {
-          await loadAppsIndex(ws.toString());
+          await loadAppsIndex(ws);
         } catch (error) {
           log.warn("Apps index refresh failed before scheduling", {
-            workspaceId: ws.toString(),
+            workspaceId: ws,
             error: error instanceof Error ? error.message : String(error),
           });
         }
       }
-      const entries = await AppIndexEntry.find({
-        "schedules.0": { $exists: true },
-      })
-        .select("workspaceId appId schedules")
-        .lean();
+      const entries = await appsMetadataRepo.listIndexEntriesWithSchedules();
       if (entries.length === 0) return [];
-      const rows = await AppProject.find({
-        _id: { $in: entries.map(e => e.appId) },
-      })
-        .select("_id")
-        .lean();
-      const withRow = new Set(rows.map(r => r._id.toString()));
+      const existingIds = await appsMetadataRepo.listExistingProjectIds(
+        entries.map(e => e.appId),
+      );
+      const withRow = new Set(existingIds);
       // Unviewed apps (nobody opened them in 30 days) have their schedules
       // paused by the lifecycle job until the next open — skipped here, the
       // binding's front matter untouched (app-lifecycle.service.ts).
@@ -150,14 +145,17 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
         });
       }
       return entries.filter(e => withRow.has(e.appId) && !paused.has(e.appId));
-    })) as unknown as Array<
-      Pick<IAppIndexEntry, "workspaceId" | "appId" | "schedules">
-    >;
+    })) as unknown as Array<{
+      workspaceId: string;
+      appId: string;
+      schedules: AppIndexScheduleJson[];
+    }>;
 
     const due = await step.run("find-due-bindings", async () => {
       const out: MaterializeEventData[] = [];
       for (const entry of scheduled) {
         const projectId = entry.appId;
+        const workspaceId = entry.workspaceId.toString();
         for (const schedule of entry.schedules) {
           const binding = {
             schedule: schedule.cron,
@@ -167,7 +165,7 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
             if (
               !isBindingDueAt(
                 binding,
-                await getBindingState(projectId, schedule.binding),
+                await getBindingState(projectId, schedule.binding, workspaceId),
               )
             ) {
               continue;
@@ -181,7 +179,7 @@ export const appsBindingSchedulerFunction = inngest.createFunction(
             continue;
           }
           out.push({
-            workspaceId: entry.workspaceId.toString(),
+            workspaceId,
             projectId,
             binding: schedule.binding,
             key: `${projectId}:${schedule.binding}`,
@@ -251,17 +249,15 @@ async function afterPublishRebuildFailed(
   const attempt = data.attempt ?? 1;
   const message = error instanceof Error ? error.message : String(error);
   try {
-    await AppProject.updateOne(
-      { _id: data.projectId },
+    await appsMetadataRepo.setBindingRefreshError(
+      data.workspaceId || String(project.workspaceId),
+      data.projectId,
+      data.binding,
       {
-        $set: {
-          [`bindingRefreshErrors.${data.binding}`]: {
-            sha: data.at,
-            message: message.slice(0, 2_000),
-            attempts: attempt,
-            at: new Date(),
-          },
-        },
+        sha: data.at ?? "",
+        message: message.slice(0, 2_000),
+        attempts: attempt,
+        at: new Date(),
       },
     );
   } catch (writeError) {
@@ -327,16 +323,15 @@ async function queueResourceRetry(data: MaterializeEventData): Promise<void> {
 
 /** A later success answers an earlier recorded failure of this binding. */
 async function clearBindingRefreshError(
+  workspaceId: string,
   projectId: string,
   binding: string,
 ): Promise<void> {
   try {
-    await AppProject.updateOne(
-      {
-        _id: projectId,
-        [`bindingRefreshErrors.${binding}`]: { $exists: true },
-      },
-      { $unset: { [`bindingRefreshErrors.${binding}`]: 1 } },
+    await appsMetadataRepo.clearBindingRefreshError(
+      workspaceId,
+      projectId,
+      binding,
     );
   } catch (error) {
     log.warn("Could not clear a failed binding refresh", {
@@ -356,8 +351,9 @@ async function clearBindingRefreshError(
 async function isScheduledBuildMoot(
   projectId: string,
   binding: AppBinding,
+  workspaceId?: string,
 ): Promise<boolean> {
-  const state = await getBindingState(projectId, binding.name);
+  const state = await getBindingState(projectId, binding.name, workspaceId);
   if (isBindingDueAt(binding, state)) return false;
   if (state?.history?.[0]?.status === "error") return true;
   return isBindingArtifactReady(binding, { projectId, sha: "main" });
@@ -370,8 +366,9 @@ async function isScheduledBuildMoot(
 async function isResourceRetryMoot(
   projectId: string,
   name: string,
+  workspaceId?: string,
 ): Promise<boolean> {
-  const state = await getBindingState(projectId, name);
+  const state = await getBindingState(projectId, name, workspaceId);
   return state?.history?.[0]?.status !== "error";
 }
 
@@ -392,7 +389,11 @@ export async function runBindingMaterializeEvent(
   | { ok: false }
 > {
   const { projectId, binding: name, at, afterPublish } = data;
-  const project = await AppProject.findById(projectId);
+  const projectRec = await appsMetadataRepo.findProjectById(
+    projectId,
+    data.workspaceId || undefined,
+  );
+  const project = projectRec ? toAppProjectCompat(projectRec) : null;
   if (!project) return { skipped: "project-gone" };
   if (afterPublish && project.publishedSha !== at) {
     return { skipped: "superseded" };
@@ -407,8 +408,16 @@ export async function runBindingMaterializeEvent(
     const moot = afterPublish
       ? await isBindingArtifactReady(binding, { projectId, sha: at ?? "main" })
       : data.resourceRetry
-        ? await isResourceRetryMoot(projectId, name)
-        : await isScheduledBuildMoot(projectId, binding);
+        ? await isResourceRetryMoot(
+            projectId,
+            name,
+            data.workspaceId || undefined,
+          )
+        : await isScheduledBuildMoot(
+            projectId,
+            binding,
+            data.workspaceId || undefined,
+          );
     if (moot) return { skipped: "not-due" };
     const result = await materializeAppBinding(
       project,
@@ -416,7 +425,11 @@ export async function runBindingMaterializeEvent(
       afterPublish ? PUBLISH_ACTOR : "scheduler",
       { at, binding },
     );
-    await clearBindingRefreshError(projectId, name);
+    await clearBindingRefreshError(
+      project.workspaceId.toString(),
+      projectId,
+      name,
+    );
     return { ok: true, rowCount: result.rowCount };
   } catch (error) {
     log.warn("Scheduled binding materialization failed", {

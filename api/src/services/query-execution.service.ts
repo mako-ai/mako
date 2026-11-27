@@ -1,8 +1,25 @@
 import { Types } from "mongoose";
-import { QueryExecution, IQueryExecution } from "../database/workspace-schema";
+import { type IQueryExecution } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import {
+  usageStatsRepo,
+  type QueryExecutionRecord,
+} from "../repositories/usage-stats";
 
 const logger = loggers.query();
+
+function recordToQueryExecutionCompat(
+  rec: QueryExecutionRecord,
+): IQueryExecution {
+  return {
+    ...rec,
+    _id: new Types.ObjectId(rec.id),
+    workspaceId: new Types.ObjectId(rec.workspaceId),
+    connectionId: new Types.ObjectId(rec.connectionId),
+    ...(rec.apiKeyId ? { apiKeyId: new Types.ObjectId(rec.apiKeyId) } : {}),
+    ...(rec.consoleId ? { consoleId: new Types.ObjectId(rec.consoleId) } : {}),
+  } as unknown as IQueryExecution;
+}
 
 /**
  * Query execution source types
@@ -81,18 +98,14 @@ export class QueryExecutionService {
     input: TrackQueryExecutionInput,
   ): Promise<IQueryExecution | null> {
     try {
-      const execution = new QueryExecution({
+      const execution = await usageStatsRepo.createQueryExecution({
         executedAt: new Date(),
         userId: input.userId,
-        apiKeyId: input.apiKeyId
-          ? new Types.ObjectId(input.apiKeyId.toString())
-          : undefined,
-        workspaceId: new Types.ObjectId(input.workspaceId.toString()),
-        connectionId: new Types.ObjectId(input.connectionId.toString()),
+        apiKeyId: input.apiKeyId?.toString(),
+        workspaceId: input.workspaceId.toString(),
+        connectionId: input.connectionId.toString(),
         databaseName: input.databaseName,
-        consoleId: input.consoleId
-          ? new Types.ObjectId(input.consoleId.toString())
-          : undefined,
+        consoleId: input.consoleId?.toString(),
         source: input.source,
         databaseType: input.databaseType,
         queryLanguage: input.queryLanguage,
@@ -103,17 +116,17 @@ export class QueryExecutionService {
         bytesScanned: input.bytesScanned,
       });
 
-      await execution.save();
+      const compat = recordToQueryExecutionCompat(execution);
 
       logger.debug("Query execution tracked", {
-        executionId: execution._id,
+        executionId: compat._id,
         workspaceId: input.workspaceId,
         source: input.source,
         status: input.status,
         executionTimeMs: input.executionTimeMs,
       });
 
-      return execution;
+      return compat;
     } catch (error) {
       logger.error("Failed to save query execution", { error, input });
       return null;
@@ -134,43 +147,16 @@ export class QueryExecutionService {
       status?: QueryStatus;
     } = {},
   ): Promise<{ executions: IQueryExecution[]; total: number }> {
-    const {
-      limit = 100,
-      offset = 0,
-      startDate,
-      endDate,
-      userId,
-      status,
-    } = options;
+    const { executions, total } =
+      await usageStatsRepo.listWorkspaceQueryExecutions(
+        workspaceId.toString(),
+        options,
+      );
 
-    const query: any = {
-      workspaceId: new Types.ObjectId(workspaceId.toString()),
+    return {
+      executions: executions.map(recordToQueryExecutionCompat),
+      total,
     };
-
-    if (startDate || endDate) {
-      query.executedAt = {};
-      if (startDate) query.executedAt.$gte = startDate;
-      if (endDate) query.executedAt.$lte = endDate;
-    }
-
-    if (userId) {
-      query.userId = userId;
-    }
-
-    if (status) {
-      query.status = status;
-    }
-
-    const [executions, total] = await Promise.all([
-      QueryExecution.find(query)
-        .sort({ executedAt: -1 })
-        .skip(offset)
-        .limit(limit)
-        .lean(),
-      QueryExecution.countDocuments(query),
-    ]);
-
-    return { executions: executions as IQueryExecution[], total };
   }
 
   /**
@@ -188,18 +174,13 @@ export class QueryExecutionService {
   ): Promise<IQueryExecution[]> {
     const limit = Math.min(Math.max(options.limit ?? 10, 1), 50);
 
-    const executions = await QueryExecution.find({
-      workspaceId: new Types.ObjectId(workspaceId.toString()),
-      consoleId: new Types.ObjectId(consoleId.toString()),
-    })
-      .sort({ executedAt: -1 })
-      .limit(limit)
-      .select(
-        "executedAt source status executionTimeMs rowCount errorType userId apiKeyId databaseType queryLanguage",
-      )
-      .lean();
+    const executions = await usageStatsRepo.listConsoleQueryExecutions(
+      workspaceId.toString(),
+      consoleId.toString(),
+      limit,
+    );
 
-    return executions as IQueryExecution[];
+    return executions.map(recordToQueryExecutionCompat);
   }
 
   async getWorkspaceUsageSummary(
@@ -218,75 +199,11 @@ export class QueryExecutionService {
     byDatabaseType: Record<string, number>;
     byUser: Record<string, number>;
   }> {
-    const match = {
-      workspaceId: new Types.ObjectId(workspaceId.toString()),
-      executedAt: { $gte: startDate, $lte: endDate },
-    };
-
-    const [summary] = await QueryExecution.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: null,
-          totalExecutions: { $sum: 1 },
-          successCount: {
-            $sum: { $cond: [{ $eq: ["$status", "success"] }, 1, 0] },
-          },
-          errorCount: {
-            $sum: { $cond: [{ $eq: ["$status", "error"] }, 1, 0] },
-          },
-          cancelledCount: {
-            $sum: { $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0] },
-          },
-          timeoutCount: {
-            $sum: { $cond: [{ $eq: ["$status", "timeout"] }, 1, 0] },
-          },
-          totalExecutionTimeMs: { $sum: "$executionTimeMs" },
-        },
-      },
-    ]);
-
-    const bySourceResult = await QueryExecution.aggregate([
-      { $match: match },
-      { $group: { _id: "$source", count: { $sum: 1 } } },
-    ]);
-
-    const byDatabaseTypeResult = await QueryExecution.aggregate([
-      { $match: match },
-      { $group: { _id: "$databaseType", count: { $sum: 1 } } },
-    ]);
-
-    const byUserResult = await QueryExecution.aggregate([
-      { $match: match },
-      { $group: { _id: "$userId", count: { $sum: 1 } } },
-    ]);
-
-    const toRecord = <T extends string>(
-      arr: Array<{ _id: T; count: number }>,
-    ): Record<T, number> => {
-      return arr.reduce(
-        (acc, item) => {
-          if (item._id) acc[item._id] = item.count;
-          return acc;
-        },
-        {} as Record<T, number>,
-      );
-    };
-
-    return {
-      totalExecutions: summary?.totalExecutions || 0,
-      successCount: summary?.successCount || 0,
-      errorCount: summary?.errorCount || 0,
-      cancelledCount: summary?.cancelledCount || 0,
-      timeoutCount: summary?.timeoutCount || 0,
-      totalExecutionTimeMs: summary?.totalExecutionTimeMs || 0,
-      avgExecutionTimeMs: summary?.totalExecutions
-        ? Math.round(summary.totalExecutionTimeMs / summary.totalExecutions)
-        : 0,
-      bySource: toRecord(bySourceResult),
-      byDatabaseType: toRecord(byDatabaseTypeResult),
-      byUser: toRecord(byUserResult),
-    };
+    return usageStatsRepo.getWorkspaceQueryExecutionSummary(
+      workspaceId.toString(),
+      startDate,
+      endDate,
+    );
   }
 }
 

@@ -2,8 +2,9 @@
  * App folders are real directories, moved with real commits: moves, the
  * archive, empty folders, and stamping a copied app's id.
  */
-import { Types } from "mongoose";
-import { AppProject, type IAppProject } from "../../database/workspace-schema";
+import { parseEntityId } from "../../database/pg/id-codec";
+import { type IAppProject } from "../../database/workspace-schema";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 import { requireWorkspaceRepo } from "../workspace-repo-required";
 import { assertSafeRelPath, runGit } from "../git";
 import {
@@ -261,9 +262,17 @@ export async function moveProject(
   project.path = to;
   project.slug = slug;
   Object.assign(project, visibility);
-  await AppProject.updateOne(
-    { _id: project._id, workspaceId: project.workspaceId },
-    { $set: { path: to, slug, ...visibility } },
+  await appsMetadataRepo.updateProjectLocation(
+    project.workspaceId.toString(),
+    project._id.toString(),
+    {
+      path: to,
+      slug,
+      ...(visibility.access ? { access: visibility.access } : {}),
+      ...(target.scope === "private"
+        ? { ownerId: target.ownerId ?? null }
+        : {}),
+    },
   );
   pokeApp(project.workspaceId, project._id, "lifecycle", options.userId);
   return { from, to };
@@ -348,13 +357,11 @@ export async function archiveProject(
       author: options.author,
     },
   );
-  await AppProject.updateOne(
-    {
-      _id: new Types.ObjectId(app.appId),
-      workspaceId: new Types.ObjectId(workspaceId),
-      path: from,
-    },
-    { $unset: { path: 1 } },
+  await appsMetadataRepo.updateProjectLocation(
+    workspaceId,
+    app.appId,
+    { path: null },
+    from,
   );
   pokeApp(workspaceId, app.appId, "lifecycle");
   return { from, to };
@@ -426,14 +433,11 @@ export async function restoreArchivedProject(
       author: options.author,
     },
   );
-  if (options.appId && Types.ObjectId.isValid(options.appId)) {
-    await AppProject.updateOne(
-      {
-        _id: new Types.ObjectId(options.appId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      },
-      { $set: { path: to, slug: location.slug } },
-    );
+  if (options.appId && parseEntityId(options.appId)) {
+    await appsMetadataRepo.updateProjectLocation(workspaceId, options.appId, {
+      path: to,
+      slug: location.slug,
+    });
   }
   pokeApp(workspaceId, options.appId ?? null, "lifecycle", options.userId);
   return { from, to };

@@ -26,10 +26,10 @@
  * ever written into the working tree, committed, or served.
  */
 import {
-  AppProject,
   type IAppEnvVar,
   type IAppProject,
 } from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import { decryptString, encryptString } from "../services/crypto.service";
 
 /** Invalid input, told apart from infrastructure failure for a clean 400. */
@@ -116,10 +116,10 @@ export function validateAppEnvInput(input: AppEnvVarInput): void {
  * predate any number of env edits; env must reflect the vault, not the cache.
  */
 async function freshEnv(project: IAppProject): Promise<IAppEnvVar[]> {
-  const row = await AppProject.findOne({
-    _id: project._id,
-    workspaceId: project.workspaceId,
-  }).select("env");
+  const row = await appsMetadataRepo.findProjectById(
+    project._id.toString(),
+    project.workspaceId.toString(),
+  );
   return row?.env ?? [];
 }
 
@@ -143,12 +143,11 @@ export async function setAppEnvVar(
   input: AppEnvVarInput,
 ): Promise<AppEnvVarView[]> {
   validateAppEnvInput(input);
-  const row = await AppProject.findOne({
-    _id: project._id,
-    workspaceId: project.workspaceId,
-  });
+  const workspaceId = project.workspaceId.toString();
+  const projectId = project._id.toString();
+  const row = await appsMetadataRepo.findProjectById(projectId, workspaceId);
   if (!row) throw new Error("App project row not found");
-  const vars = row.env ?? [];
+  const vars = [...(row.env ?? [])];
   const next: IAppEnvVar = {
     key: input.key,
     valueEncrypted: encryptString(input.value),
@@ -165,9 +164,8 @@ export async function setAppEnvVar(
     }
     vars.push(next);
   }
-  row.env = vars;
-  await row.save();
-  return listAppEnvVars(row);
+  await appsMetadataRepo.updateProjectEnv(workspaceId, projectId, vars);
+  return listAppEnvVars(project);
 }
 
 /** Remove one var. False when it was not there — idempotent for the caller. */
@@ -175,13 +173,12 @@ export async function deleteAppEnvVar(
   project: IAppProject,
   key: string,
 ): Promise<boolean> {
-  const row = await AppProject.findOne({
-    _id: project._id,
-    workspaceId: project.workspaceId,
-  });
+  const workspaceId = project.workspaceId.toString();
+  const projectId = project._id.toString();
+  const row = await appsMetadataRepo.findProjectById(projectId, workspaceId);
   if (!row?.env?.some(v => v.key === key)) return false;
-  row.env = row.env.filter(v => v.key !== key);
-  await row.save();
+  const next = row.env.filter(v => v.key !== key);
+  await appsMetadataRepo.updateProjectEnv(workspaceId, projectId, next);
   return true;
 }
 

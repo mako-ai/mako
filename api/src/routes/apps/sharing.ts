@@ -3,11 +3,8 @@
  * chat with a published app (my chats, on / off).
  */
 import { createRoute, z } from "@hono/zod-openapi";
-import {
-  AppProject,
-  Chat,
-  type IAppProject,
-} from "../../database/workspace-schema";
+import { Chat, type IAppProject } from "../../database/workspace-schema";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
 import { canManageSharing } from "../../utils/resource-acl";
 import {
@@ -80,7 +77,11 @@ appsSharingRoutes.openapi(
         loaded.project,
         userId ?? "api-key",
       );
-      await AppProject.updateOne({ _id: project._id }, { $set: { access } });
+      await appsMetadataRepo.updateProjectSharing(
+        project.workspaceId.toString(),
+        project._id.toString(),
+        { access },
+      );
       return c.json({ success: true as const, access }, 200);
     } catch (error) {
       return handleError(c, error);

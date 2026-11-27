@@ -26,10 +26,9 @@
  * (app-usage.service appTreesKey), so main moving for anything other than
  * an app costs no `git log`. GitHub login lookups never block a request.
  */
-import { Types } from "mongoose";
-import { AppUsageDaily } from "../database/workspace-schema";
 import { loggers } from "../logging";
 import { noteTiming, timed } from "../middleware/server-timing";
+import { usageStatsRepo } from "../repositories/usage-stats";
 import {
   discoveryAppsFrom,
   loadAppStates,
@@ -95,20 +94,7 @@ function loadUsageDays(
   workspaceId: string,
   since: string,
 ): Promise<UsageDayRow[]> {
-  return AppUsageDaily.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    day: { $gte: since },
-  })
-    .select({
-      _id: 0,
-      appId: 1,
-      userId: 1,
-      day: 1,
-      opens: 1,
-      activeSeconds: 1,
-      lastAt: 1,
-    })
-    .lean<UsageDayRow[]>();
+  return usageStatsRepo.listAppUsageDaysSince(workspaceId, since);
 }
 
 /**

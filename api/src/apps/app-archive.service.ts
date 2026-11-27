@@ -13,9 +13,12 @@
  * location (a personal app is its mapped owner's, through the handle
  * mapping) and the app's state row, which an archive keeps.
  */
-import { Types } from "mongoose";
-import { AppLifecycleState, AppProject } from "../database/workspace-schema";
+import { parseEntityId } from "../database/pg/id-codec";
 import { loggers } from "../logging";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../repositories/apps-metadata";
 import { authorizeFolderTarget, canSeeIndexedApp } from "./app-authorization";
 import { APP_THUMBNAIL_FILES, loadAppsIndex } from "./app-index.service";
 import {
@@ -233,32 +236,24 @@ export async function listArchivedApps(
 ): Promise<ArchivedApp[]> {
   const entries = await loadArchivedTree(workspaceId);
   if (entries.length === 0) return [];
-  const ws = new Types.ObjectId(workspaceId);
   const ids = entries
     .map(e => e.appId)
-    .filter((id): id is string => !!id && Types.ObjectId.isValid(id));
+    .filter((id): id is string => !!id && Boolean(parseEntityId(id)));
   const [snapshot, directory, rows, states] = await Promise.all([
     loadAppsIndex(workspaceId, { freshen: false }),
     loadOwnerDirectory(workspaceId),
-    AppProject.find({
-      workspaceId: ws,
-      _id: { $in: ids.map(id => new Types.ObjectId(id)) },
-    })
-      .select("_id access workspaceRole sharedWith owner_id createdBy")
-      .lean(),
-    AppLifecycleState.find({
-      workspaceId: ws,
-      archivedTo: { $in: entries.map(e => e.path) },
-    })
-      .select("archivedTo archivedFrom")
-      .lean(),
+    appsMetadataRepo.listProjectsByIds(workspaceId, ids),
+    appsMetadataRepo.listLifecycleByArchivedTo(
+      workspaceId,
+      entries.map(e => e.path),
+    ),
   ]);
   const live = new Set(snapshot.apps.map(a => a.appId));
-  const rowById = new Map(rows.map(r => [r._id.toString(), r]));
+  const rowById = new Map(rows.map(r => [r.id, toAppProjectCompat(r)]));
   const fromByTo = new Map(
     states
       .filter(s => s.archivedTo && s.archivedFrom)
-      .map(s => [s.archivedTo as string, s.archivedFrom as string]),
+      .map(s => [s.archivedTo, s.archivedFrom]),
   );
 
   const out: ArchivedApp[] = [];
@@ -348,20 +343,11 @@ export async function restoreArchivedApp(
     );
     invalidateArchiveCache(workspaceId);
     if (app.appId) {
-      await AppLifecycleState.updateOne(
-        { workspaceId: new Types.ObjectId(workspaceId), appId: app.appId },
-        {
-          $set: { restoredAt: now, ...(userId ? { restoredBy: userId } : {}) },
-          $unset: {
-            staleSince: 1,
-            staleNotifiedTo: 1,
-            schedulesPausedAt: 1,
-            archivedAt: 1,
-            archivedFrom: 1,
-            archivedTo: 1,
-          },
-        },
-        { upsert: true },
+      await appsMetadataRepo.markAppRestored(
+        workspaceId,
+        app.appId,
+        now,
+        userId,
       );
     }
     logger.info("Restored archived app", {

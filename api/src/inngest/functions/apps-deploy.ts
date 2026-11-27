@@ -22,7 +22,10 @@ import { NonRetriableError, RetryAfterError } from "inngest";
 import { PublishBoxLowMemoryError } from "../../apps/deployment/build";
 import { inngest } from "../client";
 import { loggers } from "../../logging";
-import { AppProject, type IAppProject } from "../../database/workspace-schema";
+import {
+  appsMetadataRepo,
+  type AppProjectRecord,
+} from "../../repositories/apps-metadata";
 import {
   DeployBindingsError,
   deployOneApp,
@@ -247,15 +250,19 @@ export const appsDeployReconcileFunction = inngest.createFunction(
   },
   async ({ step }) => {
     const published = (await step.run("list-published", async () =>
-      AppProject.find({ publishedSha: { $ne: null } })
-        .select(
-          "_id workspaceId slug path publishedSha lastDeployError deployProgress",
-        )
-        .lean(),
+      (await appsMetadataRepo.listPublishedProjects()).map(p => ({
+        id: p.id,
+        workspaceId: p.workspaceId,
+        slug: p.slug,
+        path: p.path,
+        publishedSha: p.publishedSha,
+        lastDeployError: p.lastDeployError,
+        deployProgress: p.deployProgress,
+      })),
     )) as unknown as Array<
       Pick<
-        IAppProject,
-        | "_id"
+        AppProjectRecord,
+        | "id"
         | "workspaceId"
         | "slug"
         | "path"
@@ -270,7 +277,7 @@ export const appsDeployReconcileFunction = inngest.createFunction(
       const trees = new Map<string, Promise<Map<string, string>>>();
       const repos = new Map<string, { dir: string; head: string | null }>();
       for (const project of published) {
-        const workspaceId = project.workspaceId.toString();
+        const workspaceId = project.workspaceId;
         if (!repos.has(workspaceId)) {
           try {
             const dir = await repoForWorkspace(workspaceId);
@@ -295,7 +302,7 @@ export const appsDeployReconcileFunction = inngest.createFunction(
         ) {
           continue;
         }
-        const appId = project._id.toString();
+        const appId = project.id;
         try {
           if (
             !(await appFolderChanged(
@@ -404,7 +411,9 @@ export async function requestAppDeploys(
   if (appIds.length === 0) return;
   // "queued" until the deploy function picks it up (two builds run per
   // workspace at a time). The newest request owns the row.
-  await Promise.all(appIds.map(appId => markDeployQueued(appId, sha)));
+  await Promise.all(
+    appIds.map(appId => markDeployQueued({ _id: appId, workspaceId }, sha)),
+  );
   try {
     await inngest.send(
       appIds.map(appId => ({
@@ -414,7 +423,11 @@ export async function requestAppDeploys(
     );
   } catch (error) {
     // Nothing is queued, so "queued" must not refuse the caller's retry.
-    await Promise.all(appIds.map(appId => clearDeployProgress(appId, sha)));
+    await Promise.all(
+      appIds.map(appId =>
+        clearDeployProgress({ _id: appId, workspaceId }, sha),
+      ),
+    );
     throw error;
   }
 }

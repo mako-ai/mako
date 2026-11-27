@@ -90,7 +90,7 @@ describe("runBindingMaterializeEvent", () => {
 
     expect(readCommittedBinding).toHaveBeenCalledTimes(1);
     expect(materializeAppBinding).toHaveBeenCalledWith(
-      state.project,
+      expect.objectContaining(state.project),
       "sales",
       "scheduler",
       { at: undefined, binding: state.binding },
@@ -131,13 +131,13 @@ describe("runBindingMaterializeEvent", () => {
     });
 
     expect(readCommittedBinding).toHaveBeenCalledWith(
-      state.project,
+      expect.objectContaining(state.project),
       "sales",
       undefined,
       sha,
     );
     expect(materializeAppBinding).toHaveBeenCalledWith(
-      state.project,
+      expect.objectContaining(state.project),
       "sales",
       "publish",
       { at: sha, binding: state.binding },

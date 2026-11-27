@@ -6,10 +6,11 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { Types } from "mongoose";
+import { type IAppProject } from "../../../database/workspace-schema";
 import {
-  AppProject,
-  type IAppProject,
-} from "../../../database/workspace-schema";
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../../../repositories/apps-metadata";
 import { requireWorkspaceRepo } from "../../../apps/workspace-repo-required";
 import { workspaceService } from "../../../services/workspace.service";
 import { canReadResource, canWriteResource } from "../../../utils/resource-acl";
@@ -247,13 +248,18 @@ export function createAppsToolContext(
         return { error: errorMessage(error) };
       }
     }
-    const project = new AppProject({
-      workspaceId: new Types.ObjectId(workspaceId),
+    const now = new Date();
+    const project = toAppProjectCompat({
+      id: new Types.ObjectId().toString(),
+      workspaceId,
       title: target.workflowId,
       slug: target.workflowId,
       path: `${WORKFLOWS_DIR}/${target.workflowId}`,
       access: "workspace",
       createdBy: actorId,
+      defaultBranch: "main",
+      createdAt: now,
+      updatedAt: now,
     });
     workflowFolders.add(project);
     return { project };
@@ -288,10 +294,8 @@ export function createAppsToolContext(
    */
   const visibleApps = async () => {
     const folders = await listAppFolders(workspaceId);
-    const docs = await AppProject.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-    const stateById = new Map(docs.map(d => [d._id.toString(), d]));
+    const docs = await appsMetadataRepo.listProjectsByWorkspace(workspaceId);
+    const stateById = new Map(docs.map(d => [d.id, toAppProjectCompat(d)]));
     const role = await memberRole();
     return folders
       .map(folder => ({ folder, state: stateById.get(folder.id) }))

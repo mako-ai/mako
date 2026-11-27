@@ -4,9 +4,13 @@
  * and the one error mapping.
  */
 import { z } from "@hono/zod-openapi";
-import { Types } from "mongoose";
-import { AppProject, type IAppProject } from "../../database/workspace-schema";
+import { parseEntityId } from "../../database/pg/id-codec";
+import { type IAppProject } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../../repositories/apps-metadata";
 import { workspaceService } from "../../services/workspace.service";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
@@ -128,14 +132,12 @@ export async function loadPublishedRowById(
 ): Promise<{ project: IAppProject; userId?: string } | null> {
   const workspaceId = c.req.param("workspaceId") as string;
   const id = c.req.param("id")?.trim() ?? "";
-  if (!/^[0-9a-f]{24}$/i.test(id) || !Types.ObjectId.isValid(workspaceId)) {
+  if (!parseEntityId(id) || !parseEntityId(workspaceId)) {
     return null;
   }
-  const row = await AppProject.findOne({
-    _id: new Types.ObjectId(id),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
-  if (!row?.publishedSha) return null;
+  const rowRec = await appsMetadataRepo.findProjectById(id, workspaceId);
+  if (!rowRec?.publishedSha) return null;
+  const row = toAppProjectCompat(rowRec);
   const userId = actingUserId(c);
   if (userId) {
     // The workspace middleware already read this member for this request.

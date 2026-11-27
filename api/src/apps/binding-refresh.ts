@@ -150,7 +150,10 @@ export async function refreshAppBinding(
     const hub = new BindingProgressHub();
     const build = withBindingProgress(hub.emit, async () => {
       if (cooldownMs !== undefined) {
-        const slot = await deps.claim(projectId, name, cooldownMs);
+        const workspaceId = project.workspaceId?.toString();
+        const slot = workspaceId
+          ? await deps.claim(projectId, name, cooldownMs, workspaceId)
+          : await deps.claim(projectId, name, cooldownMs);
         if (!slot.claimed) {
           throw new BindingRefreshError(
             "This data was refreshed recently; try again in a few minutes",

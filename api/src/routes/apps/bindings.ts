@@ -60,9 +60,10 @@ appsBindingRoutes.openapi(
       if ("errorResponse" in loaded) return loaded.errorResponse;
       const bindings = await readBindings(loaded.project, actorOf(loaded));
       const projectId = loaded.project._id.toString();
+      const workspaceId = loaded.project.workspaceId?.toString();
       const out = [];
       for (const b of bindings) {
-        const state = await getBindingState(projectId, b.name);
+        const state = await getBindingState(projectId, b.name, workspaceId);
         out.push({
           name: b.name,
           connectionId: b.connectionId,
@@ -479,10 +480,21 @@ async function loadBindingJob(
   // synthesized id it was queued under.
   const loaded = await loadDevBuildProject(c, { checkWrite: false });
   if ("errorResponse" in loaded) return loaded;
-  const job = await getBindingJob(loaded.project._id.toString(), jobId);
+  const job = await getBindingJob(
+    loaded.project._id.toString(),
+    jobId,
+    new Date(),
+    loaded.project.workspaceId?.toString(),
+  );
   // Another member's job is as good as missing: a draft job's result is
-  // their uncommitted SQL.
-  if (!job || job.actorId !== actorOf(loaded)) {
+  // their uncommitted SQL. Match actorId verbatim (or userId across an
+  // in-flight auth cutover where the caller's session switched to UUIDv7).
+  const callerActor = actorOf(loaded);
+  const ownedByCaller =
+    job !== null &&
+    (job.actorId === callerActor ||
+      (loaded.userId !== undefined && job.userId === loaded.userId));
+  if (!ownedByCaller) {
     return {
       errorResponse: fail(c, 404, "No such binding job"),
     };

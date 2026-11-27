@@ -20,9 +20,9 @@ import { canManageSharing } from "../../utils/resource-acl";
 import {
   encrypt,
   decrypt,
-  AppProject,
   type IPublicShare,
 } from "../../database/workspace-schema";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 import type { ShareableDocument } from "./collaborator-routes";
 import {
   AUTH_SECURITY,
@@ -86,8 +86,7 @@ async function isShareTokenTaken(
   token: string,
   excludeId?: Types.ObjectId | string,
 ): Promise<boolean> {
-  const filter = { "publicShare.token": token, _id: { $ne: excludeId } };
-  return !!(await AppProject.exists(filter));
+  return appsMetadataRepo.isShareTokenTaken(token, excludeId?.toString());
 }
 
 /**

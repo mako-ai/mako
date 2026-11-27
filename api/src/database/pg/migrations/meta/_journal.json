@@ -43,6 +43,13 @@
       "when": 1764180005000,
       "tag": "0005_phase2_consoles_charts",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1764180006000,
+      "tag": "0006_phase2_apps_usage",
+      "breakpoints": true
     }
   ]
 }

@@ -12,12 +12,13 @@
  * never fail the deploy it describes.
  */
 import { Types } from "mongoose";
+import { parseEntityId } from "../database/pg/id-codec";
 import {
-  AppProject,
   type AppDeployStage,
   type IAppDeployProgress,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 
 const logger = loggers.api("apps-deploy-progress");
 
@@ -39,13 +40,29 @@ export const DEPLOY_STALL_MS: Record<AppDeployStage, number> = {
  */
 export const DEPLOY_ABANDONED_MS = 6 * 60 * 60_000;
 
-type ProjectRef = { _id: Types.ObjectId | string };
+type ProjectRef = {
+  _id: Types.ObjectId | string;
+  workspaceId?: Types.ObjectId | string;
+};
 
-function idOf(project: ProjectRef | string): Types.ObjectId | null {
+function idOf(project: ProjectRef | string): string | null {
   const raw = typeof project === "string" ? project : project?._id;
-  if (raw instanceof Types.ObjectId) return raw;
-  const hex = raw === undefined || raw === null ? "" : String(raw);
-  return /^[0-9a-f]{24}$/i.test(hex) ? new Types.ObjectId(hex) : null;
+  if (raw instanceof Types.ObjectId) return raw.toString();
+  const str = raw === undefined || raw === null ? "" : String(raw);
+  return parseEntityId(str) ? str : null;
+}
+
+async function resolveTarget(
+  project: ProjectRef | string,
+): Promise<{ id: string; workspaceId: string } | null> {
+  const id = idOf(project);
+  if (!id) return null;
+  if (typeof project !== "string" && project.workspaceId) {
+    return { id, workspaceId: project.workspaceId.toString() };
+  }
+  const found = await appsMetadataRepo.findProjectById(id);
+  if (!found) return null;
+  return { id, workspaceId: found.workspaceId };
 }
 
 async function bestEffort(
@@ -74,24 +91,22 @@ export function markDeployQueued(
   sha: string,
   now: Date = new Date(),
 ): Promise<void> {
-  const _id = idOf(project);
-  if (!_id) return Promise.resolve();
-  return bestEffort("queued", sha, () =>
-    AppProject.updateOne(
-      { _id },
+  if (!idOf(project)) return Promise.resolve();
+  return bestEffort("queued", sha, async () => {
+    const target = await resolveTarget(project);
+    if (!target) return;
+    await appsMetadataRepo.setDeployProgressQueued(
+      target.workspaceId,
+      target.id,
       {
-        $set: {
-          deployProgress: {
-            sha,
-            stage: "queued",
-            startedAt: now,
-            stageStartedAt: now,
-            updatedAt: now,
-          } satisfies IAppDeployProgress,
-        },
-      },
-    ),
-  );
+        sha,
+        stage: "queued",
+        startedAt: now,
+        stageStartedAt: now,
+        updatedAt: now,
+      } satisfies IAppDeployProgress,
+    );
+  });
 }
 
 /**
@@ -106,44 +121,20 @@ export function markDeployStage(
   stage: Exclude<AppDeployStage, "queued">,
   now: Date = new Date(),
 ): Promise<void> {
-  const _id = idOf(project);
-  if (!_id) return Promise.resolve();
+  if (!idOf(project)) return Promise.resolve();
   return bestEffort(stage, sha, async () => {
-    const res = await AppProject.updateOne(
-      { _id, "deployProgress.sha": sha },
-      {
-        $set: {
-          "deployProgress.stage": stage,
-          "deployProgress.stageStartedAt": now,
-          "deployProgress.updatedAt": now,
-        },
-        $unset: { "deployProgress.bindings": 1 },
-      },
-    );
-    if (res.matchedCount > 0) return;
+    const target = await resolveTarget(project);
+    if (!target) return;
     const staleBefore = new Date(
       now.getTime() - Math.min(...Object.values(DEPLOY_STALL_MS)),
     );
-    await AppProject.updateOne(
-      {
-        _id,
-        $or: [
-          { deployProgress: { $exists: false } },
-          { deployProgress: null },
-          { "deployProgress.updatedAt": { $lt: staleBefore } },
-        ],
-      },
-      {
-        $set: {
-          deployProgress: {
-            sha,
-            stage,
-            startedAt: now,
-            stageStartedAt: now,
-            updatedAt: now,
-          } satisfies IAppDeployProgress,
-        },
-      },
+    await appsMetadataRepo.advanceDeployProgressStage(
+      target.workspaceId,
+      target.id,
+      sha,
+      stage,
+      now,
+      staleBefore,
     );
   });
 }
@@ -155,19 +146,18 @@ export function markBindingProgress(
   bindings: { total: number; prepared: number; current?: string },
   now: Date = new Date(),
 ): Promise<void> {
-  const _id = idOf(project);
-  if (!_id) return Promise.resolve();
-  return bestEffort("bindings-progress", sha, () =>
-    AppProject.updateOne(
-      { _id, "deployProgress.sha": sha },
-      {
-        $set: {
-          "deployProgress.bindings": bindings,
-          "deployProgress.updatedAt": now,
-        },
-      },
-    ),
-  );
+  if (!idOf(project)) return Promise.resolve();
+  return bestEffort("bindings-progress", sha, async () => {
+    const target = await resolveTarget(project);
+    if (!target) return;
+    await appsMetadataRepo.updateDeployProgressBindings(
+      target.workspaceId,
+      target.id,
+      sha,
+      bindings,
+      now,
+    );
+  });
 }
 
 /** The lastDeployError stage for a deploy that died in `stage`. */
@@ -184,14 +174,16 @@ export function clearDeployProgress(
   project: ProjectRef | string,
   sha: string,
 ): Promise<void> {
-  const _id = idOf(project);
-  if (!_id) return Promise.resolve();
-  return bestEffort("clear", sha, () =>
-    AppProject.updateOne(
-      { _id, "deployProgress.sha": sha },
-      { $unset: { deployProgress: 1 } },
-    ),
-  );
+  if (!idOf(project)) return Promise.resolve();
+  return bestEffort("clear", sha, async () => {
+    const target = await resolveTarget(project);
+    if (!target) return;
+    await appsMetadataRepo.clearDeployProgress(
+      target.workspaceId,
+      target.id,
+      sha,
+    );
+  });
 }
 
 /**

@@ -3,9 +3,13 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import { Types } from "mongoose";
-import { AppProject, type IAppProject } from "../../database/workspace-schema";
+import { type IAppProject } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import {
+  appsMetadataRepo,
+  buildProjectSharingPatch,
+  toAppProjectCompat,
+} from "../../repositories/apps-metadata";
 import { appsSessionsRoot } from "../config";
 import { requireWorkspaceRepo } from "../workspace-repo-required";
 import { assertSafeRelPath, runGit } from "../git";
@@ -106,12 +110,7 @@ export async function occupiedPaths(workspaceId: string): Promise<Set<string>> {
   const snapshot = await loadAppsIndex(workspaceId);
   const taken = new Set<string>(snapshot.folders);
   for (const app of snapshot.apps) taken.add(app.path);
-  const rows = await AppProject.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    path: { $exists: true },
-  })
-    .select("path")
-    .lean();
+  const rows = await appsMetadataRepo.listProjectsByWorkspace(workspaceId);
   for (const row of rows) if (row.path) taken.add(row.path);
   return taken;
 }
@@ -264,8 +263,8 @@ export async function createProject(input: {
   if (parentApp) {
     throw new AppFolderError(`${parentApp.path} is an app, not a folder`, 409);
   }
-  const project = await AppProject.create({
-    workspaceId: new Types.ObjectId(input.workspaceId),
+  const createdRec = await appsMetadataRepo.createProject({
+    workspaceId: input.workspaceId,
     title,
     slug,
     path: appPath,
@@ -277,6 +276,15 @@ export async function createProject(input: {
     ...(input.userId ? { owner_id: input.userId } : {}),
     createdBy: input.userId ?? "",
     defaultBranch: DEFAULT_BRANCH,
+  });
+  const project = toAppProjectCompat(createdRec, async (doc, modifiedPaths) => {
+    const patch = buildProjectSharingPatch(doc, modifiedPaths);
+    if (Object.keys(patch).length === 0) return;
+    await appsMetadataRepo.updateProjectSharing(
+      doc.workspaceId.toString(),
+      doc._id.toString(),
+      patch,
+    );
   });
 
   // §10 monorepo: commit the scaffold under its folder onto main. The row's
@@ -315,10 +323,10 @@ export async function createProject(input: {
   } catch (error) {
     // Don't leave a content-less project behind. A failed durable write has
     // already moved local main back where it was.
-    await AppProject.deleteOne({
-      _id: project._id,
-      workspaceId: project.workspaceId,
-    });
+    await appsMetadataRepo.deleteProject(
+      project.workspaceId.toString(),
+      project._id.toString(),
+    );
     if (!(error instanceof DurableMainWriteError)) throw error;
     logger.error("Apps creation aborted: durable push failed", {
       projectId: project._id.toString(),
@@ -354,10 +362,10 @@ export async function deleteProject(project: IAppProject): Promise<void> {
     );
     queueMirrorPush(project.workspaceId.toString());
   }
-  await AppProject.deleteOne({
-    _id: project._id,
-    workspaceId: project.workspaceId,
-  });
+  await appsMetadataRepo.deleteProject(
+    project.workspaceId.toString(),
+    project._id.toString(),
+  );
   await syncAppsIndexFromRepo(project.workspaceId.toString()).catch(
     () => undefined,
   );

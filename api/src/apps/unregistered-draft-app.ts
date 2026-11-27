@@ -26,11 +26,9 @@
  * no app yet): see `unregisteredDraftAccess`.
  */
 import { Types } from "mongoose";
-import {
-  AppIndexEntry,
-  AppProject,
-  type IAppProject,
-} from "../database/workspace-schema";
+import { parseEntityId } from "../database/pg/id-codec";
+import { type IAppProject } from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import {
   APPS_DIR,
   appKeyOf,
@@ -98,20 +96,17 @@ const defaultDeps: UnregisteredDraftDeps = {
     );
   },
   taken: async (workspaceId, identity) => {
-    const id = new Types.ObjectId(identity.appId);
-    const ws = new Types.ObjectId(workspaceId);
     // Ids are global: index entries are unique on appId across workspaces.
     const [entry, row] = await Promise.all([
-      AppIndexEntry.exists({ appId: identity.appId }),
-      AppProject.exists({
-        $or: [
-          { _id: id },
-          { workspaceId: ws, path: identity.path },
-          { workspaceId: ws, slug: identity.slug },
-        ],
+      appsMetadataRepo.indexEntryExistsByAppId(identity.appId),
+      appsMetadataRepo.projectExistsMatching({
+        id: identity.appId,
+        workspaceId,
+        path: identity.path,
+        slug: identity.slug,
       }),
     ]);
-    return entry !== null || row !== null;
+    return entry || row;
   },
 };
 
@@ -126,7 +121,7 @@ export async function unregisteredDraftProject(
   ownerId: string | undefined,
   deps: UnregisteredDraftDeps = defaultDeps,
 ): Promise<IAppProject | null> {
-  if (!Types.ObjectId.isValid(workspaceId)) return null;
+  if (!parseEntityId(workspaceId)) return null;
   const identity = unregisteredDraftIdentity(workspaceId, ref);
   if (!identity) return null;
   if (await deps.indexKnows(workspaceId, ref)) return null;

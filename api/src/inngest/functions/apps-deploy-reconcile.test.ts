@@ -52,17 +52,22 @@ import { appsDeployReconcileFunction } from "./apps-deploy";
 
 const run = async () => {
   const sendEvent = vi.fn(async () => undefined);
+  const stepOutputs = new Map<string, unknown>();
   await (
     appsDeployReconcileFunction as unknown as {
       handler: (ctx: unknown) => Promise<unknown>;
     }
   ).handler({
     step: {
-      run: (_name: string, fn: () => unknown) => fn(),
+      run: async (name: string, fn: () => unknown) => {
+        const out = await fn();
+        stepOutputs.set(name, out);
+        return out;
+      },
       sendEvent,
     },
   });
-  return sendEvent;
+  return { sendEvent, stepOutputs };
 };
 
 const row = (deployProgress?: Record<string, unknown>) => ({
@@ -81,7 +86,7 @@ describe("apps-deploy-reconcile", () => {
   it("re-enqueues an app that lags main with nothing in flight", async () => {
     state.rows = [row()];
 
-    const sendEvent = await run();
+    const { sendEvent } = await run();
 
     expect(sendEvent).toHaveBeenCalledWith("deploy", [
       {
@@ -108,7 +113,7 @@ describe("apps-deploy-reconcile", () => {
       }),
     ];
 
-    const sendEvent = await run();
+    const { sendEvent } = await run();
 
     expect(sendEvent).not.toHaveBeenCalled();
   });
@@ -125,8 +130,52 @@ describe("apps-deploy-reconcile", () => {
       }),
     ];
 
-    const sendEvent = await run();
+    const { sendEvent } = await run();
 
     expect(sendEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("projects only minimal non-secret fields in the list-published Inngest step output", async () => {
+    state.rows = [
+      {
+        ...row(),
+        slug: "web-performance",
+        title: "Web Perf",
+        env: [
+          {
+            key: "DATABASE_SECRET",
+            valueEncrypted: "enc:top-secret-env-value",
+          },
+        ],
+        publicShare: {
+          enabled: true,
+          token: "secret-share-token",
+          passwordHash: "$2b$10$secretbcryptpasswordhash",
+          passwordEncrypted: "enc:secret-share-password",
+        },
+        sharedWith: [{ userId: "user-1", role: "editor" }],
+      },
+    ];
+
+    const { stepOutputs } = await run();
+    const listPublished = stepOutputs.get("list-published") as Array<
+      Record<string, unknown>
+    >;
+    expect(listPublished).toHaveLength(1);
+    expect(Object.keys(listPublished[0]).sort()).toEqual([
+      "deployProgress",
+      "id",
+      "lastDeployError",
+      "path",
+      "publishedSha",
+      "slug",
+      "workspaceId",
+    ]);
+    const serialized = JSON.stringify(listPublished);
+    expect(serialized).not.toContain("top-secret-env-value");
+    expect(serialized).not.toContain("secretbcryptpasswordhash");
+    expect(serialized).not.toContain("secret-share-password");
+    expect(serialized).not.toContain("secret-share-token");
+    expect(serialized).not.toContain("sharedWith");
   });
 });

@@ -28,9 +28,10 @@
  * Previews share a prod copy of the database, so they would clone every
  * customer repo the copy names.
  */
-import { AppUsageDaily, AppWorktree } from "../../database/workspace-schema";
 import { getRepoInfo } from "../../integrations/github/github-api";
 import { loggers } from "../../logging";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
+import { usageStatsRepo } from "../../repositories/usage-stats";
 import {
   ensureLocalRepo,
   resolveReadableMirrorTarget,
@@ -73,18 +74,12 @@ export async function hotWorkspaceIds(
 ): Promise<string[]> {
   const since = new Date(now - windowMs);
   const [worktrees, usage] = await Promise.all([
-    AppWorktree.aggregate<{ _id: unknown; at: Date }>([
-      { $match: { updatedAt: { $gte: since } } },
-      { $group: { _id: "$workspaceId", at: { $max: "$updatedAt" } } },
-    ]),
-    AppUsageDaily.aggregate<{ _id: unknown; at: Date }>([
-      { $match: { lastAt: { $gte: since } } },
-      { $group: { _id: "$workspaceId", at: { $max: "$lastAt" } } },
-    ]),
+    appsMetadataRepo.listHotWorktreeWorkspacesSince(since),
+    usageStatsRepo.getHotWorkspaceUsageSince(since),
   ]);
   const latest = new Map<string, number>();
   for (const row of [...worktrees, ...usage]) {
-    const id = String(row._id);
+    const id = row.workspaceId;
     const at = new Date(row.at).getTime();
     if ((latest.get(id) ?? 0) < at) latest.set(id, at);
   }

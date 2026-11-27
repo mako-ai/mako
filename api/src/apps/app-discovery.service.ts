@@ -10,8 +10,14 @@
  * (app-usage.service), which the UI joins on the app id. Search ranks
  * through app-search.ts, the same ranking as the `search_apps` agent tool.
  */
-import mongoose, { Types } from "mongoose";
-import { AppProject, type IAppProject } from "../database/workspace-schema";
+import { Types } from "mongoose";
+import { parseEntityId } from "../database/pg/id-codec";
+import { type IAppProject } from "../database/workspace-schema";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+  toMongoObjectId,
+} from "../repositories/apps-metadata";
 import { authRepo } from "../repositories/auth";
 import { canSeeIndexedApp } from "./app-authorization";
 import {
@@ -81,11 +87,6 @@ export interface BindingStateRow {
   history?: Array<{ status?: "ready" | "error" }>;
 }
 
-function bindingStateModel() {
-  // Registered by bindings.service (imported above for that side effect).
-  return mongoose.model("AppBindingState");
-}
-
 const iso = (d: Date | string | undefined | null) =>
   d ? new Date(d).toISOString() : undefined;
 
@@ -121,10 +122,11 @@ export function loadAppStates(workspaceId: string): Promise<AppStateRow[]> {
   const pending = statesInFlight.get(workspaceId);
   if (pending) return pending;
   const run = timed("states", () =>
-    AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) })
-      .select(APP_STATE_FIELDS)
-      .lean()
-      .then(rows => rows as unknown as AppStateRow[]),
+    appsMetadataRepo
+      .listProjectsByWorkspace(workspaceId)
+      .then(rows =>
+        rows.map(r => toAppProjectCompat(r) as unknown as AppStateRow),
+      ),
   ).finally(() => statesInFlight.delete(workspaceId));
   statesInFlight.set(workspaceId, run);
   return run;
@@ -178,23 +180,23 @@ export async function loadDiscoveryBase(
     if (owner) ownerIds.add(owner);
   }
   const appIds = snapshot.apps
-    .filter(f => Types.ObjectId.isValid(f.appId))
-    .map(f => new Types.ObjectId(f.appId));
+    .filter(f => Boolean(parseEntityId(f.appId)))
+    .map(f => f.appId);
   const [emailById, bindingRows, people] = await Promise.all([
     timed("disc.users", () => ownerEmails([...ownerIds])),
     timed("disc.bindings", async () =>
       appIds.length === 0
         ? []
-        : bindingStateModel()
-            .find({ projectId: { $in: appIds } })
-            .select({
-              projectId: 1,
-              name: 1,
-              lastMaterializedAt: 1,
-              history: { $slice: 1 },
-            })
-            .lean()
-            .then(rows => rows as unknown as BindingStateRow[]),
+        : appsMetadataRepo
+            .listBindingStatesByProjects(workspaceId, appIds)
+            .then(rows =>
+              rows.map((r): BindingStateRow => ({
+                projectId: toMongoObjectId(r.projectId),
+                name: r.name,
+                lastMaterializedAt: r.lastMaterializedAt,
+                history: r.history,
+              })),
+            ),
     ),
     timed("disc.people", () => loadPeopleDirectory(workspaceId, directory)),
   ]);

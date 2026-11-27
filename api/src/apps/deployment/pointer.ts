@@ -3,7 +3,8 @@
  */
 import { commitIsAncestor, isOid } from "../git";
 import { repoDirFor } from "../repository.service";
-import { AppProject, type IAppProject } from "../../database/workspace-schema";
+import { type IAppProject } from "../../database/workspace-schema";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 import { clearDeployProgress } from "../deploy-progress";
 import { loggers } from "../../logging";
 import { existingDeploymentAsset } from "./store";
@@ -20,29 +21,30 @@ async function clearAnsweredDeployError(
   project: IAppProject,
   sha: string,
 ): Promise<void> {
+  const workspaceId = project.workspaceId?.toString() ?? "";
+  const projectId = project._id.toString();
   try {
-    const row = await AppProject.findById(project._id)
-      .select("lastDeployError")
-      .lean();
+    const row = await appsMetadataRepo.findProjectById(
+      projectId,
+      workspaceId || undefined,
+    );
     const failedSha = row?.lastDeployError?.sha;
     if (!failedSha) return;
     const answered =
       failedSha === sha ||
-      (isOid(failedSha) &&
+      (Boolean(workspaceId) &&
+        isOid(failedSha) &&
         isOid(sha) &&
-        (await commitIsAncestor(
-          repoDirFor(project.workspaceId.toString()),
-          failedSha,
-          sha,
-        )));
+        (await commitIsAncestor(repoDirFor(workspaceId), failedSha, sha)));
     if (!answered) return;
-    await AppProject.updateOne(
-      { _id: project._id, "lastDeployError.sha": failedSha },
-      { $unset: { lastDeployError: 1 } },
+    await appsMetadataRepo.clearLastDeployErrorIfSha(
+      workspaceId,
+      projectId,
+      failedSha,
     );
   } catch (error) {
     logger.warn("Could not clear a recorded deploy failure", {
-      projectId: project._id.toString(),
+      projectId,
       sha,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -64,19 +66,18 @@ export async function setPublishedSha(
   sha: string,
   options: { expected?: string | null; refreshing?: string[] } = {},
 ): Promise<boolean> {
-  const result = await AppProject.updateOne(
-    {
-      _id: project._id,
-      workspaceId: project.workspaceId,
-      ...(options.expected !== undefined
-        ? { publishedSha: options.expected }
-        : {}),
-    },
-    { $set: { publishedSha: sha, publishedAt: new Date() } },
+  const workspaceId = project.workspaceId?.toString() ?? "";
+  const projectId = project._id.toString();
+  const result = await appsMetadataRepo.setPublishedSha(
+    workspaceId,
+    projectId,
+    sha,
+    new Date(),
+    options.expected,
   );
-  if (options.expected !== undefined && result?.matchedCount === 0) {
+  if (options.expected !== undefined && !result.matched) {
     logger.info("Apps deployment overtaken: the live pointer moved", {
-      projectId: project._id.toString(),
+      projectId,
       sha,
       expected: options.expected,
     });
@@ -95,9 +96,9 @@ export async function setPublishedSha(
  * with it the hourly reconcile's reason to keep re-enqueuing the app.
  */
 export async function clearPublishedSha(project: IAppProject): Promise<void> {
-  await AppProject.updateOne(
-    { _id: project._id, workspaceId: project.workspaceId },
-    { $unset: { publishedSha: 1, publishedAt: 1, lastDeployError: 1 } },
+  await appsMetadataRepo.clearPublishedSha(
+    project.workspaceId?.toString() ?? "",
+    project._id.toString(),
   );
 }
 
@@ -115,16 +116,20 @@ async function deployFailureStillApplies(
   project: IAppProject,
   sha: string,
 ): Promise<boolean> {
+  const workspaceId = project.workspaceId?.toString() ?? "";
+  const projectId = project._id.toString();
   try {
-    const row = await AppProject.findById(project._id)
-      .select("publishedSha publishedAt deployProgress")
-      .lean();
+    const row = await appsMetadataRepo.findProjectById(
+      projectId,
+      workspaceId || undefined,
+    );
     if (!row?.publishedSha) return true;
     if (row.publishedSha === sha) return false;
     if (row.deployProgress?.sha === sha) return true;
     try {
+      if (!workspaceId) return true;
       return !(await commitIsAncestor(
-        repoDirFor(project.workspaceId.toString()),
+        repoDirFor(workspaceId),
         sha,
         row.publishedSha,
       ));
@@ -157,16 +162,24 @@ export async function recordDeployFailure(
       ? `…${full.slice(-DEPLOY_ERROR_MAX_CHARS)}`
       : full;
   if (await deployFailureStillApplies(project, sha)) {
-    await AppProject.updateOne(
-      { _id: project._id, workspaceId: project.workspaceId },
-      { $set: { lastDeployError: { sha, stage, message, at: new Date() } } },
-    ).catch(err => {
-      logger.warn("Could not record apps deploy failure", {
-        projectId: project._id.toString(),
-        sha,
-        error: err instanceof Error ? err.message : String(err),
+    await appsMetadataRepo
+      .setLastDeployError(
+        project.workspaceId?.toString() ?? "",
+        project._id.toString(),
+        {
+          sha,
+          stage,
+          message,
+          at: new Date(),
+        },
+      )
+      .catch(err => {
+        logger.warn("Could not record apps deploy failure", {
+          projectId: project._id.toString(),
+          sha,
+          error: err instanceof Error ? err.message : String(err),
+        });
       });
-    });
   }
   // The deploy is over; lastDeployError now says why.
   await clearDeployProgress(project, sha);

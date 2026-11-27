@@ -15,12 +15,9 @@ import { postCommitStatus } from "../integrations/github/github-api";
 import { resolveRepoToken } from "../integrations/github/app-auth";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { loggers } from "../logging";
-import { Types } from "mongoose";
-import {
-  AppDeployCommitStatus,
-  AppProject,
-  type AppDeployCommitState,
-} from "../database/workspace-schema";
+import { parseEntityId } from "../database/pg/id-codec";
+import { type AppDeployCommitState } from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import {
   clipStatusDescription,
   logStatusPostFailure,
@@ -137,28 +134,21 @@ async function resolveAbandonedPending(input: {
   workspaceId: string;
   appId: string;
   newSha: string;
-  key: { workspaceId: Types.ObjectId; appId: string };
   post: PostStatus;
 }): Promise<void> {
-  const { workspaceId, appId, newSha, key, post } = input;
-  const abandoned = await AppDeployCommitStatus.find({
-    ...key,
-    state: "pending",
-    sha: { $ne: newSha },
-  })
-    .select("sha")
-    .lean();
+  const { workspaceId, appId, newSha, post } = input;
+  const abandoned =
+    await appsMetadataRepo.listPendingCommitStatusesExcludingSha(
+      workspaceId,
+      appId,
+      newSha,
+    );
   if (abandoned.length === 0) return;
-  const row = Types.ObjectId.isValid(appId)
-    ? await AppProject.findOne({
-        _id: new Types.ObjectId(appId),
-        workspaceId: key.workspaceId,
-      })
-        .select("publishedSha")
-        .lean()
+  const row = parseEntityId(appId)
+    ? await appsMetadataRepo.findProjectById(appId, workspaceId)
     : null;
   const repoDir = await repoForWorkspace(workspaceId);
-  for (const { sha: previous } of abandoned) {
+  for (const previous of abandoned) {
     let resolution: { state: AppDeployCommitState; text: string } | null = null;
     if (row?.publishedSha === previous) {
       resolution = { state: "success", text: "Live: this commit is deployed" };
@@ -169,9 +159,11 @@ async function resolveAbandonedPending(input: {
       };
     }
     if (!resolution) continue;
-    const won = await AppDeployCommitStatus.findOneAndUpdate(
-      { ...key, sha: previous, state: "pending" },
-      { $set: { state: resolution.state } },
+    const won = await appsMetadataRepo.casResolvePendingCommitStatus(
+      workspaceId,
+      appId,
+      previous,
+      resolution.state,
     );
     if (!won) continue;
     await post(previous, "success", resolution.text).catch(error =>
@@ -224,25 +216,20 @@ export async function reportAppDeployStatus(
         },
         token,
       );
-    const key = {
-      workspaceId: new Types.ObjectId(workspaceId),
-      appId,
-    };
-
     if (state === "pending") {
       await resolveAbandonedPending({
         workspaceId,
         appId,
         newSha: sha,
-        key,
         post,
       });
       // A new attempt at this commit: it is pending again, whatever an
       // earlier attempt recorded.
-      await AppDeployCommitStatus.updateOne(
-        { ...key, sha },
-        { $set: { state: "pending" } },
-        { upsert: true },
+      await appsMetadataRepo.upsertCommitStatus(
+        workspaceId,
+        appId,
+        sha,
+        "pending",
       );
       await post(sha, state, input.description);
       return { posted: true };
@@ -251,11 +238,7 @@ export async function reportAppDeployStatus(
     // The deploy's own outcome is authoritative for its commit. Record it
     // BEFORE posting, so a concurrent resolver's compare-and-set on
     // "pending" loses and can never post "superseded" over it.
-    await AppDeployCommitStatus.updateOne(
-      { ...key, sha },
-      { $set: { state } },
-      { upsert: true },
-    );
+    await appsMetadataRepo.upsertCommitStatus(workspaceId, appId, sha, state);
     await post(sha, state, input.description);
     return { posted: true };
   } catch (error) {

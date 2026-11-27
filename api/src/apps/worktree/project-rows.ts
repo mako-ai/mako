@@ -3,7 +3,14 @@
  * row a few acts give them, and resolving an id / path / slug to a project.
  */
 import { Types } from "mongoose";
-import { AppProject, type IAppProject } from "../../database/workspace-schema";
+import { parseEntityId } from "../../database/pg/id-codec";
+import { type IAppProject } from "../../database/workspace-schema";
+import {
+  appsMetadataRepo,
+  buildProjectSharingPatch,
+  toAppProjectCompat,
+  type AppProjectRecord,
+} from "../../repositories/apps-metadata";
 import { DEFAULT_BRANCH } from "../repository.service";
 import {
   loadAppsIndex,
@@ -91,6 +98,18 @@ export function rowOwnerActor(actorId: string): string | undefined {
  * "succeeds" without persisting anything, and a reload shows the app
  * unpublished (found on prod with repo-imported apps, §13.22).
  */
+function wrapProjectRecord(rec: AppProjectRecord): IAppProject {
+  return toAppProjectCompat(rec, async (doc, modifiedPaths) => {
+    const patch = buildProjectSharingPatch(doc, modifiedPaths);
+    if (Object.keys(patch).length === 0) return;
+    await appsMetadataRepo.updateProjectSharing(
+      doc.workspaceId.toString(),
+      doc._id.toString(),
+      patch,
+    );
+  });
+}
+
 export async function ensureProjectRow(
   project: IAppProject,
   actorId: string,
@@ -115,10 +134,12 @@ export async function ensureProjectRow(
     : isUserActor(actorId)
       ? actorId
       : undefined;
-  const existing = await AppProject.findOne({
-    _id: project._id,
-    workspaceId: project.workspaceId,
-  });
+  const projectId = project._id.toString();
+  const workspaceId = project.workspaceId.toString();
+  const existing = await appsMetadataRepo.findProjectById(
+    projectId,
+    workspaceId,
+  );
   if (existing) {
     // An ownerless row gets its owner on the first act by a 24-hex actor
     // (resource-acl reads owner_id, then createdBy; see claimant above). A personal row's owner is the mapping's
@@ -130,27 +151,23 @@ export async function ensureProjectRow(
       !existing.createdBy &&
       (personal || existing.access !== "private")
     ) {
-      await AppProject.updateOne(
-        {
-          _id: existing._id,
-          workspaceId: project.workspaceId,
-          owner_id: { $in: [null, ""] },
-        },
-        { $set: { owner_id: claimant, createdBy: claimant } },
+      await appsMetadataRepo.claimOwnerlessProjectRow(
+        workspaceId,
+        existing.id,
+        claimant,
       );
-      return (
-        (await AppProject.findOne({
-          _id: existing._id,
-          workspaceId: project.workspaceId,
-        })) ?? existing
+      const updated = await appsMetadataRepo.findProjectById(
+        existing.id,
+        workspaceId,
       );
+      return wrapProjectRecord(updated ?? existing);
     }
-    return existing;
+    return wrapProjectRecord(existing);
   }
   try {
-    return await AppProject.create({
-      _id: project._id,
-      workspaceId: project.workspaceId,
+    const created = await appsMetadataRepo.createProject({
+      id: projectId,
+      workspaceId,
       title: project.title,
       slug: project.slug,
       path: project.path ?? appRootFor(project),
@@ -160,12 +177,13 @@ export async function ensureProjectRow(
       ...(owner ? { owner_id: owner } : {}),
       defaultBranch: project.defaultBranch || DEFAULT_BRANCH,
     });
+    return wrapProjectRecord(created);
   } catch {
-    const winner = await AppProject.findOne({
-      _id: project._id,
-      workspaceId: project.workspaceId,
-    });
-    if (winner) return winner;
+    const winner = await appsMetadataRepo.findProjectById(
+      projectId,
+      workspaceId,
+    );
+    if (winner) return wrapProjectRecord(winner);
     throw new Error("Could not persist the app's project row");
   }
 }
@@ -251,34 +269,32 @@ export async function resolveProjectRef(
   ref: string,
   options: { fetchOnMiss?: boolean } = {},
 ): Promise<IAppProject | null> {
-  const ws = new Types.ObjectId(workspaceId);
   const clean = ref.trim().replace(/^\/+/, "");
   const folder = await resolveAppRef(workspaceId, clean, options);
   if (folder) {
-    const row = await AppProject.findOne({
-      _id: new Types.ObjectId(folder.appId),
-      workspaceId: ws,
-    });
+    const row = await appsMetadataRepo.findProjectById(
+      folder.appId,
+      workspaceId,
+    );
     if (row) {
+      const wrapped = wrapProjectRecord(row);
       // The index is the truth about WHERE the app is; the row may lag a
       // push by the length of one sync.
-      if (row.path !== folder.path || row.slug !== folder.slug) {
-        row.path = folder.path;
-        row.slug = folder.slug;
+      if (wrapped.path !== folder.path || wrapped.slug !== folder.slug) {
+        wrapped.path = folder.path;
+        wrapped.slug = folder.slug;
       }
-      return row;
+      return wrapped;
     }
     return projectFromIndexRow(workspaceId, folder);
   }
-  if (Types.ObjectId.isValid(clean) && /^[0-9a-f]{24}$/i.test(clean)) {
-    return AppProject.findOne({
-      _id: new Types.ObjectId(clean),
-      workspaceId: ws,
-    });
+  if (parseEntityId(clean)) {
+    const found = await appsMetadataRepo.findProjectById(clean, workspaceId);
+    return found ? wrapProjectRecord(found) : null;
   }
   const stripped = clean.replace(/^apps\//, "");
-  const byPath = await AppProject.findOne({ path: clean, workspaceId: ws });
-  if (byPath) return byPath;
+  const byPath = await appsMetadataRepo.findProjectByPath(workspaceId, clean);
+  if (byPath) return wrapProjectRecord(byPath);
   // A bare slug the index knows but refused to pick (several nested apps
   // share the name, none at the top level) must stay unresolved: slugs are
   // no longer unique per workspace, and "whichever row Mongo returns first"
@@ -288,5 +304,9 @@ export async function resolveProjectRef(
     const snapshot = await loadAppsIndex(workspaceId, { freshen: false });
     if (snapshot.apps.some(a => a.slug === stripped)) return null;
   }
-  return AppProject.findOne({ slug: stripped, workspaceId: ws });
+  const bySlug = await appsMetadataRepo.findProjectBySlug(
+    workspaceId,
+    stripped,
+  );
+  return bySlug ? wrapProjectRecord(bySlug) : null;
 }

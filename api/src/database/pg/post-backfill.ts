@@ -90,6 +90,12 @@ export const POST_BACKFILL_STEPS: readonly PostBackfillStep[] = [
     requires:
       "connections and consoles_charts backfills completed (all database_connections and saved_consoles present in Postgres)",
   },
+  {
+    name: "conn-verif-connection-fk",
+    file: "0006a_conn_verif_connection_fk.sql",
+    requires:
+      "connections (0004) and usage_stats (0006) backfills completed (all database_connections present in Postgres)",
+  },
 ];
 
 export function resolvePostBackfillFolder(customFolder?: string): string {

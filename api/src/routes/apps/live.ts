@@ -80,6 +80,7 @@ async function serveLive(c: AuthenticatedContext): Promise<Response> {
 
   const response = await serveDeploymentFile({
     projectId,
+    workspaceId: project.workspaceId.toString(),
     sha,
     assetPath: rest.replace(/^\/+/, ""),
     viewer: viewerOf(c),

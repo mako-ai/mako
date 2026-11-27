@@ -2,8 +2,8 @@
  * Resolving an app ref (id, path, slug) against the index, live or from the
  * persisted rows, now or at an older commit.
  */
-import { Types } from "mongoose";
-import { AppIndexEntry, AppProject } from "../../database/workspace-schema";
+import { parseEntityId } from "../../database/pg/id-codec";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 import { freshenForServe } from "../cloud-repo.service";
 import { APPS_DIR, isAppId } from "../app-paths";
 import { AppIndexRow, AppsIndexSnapshot } from "./rows";
@@ -64,19 +64,17 @@ export async function resolveAppRef(
   return found;
 }
 
-/** Every app row as persisted in Mongo for a workspace (no git). */
+/** Every app row as persisted for a workspace (no git). */
 export async function loadIndexedApps(
   workspaceId: string,
 ): Promise<AppIndexRow[]> {
-  if (!Types.ObjectId.isValid(workspaceId)) return [];
-  const rows = await AppIndexEntry.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-  }).lean();
+  if (!parseEntityId(workspaceId)) return [];
+  const rows = await appsMetadataRepo.listIndexEntriesByWorkspace(workspaceId);
   return rows.map(rowToIndex);
 }
 
 /**
- * Resolve a ref against the index rows as persisted in Mongo — no git at
+ * Resolve a ref against the index rows as persisted — no git at
  * all. For hot public paths (link-preview images, card thumbnails) that must
  * not pay a mirror clone on a fresh instance: the rows are written by
  * whichever instance last synced main, so they are at most one sync behind.
@@ -86,17 +84,16 @@ export async function resolveIndexedAppRef(
   workspaceId: string,
   ref: string,
 ): Promise<AppIndexRow | null> {
-  if (!Types.ObjectId.isValid(workspaceId)) return null;
-  const ws = new Types.ObjectId(workspaceId);
+  if (!parseEntityId(workspaceId)) return null;
   const clean = ref.trim().toLowerCase();
   if (isAppId(clean)) {
-    const row = await AppIndexEntry.findOne({
-      workspaceId: ws,
-      appId: clean,
-    }).lean();
+    const row = await appsMetadataRepo.findIndexEntryByAppId(
+      clean,
+      workspaceId,
+    );
     if (row) return rowToIndex(row);
   }
-  const rows = await AppIndexEntry.find({ workspaceId: ws }).lean();
+  const rows = await appsMetadataRepo.listIndexEntriesByWorkspace(workspaceId);
   return findAppInSnapshot(
     { sha: "", apps: rows.map(rowToIndex), folders: [] },
     ref,
@@ -112,11 +109,11 @@ export async function readIndexedAppsAt(
   const [read, now, projects] = await Promise.all([
     readAppsAt(repoDir, sha),
     loadAppsIndex(workspaceId),
-    AppProject.find({ workspaceId }).select("_id path slug").lean(),
+    appsMetadataRepo.listProjectsByWorkspace(workspaceId),
   ]);
   const incumbents = new Map(now.apps.map(a => [a.appId, a.path]));
   for (const p of projects) {
-    incumbents.set(p._id.toString(), p.path ?? `apps/${p.slug}`);
+    incumbents.set(p.id, p.path ?? `apps/${p.slug}`);
   }
   // Copies keep the derived identity assigned by the current index.
   const ids = assignAppIds(
@@ -143,9 +140,15 @@ export async function readIndexedAppsAt(
       ),
     ),
   );
-  return read.apps.map(a => ({
-    appId: ids.get(a.path)!.appId,
-    path: a.path,
-    treeOid: a.treeOid,
-  }));
+  return read.apps.map(a => {
+    const identity = ids.get(a.path);
+    if (!identity) {
+      throw new Error(`Missing resolved app identity for ${a.path}`);
+    }
+    return {
+      appId: identity.appId,
+      path: a.path,
+      treeOid: a.treeOid,
+    };
+  });
 }

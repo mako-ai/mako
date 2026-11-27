@@ -337,6 +337,7 @@ describe("devBuildAppBinding", () => {
     });
     expect(d.drafts.built).toHaveBeenCalledWith({
       projectId: project._id.toString(),
+      workspaceId: project.workspaceId.toString(),
       name: "leads",
       hash: draftHash({
         connectionId: CONN,
@@ -392,6 +393,7 @@ describe("devBuildAppBinding", () => {
     expect(d.drafts.forget).toHaveBeenCalledWith(
       project._id.toString(),
       "apps/drafts/p/h-gone.parquet",
+      project.workspaceId.toString(),
     );
     expect(d.build).toHaveBeenCalledTimes(1);
   });

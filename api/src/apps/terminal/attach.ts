@@ -6,9 +6,13 @@ import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import type { ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
-import { Types } from "mongoose";
 import { loggers } from "../../logging";
-import { AppProject, type IAppProject } from "../../database/workspace-schema";
+import { parseEntityId } from "../../database/pg/id-codec";
+import { type IAppProject } from "../../database/workspace-schema";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../../repositories/apps-metadata";
 import { sessionManager } from "../../auth/session";
 import { workspaceService } from "../../services/workspace.service";
 import { canWriteResource } from "../../utils/resource-acl";
@@ -55,19 +59,15 @@ async function authorize(
 
   const { user } = await sessionManager.validateSession(sessionId);
   if (!user) return null;
-  if (!Types.ObjectId.isValid(workspaceId)) return null;
+  if (!parseEntityId(workspaceId)) return null;
 
   const ref = appRef.replace(/^apps\//, "");
+  const projectRec = parseEntityId(ref)
+    ? await appsMetadataRepo.findProjectById(ref, workspaceId)
+    : await appsMetadataRepo.findProjectBySlug(workspaceId, ref);
   const project =
-    (Types.ObjectId.isValid(ref)
-      ? await AppProject.findOne({
-          _id: new Types.ObjectId(ref),
-          workspaceId: new Types.ObjectId(workspaceId),
-        })
-      : await AppProject.findOne({
-          slug: ref,
-          workspaceId: new Types.ObjectId(workspaceId),
-        })) ?? (await synthesizeProjectFromFolder(workspaceId, ref));
+    (projectRec ? toAppProjectCompat(projectRec) : null) ??
+    (await synthesizeProjectFromFolder(workspaceId, ref));
   if (!project) return null;
 
   const member = await workspaceService.getMember(workspaceId, user.id);

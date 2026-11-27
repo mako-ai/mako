@@ -34,9 +34,9 @@ export const appsBindingJobFunction = inngest.createFunction(
     triggers: { event: APPS_BINDING_JOB_EVENT },
   },
   async ({ event, step }) => {
-    const { jobId } = event.data as BindingJobEventData;
+    const { jobId, workspaceId } = event.data as BindingJobEventData;
     return step.run("build", async () => {
-      const job = await getBindingJobById(jobId);
+      const job = await getBindingJobById(jobId, workspaceId);
       if (!job) return { skipped: "job-gone" as const };
       if (job.status !== "queued") return { skipped: job.status };
       return { status: await runBindingJob(job) };

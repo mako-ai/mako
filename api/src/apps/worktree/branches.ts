@@ -2,6 +2,7 @@
  * Branches: the cached branch list, merging to main, checkout, discard.
  */
 import { loggers } from "../../logging";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 import { BoundedMap } from "../../utils/bounded-map";
 import { boxCheckout, boxDiscard, boxHead, boxRoot, sh } from "../box";
 import { runGit } from "../git";
@@ -357,7 +358,11 @@ export async function checkoutBranch(
   const after = await boxHead(ctx);
 
   doc.branch = after.branch;
-  await doc.save();
+  await appsMetadataRepo.updateWorktreeBranch(
+    doc.workspaceId.toString(),
+    doc.userId,
+    after.branch,
+  );
   pokeApp(doc.workspaceId, null, "checkout", doc.userId);
   logger.info("Apps branch switched", { branch: after.branch });
   return { branch: after.branch, head: after.head };

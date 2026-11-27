@@ -23,7 +23,9 @@ import {
   getSystemSkillIndex,
   getSystemSkillFullText,
 } from "../agent-lib/skills/system-skills";
-import { AppProject, SavedConsole } from "../database/workspace-schema";
+import { parseEntityId } from "../database/pg/id-codec";
+import { SavedConsole } from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import {
   DEFAULT_BRANCH,
   listTree,
@@ -257,25 +259,15 @@ async function fetchAppDoc(
   if (!folder) {
     // Legacy fetch ids were Mongo ObjectIds of a state row; its path is
     // the folder, never its slug.
-    if (Types.ObjectId.isValid(id)) {
-      const app = await AppProject.findOne({
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-      })
-        .select("path")
-        .lean();
+    if (parseEntityId(id)) {
+      const app = await appsMetadataRepo.findProjectById(id, workspaceId);
       if (app?.path) {
         return fetchAppDoc(workspaceId, userId, app.path);
       }
     }
     return null;
   }
-  const app = await AppProject.findOne({
-    _id: new Types.ObjectId(folder.id),
-    workspaceId: new Types.ObjectId(workspaceId),
-  })
-    .select("defaultBranch publishedSha")
-    .lean();
+  const app = await appsMetadataRepo.findProjectById(folder.id, workspaceId);
   let files: string[] = [];
   try {
     const repoDir = repoDirFor(workspaceId);

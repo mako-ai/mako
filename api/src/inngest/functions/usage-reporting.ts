@@ -10,10 +10,9 @@
  */
 
 import Stripe from "stripe";
-import { ObjectId } from "mongodb";
 import { inngest } from "../client";
 import { workspaceRepo } from "../../repositories/workspaces";
-import { LlmUsage } from "../../database/schema";
+import { usageStatsRepo } from "../../repositories/usage-stats";
 import {
   isBillingEnabled,
   STRIPE_BILLING_API_VERSION,
@@ -103,22 +102,11 @@ export const usageReportingFunction = inngest.createFunction(
         ? new Date(ws.currentPeriodStart)
         : startOfUtcMonth();
 
-      const [agg] = await LlmUsage.aggregate([
-        {
-          $match: {
-            workspaceId: new ObjectId(ws.id),
-            createdAt: { $gte: periodStart },
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            totalCostUsd: { $sum: "$costUsd" },
-          },
-        },
-      ]);
+      const summary = await usageStatsRepo.getWorkspaceLlmUsageSummary(ws.id, {
+        from: periodStart,
+      });
 
-      const totalCostUsd = agg?.totalCostUsd ?? 0;
+      const totalCostUsd = summary.totalCostUsd;
       const includedQuota =
         ws.usageQuotaUsd ??
         PLAN_DEFINITIONS[ws.plan as keyof typeof PLAN_DEFINITIONS]

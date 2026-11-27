@@ -10,9 +10,8 @@
  *
  * Must not import app-index.service (it imports this module).
  */
-import { Types } from "mongoose";
-import { AppEmbedding } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import {
   embedText,
   embedTexts,
@@ -168,18 +167,16 @@ async function refreshAppEmbeddings(
   const model = getEmbeddingModelName();
   if (!model) return;
   const started = Date.now();
-  const ws = new Types.ObjectId(workspaceId);
-  const existing = await AppEmbedding.find({ workspaceId: ws })
-    .select("appId path treeOid docHash embeddingModel")
-    .lean();
+  const existing =
+    await appsMetadataRepo.listEmbeddingsMetaByWorkspace(workspaceId);
   const byId = new Map(existing.map(e => [e.appId, e]));
   const live = new Set(snapshot.apps.map(a => a.appId));
   const gone = existing.filter(e => !live.has(e.appId));
   if (gone.length > 0) {
-    await AppEmbedding.deleteMany({
-      workspaceId: ws,
-      appId: { $in: gone.map(e => e.appId) },
-    });
+    await appsMetadataRepo.deleteEmbeddingsByAppIds(
+      workspaceId,
+      gone.map(e => e.appId),
+    );
   }
   // Title, description and tables live in the tree: same tree, same path,
   // same model ⇒ same document.
@@ -208,38 +205,32 @@ async function refreshAppEmbeddings(
       const fresh = rows.filter(r => byId.get(r.app.appId)?.docHash === r.hash);
       const vectors =
         stale.length > 0 ? await embedTexts(stale.map(r => r.doc)) : [];
-      const ops = [
-        ...stale.flatMap((r, k) => {
-          const vector = vectors[k];
-          if (!vector) return [];
-          return [
-            {
-              updateOne: {
-                filter: { workspaceId: ws, appId: r.app.appId },
-                update: {
-                  $set: {
-                    path: r.app.path,
-                    treeOid: r.app.treeOid,
-                    docHash: r.hash,
-                    embeddingModel: model,
-                    vector,
-                    terms: documentTerms(r.doc),
-                  },
-                },
-                upsert: true,
-              },
-            },
-          ];
-        }),
-        ...fresh.map(r => ({
-          updateOne: {
-            filter: { workspaceId: ws, appId: r.app.appId },
-            update: { $set: { path: r.app.path, treeOid: r.app.treeOid } },
+      const fullUpserts = stale.flatMap((r, k) => {
+        const vector = vectors[k];
+        if (!vector) return [];
+        return [
+          {
+            appId: r.app.appId,
+            path: r.app.path,
+            treeOid: r.app.treeOid,
+            docHash: r.hash,
+            embeddingModel: model,
+            vector,
+            terms: documentTerms(r.doc),
           },
-        })),
-      ];
-      if (ops.length > 0) {
-        await AppEmbedding.bulkWrite(ops, { ordered: false });
+        ];
+      });
+      const pathOnlyUpdates = fresh.map(r => ({
+        appId: r.app.appId,
+        path: r.app.path,
+        treeOid: r.app.treeOid,
+      }));
+      if (fullUpserts.length > 0 || pathOnlyUpdates.length > 0) {
+        await appsMetadataRepo.upsertEmbeddingsBatch(
+          workspaceId,
+          fullUpserts,
+          pathOnlyUpdates,
+        );
       }
       embedded += stale.length;
       unchanged += fresh.length;
@@ -298,12 +289,10 @@ export async function workspaceAppVectors(
   ) {
     return cached;
   }
-  const rows = await AppEmbedding.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    embeddingModel: model,
-  })
-    .select("appId vector terms")
-    .lean();
+  const rows = await appsMetadataRepo.listEmbeddingsByWorkspaceAndModel(
+    workspaceId,
+    model,
+  );
   const entry: WorkspaceVectors = {
     at: Date.now(),
     model,

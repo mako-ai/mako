@@ -5,10 +5,12 @@
  * Imported by migration CLIs (`pg:backfill`, `pg:verify`) and Inngest migration
  * functions (`sync-retry`, `ttl-reaper`).
  */
+import { registerAppsMetadataMigrationDomain } from "./apps-metadata.backfill";
 import { registerAuthMigrationDomain } from "./auth.backfill";
 import { registerWorkspacesMigrationDomain } from "./workspaces.backfill";
 import { registerConnectionsMigrationDomain } from "./connections.backfill";
 import { registerConsolesChartsMigrationDomain } from "./consoles-charts.backfill";
+import { registerUsageStatsMigrationDomain } from "./usage-stats.backfill";
 
 let registered = false;
 
@@ -24,6 +26,8 @@ export function registerMigrationDomains(
   registerWorkspacesMigrationDomain();
   registerConnectionsMigrationDomain();
   registerConsolesChartsMigrationDomain();
+  registerAppsMetadataMigrationDomain();
+  registerUsageStatsMigrationDomain();
   registered = true;
 }
 
@@ -32,4 +36,6 @@ export {
   registerWorkspacesMigrationDomain,
   registerConnectionsMigrationDomain,
   registerConsolesChartsMigrationDomain,
+  registerAppsMetadataMigrationDomain,
+  registerUsageStatsMigrationDomain,
 };

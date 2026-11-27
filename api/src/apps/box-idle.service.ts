@@ -32,7 +32,7 @@
  */
 import mongoose from "mongoose";
 import { loggers } from "../logging";
-import { AppWorktree } from "../database/workspace-schema";
+import { appsMetadataRepo } from "../repositories/apps-metadata";
 import {
   getBoxActivity,
   lastBoxResume,
@@ -786,48 +786,33 @@ async function forgetSession(sessionKey: string): Promise<void> {
   if (parts) await markBoxOffline(parts.workspaceId, parts.userId);
 }
 
-function worktreeFilter(sessionKey: string) {
-  const parts = parseSessionKey(sessionKey);
-  return parts
-    ? {
-        workspaceId: new mongoose.Types.ObjectId(parts.workspaceId),
-        userId: parts.userId,
-      }
-    : null;
-}
-
 async function pauseHistory(sessionKey: string): Promise<PauseHistory> {
-  const filter = worktreeFilter(sessionKey);
-  if (!filter) return { pausedAt: [], holdUntil: null };
-  const doc = await AppWorktree.findOne(filter, {
-    idlePausedAt: 1,
-    idlePauseHoldUntil: 1,
-    idlePauseHoldSetAt: 1,
-  }).lean();
-  return {
-    pausedAt: doc?.idlePausedAt ?? [],
-    holdUntil: doc?.idlePauseHoldUntil ?? null,
-    holdSetAt: doc?.idlePauseHoldSetAt ?? null,
-  };
+  const parts = parseSessionKey(sessionKey);
+  if (!parts) return { pausedAt: [], holdUntil: null };
+  return appsMetadataRepo.getWorktreePauseHistory(
+    parts.workspaceId,
+    parts.userId,
+  );
 }
 
 async function recordPause(sessionKey: string, at: Date): Promise<void> {
-  const filter = worktreeFilter(sessionKey);
-  if (!filter) return;
-  await AppWorktree.updateOne(
-    filter,
-    { $push: { idlePausedAt: { $each: [at], $slice: -5 } } },
-    { timestamps: false },
+  const parts = parseSessionKey(sessionKey);
+  if (!parts) return;
+  await appsMetadataRepo.recordWorktreePause(
+    parts.workspaceId,
+    parts.userId,
+    at,
   );
 }
 
 async function holdPausing(sessionKey: string, until: Date): Promise<void> {
-  const filter = worktreeFilter(sessionKey);
-  if (!filter) return;
-  await AppWorktree.updateOne(
-    filter,
-    { $set: { idlePauseHoldUntil: until, idlePauseHoldSetAt: new Date() } },
-    { timestamps: false },
+  const parts = parseSessionKey(sessionKey);
+  if (!parts) return;
+  await appsMetadataRepo.holdWorktreePausing(
+    parts.workspaceId,
+    parts.userId,
+    until,
+    new Date(),
   );
 }
 

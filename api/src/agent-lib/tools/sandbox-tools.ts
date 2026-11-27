@@ -32,7 +32,6 @@
  */
 import { createHmac, randomBytes } from "node:crypto";
 import { tool, type ToolSet } from "ai";
-import { Types } from "mongoose";
 import { z } from "zod";
 import { hasMinimumWorkspaceRole } from "@mako/agent-tools";
 
@@ -61,8 +60,11 @@ import {
   type ExecOutcome,
   type WorktreeHandle,
 } from "../../apps/worktree.service";
-import { AppProject } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import {
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../../repositories/apps-metadata";
 import { workspaceService } from "../../services/workspace.service";
 import {
   BASH_STDERR_HEAD_CHARS,
@@ -322,13 +324,15 @@ async function loadSandboxView(
     const [snapshot, docs, directory, visibleArchived, allArchived] =
       await Promise.all([
         loadAppsIndex(workspaceId),
-        AppProject.find({ workspaceId: new Types.ObjectId(workspaceId) }),
+        appsMetadataRepo.listProjectsByWorkspace(workspaceId),
         loadOwnerDirectory(workspaceId, { forUserId: userId }),
         listArchivedApps(workspaceId, userId, role),
         // No user: every archived app, to count the hidden ones.
         listArchivedApps(workspaceId, undefined, role),
       ]);
-    const stateById = new Map(docs.map(doc => [doc._id.toString(), doc]));
+    const stateById = new Map(
+      docs.map(doc => [doc.id, toAppProjectCompat(doc)]),
+    );
     const hiddenAppRoots: string[] = [];
     const visibleAppRoots: string[] = [];
     for (const app of snapshot.apps) {
@@ -699,7 +703,12 @@ export function createSandboxTools({
                 );
               }
               if (thrown !== undefined) throw thrown;
-              return { result: ran!, settled: settledNow };
+              if (!ran) {
+                throw new Error(
+                  "sandbox_bash command did not produce a result",
+                );
+              }
+              return { result: ran, settled: settledNow };
             });
           } catch (error) {
             if (error instanceof BoxPushLockTimeoutError) {

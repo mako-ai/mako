@@ -1,9 +1,12 @@
 /**
  * Worktree status and history, and catching a running box up with main.
  */
-import { Types } from "mongoose";
-import { AppWorktree, type IAppProject } from "../../database/workspace-schema";
+import { type IAppProject } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import {
+  appsMetadataRepo,
+  toAppWorktreeCompat,
+} from "../../repositories/apps-metadata";
 import {
   boxHasRepo,
   boxHasValidCheckout,
@@ -87,10 +90,7 @@ export async function afterTerminalSession(
   userId: string,
 ): Promise<void> {
   try {
-    const doc = await AppWorktree.findOne({
-      workspaceId: new Types.ObjectId(workspaceId),
-      userId,
-    });
+    const doc = await appsMetadataRepo.findWorktree(workspaceId, userId);
     if (!doc) return;
     const ctx: SandboxExecContext = {
       sessionKey: sessionKeyFor(doc.workspaceId, doc.userId),
@@ -107,8 +107,11 @@ export async function afterTerminalSession(
         from: doc.branch,
         to: branch,
       });
-      doc.branch = branch;
-      await doc.save();
+      await appsMetadataRepo.updateWorktreeBranch(
+        doc.workspaceId,
+        doc.userId,
+        branch,
+      );
     }
     // Commits typed in the shell but never pushed: push them. The push runs
     // through the git endpoint, whose reaction handles mirror + refresh.
@@ -164,11 +167,18 @@ export async function worktreeStatus(
   } = {},
 ): Promise<WorktreeStatus | null> {
   const repoDir = await repoForWorkspace(scope.workspaceId);
-  const doc = await AppWorktree.findOne({
-    workspaceId: new Types.ObjectId(scope.workspaceId),
+  const worktreeRec = await appsMetadataRepo.findWorktree(
+    scope.workspaceId,
     userId,
+  );
+  if (!worktreeRec) return null;
+  const doc = toAppWorktreeCompat(worktreeRec, async d => {
+    await appsMetadataRepo.updateWorktreeBranch(
+      d.workspaceId.toString(),
+      d.userId,
+      d.branch,
+    );
   });
-  if (!doc) return null;
 
   const handle: WorktreeHandle = {
     doc,
@@ -201,7 +211,11 @@ export async function worktreeStatus(
         to: snapshot.branch,
       });
       doc.branch = snapshot.branch;
-      await doc.save();
+      await appsMetadataRepo.updateWorktreeBranch(
+        doc.workspaceId.toString(),
+        doc.userId,
+        snapshot.branch,
+      );
     }
     const branchHead = await resolveCommit(
       repoDir,
