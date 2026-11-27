@@ -1,6 +1,7 @@
 import { Types } from "mongoose";
-import { Flow, ScheduledQueryRun } from "../database/workspace-schema";
+import { Flow } from "../database/workspace-schema";
 import { inngest } from "../inngest/client";
+import { consolesChartsRepo } from "../repositories/consoles-charts";
 import type { FlowRunTerminalEventData } from "./flow-run-notification.types";
 
 export async function emitScheduledQueryTerminalEvent(params: {
@@ -11,7 +12,10 @@ export async function emitScheduledQueryTerminalEvent(params: {
   /** Sent instead of the run's own error (a schedule pause notice). */
   errorMessage?: string;
 }): Promise<void> {
-  const run = await ScheduledQueryRun.findById(params.runId).lean();
+  const run = await consolesChartsRepo.findScheduledQueryRunById(
+    params.runId,
+    params.workspaceId,
+  );
   if (
     !run?.completedAt ||
     run.status === "queued" ||

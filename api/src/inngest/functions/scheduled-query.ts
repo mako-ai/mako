@@ -1,15 +1,14 @@
 import { Types } from "mongoose";
 import {
-  claimDueScheduledRuns,
+  claimDueScheduledRunsFromStore,
   scheduledRunEventId,
 } from "../../services/scheduled-run-claim";
 import { inngest } from "../client";
+import type { IDatabaseConnection } from "../../database/workspace-schema";
 import {
-  type IDatabaseConnection,
-  type ISavedConsole,
-  SavedConsole,
-  ScheduledQueryRun,
-} from "../../database/workspace-schema";
+  consolesChartsRepo,
+  type SavedConsoleRecord,
+} from "../../repositories/consoles-charts";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
 import { loggers } from "../../logging";
@@ -33,19 +32,20 @@ const logger = loggers.inngest();
 export async function loadScheduledConsole(
   workspaceId: string,
   consoleId: string,
-): Promise<{ savedConsole: ISavedConsole; connection: IDatabaseConnection }> {
-  const savedConsoleDoc = await SavedConsole.findOne({
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+): Promise<{
+  savedConsole: SavedConsoleRecord;
+  connection: IDatabaseConnection;
+}> {
+  const savedConsoleDoc = await consolesChartsRepo.findConsoleById(
+    workspaceId,
+    consoleId,
+  );
 
   if (!savedConsoleDoc) {
     throw new Error("Scheduled console not found");
   }
 
-  const savedConsole = savedConsoleDoc.toObject({
-    getters: true,
-  }) as ISavedConsole;
+  const savedConsole: SavedConsoleRecord = { ...savedConsoleDoc };
   // Git is the definition: run the file at main, not the row's last
   // pushed copy.
   const liveCode = await liveConsoleCode(workspaceId, consoleId);
@@ -56,7 +56,7 @@ export async function loadScheduledConsole(
   }
 
   const connectionRecord = await findWorkspaceConnection(
-    savedConsoleDoc.workspaceId,
+    savedConsole.workspaceId,
     savedConsole.connectionId,
   );
   if (!connectionRecord) {
@@ -93,13 +93,14 @@ export const scheduledQuerySchedulerFunction = inngest.createFunction(
     // per-run step limit), with `now` read inside it so a replay sees the
     // memoized value.
     const claimed = await step.run("claim-due-scheduled-queries", () =>
-      claimDueScheduledRuns(SavedConsole, new Date(), {
-        isSaved: true,
-        $or: [
-          { is_deleted: { $ne: true } },
-          { is_deleted: { $exists: false } },
-        ],
-      }),
+      claimDueScheduledRunsFromStore(
+        {
+          findDue: now => consolesChartsRepo.findDueScheduledConsoles(now),
+          claim: (doc, nextAt) =>
+            consolesChartsRepo.claimScheduledConsole(doc, nextAt),
+        },
+        new Date(),
+      ),
     );
 
     if (claimed.length > 0) {
@@ -145,9 +146,9 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
         : undefined;
 
     const run = await step.run("create-run", async () => {
-      const created = await ScheduledQueryRun.create({
-        workspaceId: new Types.ObjectId(workspaceId),
-        consoleId: new Types.ObjectId(consoleId),
+      const created = await consolesChartsRepo.createScheduledQueryRun({
+        workspaceId,
+        consoleId,
         triggeredAt: new Date(),
         status: "queued",
         triggerType,
@@ -155,23 +156,23 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
         inngestRunId: event.id,
       });
 
-      return { id: created._id.toString() };
+      return { id: created.id };
     });
 
     const startedAt = new Date();
     let isFinalized = false;
     await step.run("mark-running", async () => {
-      await ScheduledQueryRun.updateOne(
-        { _id: new Types.ObjectId(run.id) },
-        { $set: { status: "running", startedAt } },
-      );
+      await consolesChartsRepo.updateScheduledQueryRun(workspaceId, run.id, {
+        status: "running",
+        startedAt,
+      });
     });
 
     try {
       const consoleDoc = (await step.run("load-console", () =>
         loadScheduledConsole(workspaceId, consoleId),
       )) as unknown as {
-        savedConsole: ISavedConsole;
+        savedConsole: SavedConsoleRecord;
         connection: IDatabaseConnection;
       };
 
@@ -214,18 +215,13 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
         : result.error || "Unknown error";
 
       const outcome = await step.run("finalize-run", async () => {
-        await ScheduledQueryRun.updateOne(
-          { _id: new Types.ObjectId(run.id) },
-          {
-            $set: {
-              status,
-              completedAt,
-              durationMs,
-              rowCount,
-              error: errorMessage ? { message: errorMessage } : undefined,
-            },
-          },
-        );
+        await consolesChartsRepo.updateScheduledQueryRun(workspaceId, run.id, {
+          status,
+          completedAt,
+          durationMs,
+          rowCount,
+          error: errorMessage ? { message: errorMessage } : null,
+        });
 
         const nextAt =
           consoleDoc.savedConsole.schedule?.cron &&
@@ -242,6 +238,7 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
         // A permanent failure (a write refusal) repeated pauses the
         // schedule and notifies once (schedule-pause.ts).
         return recordScheduledRunOutcome({
+          workspaceId,
           consoleId,
           error: errorMessage,
           now: completedAt,
@@ -268,12 +265,12 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
 
       queryExecutionService.track({
         userId: triggeredBy || consoleDoc.savedConsole.createdBy,
-        workspaceId: consoleDoc.savedConsole.workspaceId,
+        workspaceId: new Types.ObjectId(consoleDoc.savedConsole.workspaceId),
         connectionId: consoleDoc.connection._id,
         databaseName:
           consoleDoc.savedConsole.databaseName ||
           consoleDoc.connection.connection.database,
-        consoleId: consoleDoc.savedConsole._id,
+        consoleId: new Types.ObjectId(consoleDoc.savedConsole.id),
         source: "scheduled_query",
         databaseType: consoleDoc.connection.type,
         queryLanguage: mapConsoleLanguageToQueryLanguage(
@@ -309,17 +306,13 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
         const completedAt = new Date();
         const message =
           error instanceof Error ? error.message : "Scheduled query failed";
-        await ScheduledQueryRun.updateOne(
-          { _id: new Types.ObjectId(run.id) },
-          {
-            $set: {
-              status: "error",
-              completedAt,
-              error: { message },
-            },
-          },
-        );
+        await consolesChartsRepo.updateScheduledQueryRun(workspaceId, run.id, {
+          status: "error",
+          completedAt,
+          error: { message },
+        });
         return recordScheduledRunOutcome({
+          workspaceId,
           consoleId,
           error: message,
           now: completedAt,

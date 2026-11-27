@@ -13,7 +13,7 @@
  */
 import { Types } from "mongoose";
 
-import { ConsoleFolder } from "../database/workspace-schema";
+import { consolesChartsRepo } from "../repositories/consoles-charts";
 
 /** Deeper than any real tree; a longer chain is treated as corrupt. */
 export const MAX_FOLDER_DEPTH = 64;
@@ -59,13 +59,20 @@ export class FolderChainCache {
 
   /** Lookups scoped to `workspaceId`. */
   static forWorkspace(workspaceId: string | Types.ObjectId): FolderChainCache {
-    const ws = new Types.ObjectId(String(workspaceId));
-    return new FolderChainCache(
-      async ids =>
-        (await ConsoleFolder.find({ _id: { $in: ids }, workspaceId: ws })
-          .select("name access isPrivate parentId")
-          .lean()) as unknown as RawFolder[],
-    );
+    const ws = String(workspaceId);
+    return new FolderChainCache(async ids => {
+      const folders = await consolesChartsRepo.findConsoleFoldersByIds(
+        ws,
+        ids.map(id => id.toString()),
+      );
+      return folders.map(f => ({
+        _id: f.id,
+        name: f.name,
+        access: f.access,
+        isPrivate: f.isPrivate,
+        parentId: f.parentId ?? null,
+      }));
+    });
   }
 
   /** From a custom loader (tests). */

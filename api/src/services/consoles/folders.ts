@@ -4,13 +4,12 @@
  * folder when the folder's place in the repo changes (apps.md §16.2).
  */
 import { Types } from "mongoose";
+import type { ConsoleAccessLevel } from "../../database/workspace-schema";
 import {
-  ConsoleFolder,
-  SavedConsole,
-  type ConsoleAccessLevel,
-  type IConsoleFolder,
-  type ISavedConsole,
-} from "../../database/workspace-schema";
+  consolesChartsRepo,
+  type ConsoleFolderRecord,
+  type SavedConsoleRecord,
+} from "../../repositories/consoles-charts";
 import { getLogger } from "../../logging";
 import { FolderChainCache } from "../../utils/folder-chain";
 import { canWriteResource } from "../../utils/resource-acl";
@@ -55,32 +54,28 @@ export async function createConsoleFolder(
   userId: string,
   parentId?: string,
   access: ConsoleAccessLevel = "private",
-): Promise<IConsoleFolder> {
+): Promise<ConsoleFolderRecord> {
   // Inherit access from parent folder if creating a subfolder
   let resolvedAccess = access;
   if (parentId) {
-    const parentFolder = (await ConsoleFolder.findById(parentId)
-      .select("access isPrivate")
-      .lean()) as {
-      access?: ConsoleAccessLevel;
-      isPrivate?: boolean;
-    } | null;
+    const parentFolder = await consolesChartsRepo.findConsoleFolderById(
+      workspaceId,
+      parentId,
+    );
     // Inherit workspace access from parent
     if (parentFolder && legacyAccess(parentFolder) === "workspace") {
       resolvedAccess = "workspace";
     }
   }
 
-  const folder = new ConsoleFolder({
-    workspaceId: new Types.ObjectId(workspaceId),
+  return consolesChartsRepo.createConsoleFolder({
+    workspaceId,
     name: folderName,
-    parentId: parentId ? new Types.ObjectId(parentId) : undefined,
+    parentId: parentId ?? null,
     isPrivate: resolvedAccess === "private",
     ownerId: userId,
     access: resolvedAccess,
   });
-
-  return await folder.save();
 }
 
 /**
@@ -93,14 +88,15 @@ export async function renameConsoleFolder(
   userId?: string,
 ): Promise<boolean> {
   try {
-    const folder = await ConsoleFolder.findOne({
-      _id: new Types.ObjectId(folderId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const folder = await consolesChartsRepo.findConsoleFolderById(
+      workspaceId,
+      folderId,
+    );
     if (!folder) return false;
     const previousName = folder.name;
-    folder.name = newName;
-    await folder.save();
+    await consolesChartsRepo.updateConsoleFolder(workspaceId, folderId, {
+      name: newName,
+    });
     try {
       await reprojectFolderSubtree(
         folderId,
@@ -109,8 +105,9 @@ export async function renameConsoleFolder(
         `rename folder: ${previousName} → ${newName}`,
       );
     } catch (error) {
-      folder.name = previousName;
-      await folder.save();
+      await consolesChartsRepo.updateConsoleFolder(workspaceId, folderId, {
+        name: previousName,
+      });
       throw error;
     }
     return true;
@@ -128,31 +125,25 @@ export async function renameConsoleFolder(
 async function consolesUnderFolder(
   folderId: string,
   workspaceId: string,
-): Promise<ISavedConsole[]> {
-  const wid = new Types.ObjectId(workspaceId);
-  const out: ISavedConsole[] = [];
+): Promise<SavedConsoleRecord[]> {
+  const out: SavedConsoleRecord[] = [];
   const queue = [folderId];
   const seen = new Set<string>();
   for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
     if (seen.has(id)) continue;
     seen.add(id);
-    const fid = new Types.ObjectId(id);
     out.push(
-      ...(await SavedConsole.find({
-        workspaceId: wid,
-        folderId: fid,
+      ...(await consolesChartsRepo.listConsolesByWorkspace(workspaceId, {
+        folderId: id,
         isSaved: true,
-        $or: [
-          { is_deleted: { $ne: true } },
-          { is_deleted: { $exists: false } },
-        ],
+        excludeDeleted: true,
       })),
     );
-    const children = await ConsoleFolder.find({
-      workspaceId: wid,
-      parentId: fid,
-    }).select("_id");
-    queue.push(...children.map(c => c._id.toString()));
+    const children = await consolesChartsRepo.listChildConsoleFolders(
+      workspaceId,
+      id,
+    );
+    queue.push(...children.map(c => c.id));
   }
   return out;
 }
@@ -171,23 +162,23 @@ async function reprojectFolderSubtree(
     actorUserId: userId,
     message,
     rows: rows.map(row => ({
-      id: row._id.toString(),
+      id: row.id,
       row,
       previousPath: row.path,
     })),
   });
   for (const row of rows) {
-    const at = moved.paths.get(row._id.toString());
+    const at = moved.paths.get(row.id);
     if (
       !at ||
       (at.path === row.path && at.sourceBlobSha === row.sourceBlobSha)
     ) {
       continue;
     }
-    await SavedConsole.updateOne(
-      { _id: row._id },
-      { $set: { path: at.path, sourceBlobSha: at.sourceBlobSha } },
-    );
+    await consolesChartsRepo.updateConsole(workspaceId, row.id, {
+      path: at.path,
+      sourceBlobSha: at.sourceBlobSha,
+    });
   }
 }
 
@@ -214,28 +205,20 @@ export async function deleteConsoleFolder(
       });
     }
     // Delete all consoles in the folder
-    await SavedConsole.deleteMany({
-      folderId: new Types.ObjectId(folderId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    await consolesChartsRepo.deleteConsolesInFolder(workspaceId, folderId);
 
     // Delete all child folders recursively
-    const childFolders = await ConsoleFolder.find({
-      parentId: new Types.ObjectId(folderId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const childFolders = await consolesChartsRepo.listChildConsoleFolders(
+      workspaceId,
+      folderId,
+    );
 
     for (const childFolder of childFolders) {
-      await deleteConsoleFolder(childFolder._id.toString(), workspaceId);
+      await deleteConsoleFolder(childFolder.id, workspaceId);
     }
 
     // Delete the folder itself
-    const result = await ConsoleFolder.deleteOne({
-      _id: new Types.ObjectId(folderId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-
-    return result.deletedCount > 0;
+    return await consolesChartsRepo.deleteConsoleFolder(workspaceId, folderId);
   } catch (error) {
     if (error instanceof RepoRequiredError) throw error;
     logger.error("Error deleting folder", { error });
@@ -260,13 +243,12 @@ export async function ensureConsoleFolderPath(
 
   for (const folderName of folderParts) {
     // Check if folder exists at this level
-    let folder: IConsoleFolder | null = await ConsoleFolder.findOne({
-      name: folderName,
-      workspaceId: new Types.ObjectId(workspaceId),
-      parentId: currentParentId
-        ? new Types.ObjectId(currentParentId)
-        : undefined,
-    });
+    let folder: ConsoleFolderRecord | null =
+      await consolesChartsRepo.findConsoleFolderByNameAndParent(
+        workspaceId,
+        folderName,
+        currentParentId ?? null,
+      );
 
     if (!folder) {
       // Create the folder if it doesn't exist
@@ -278,7 +260,7 @@ export async function ensureConsoleFolderPath(
       );
     }
 
-    currentParentId = folder._id.toString();
+    currentParentId = folder.id;
   }
 
   return currentParentId;
@@ -299,19 +281,17 @@ export async function findFolderByPath(
   let currentParentId: string | undefined = undefined;
 
   for (const folderName of folderParts) {
-    const folder: IConsoleFolder | null = await ConsoleFolder.findOne({
-      name: folderName,
-      workspaceId: new Types.ObjectId(workspaceId),
-      parentId: currentParentId
-        ? new Types.ObjectId(currentParentId)
-        : undefined,
-    });
+    const folder = await consolesChartsRepo.findConsoleFolderByNameAndParent(
+      workspaceId,
+      folderName,
+      currentParentId ?? null,
+    );
 
     if (!folder) {
       return undefined;
     }
 
-    currentParentId = folder._id.toString();
+    currentParentId = folder.id;
   }
 
   return currentParentId;
@@ -330,58 +310,43 @@ export async function moveConsoleFolder(
 ): Promise<boolean> {
   if (!Types.ObjectId.isValid(folderId)) return false;
 
-  // Prevent moving folder into itself
+  // Prevent moving folder into itself or a descendant
   if (newParentId === folderId) return false;
-
-  // Prevent circular nesting: walk up from newParentId to ensure folderId is not an ancestor
-  if (newParentId) {
-    let currentId: string | null = newParentId;
-    while (currentId) {
-      if (currentId === folderId) return false;
-      const parent: { parentId?: Types.ObjectId } | null =
-        await ConsoleFolder.findById(currentId).select("parentId").lean();
-      currentId = parent?.parentId?.toString() || null;
-    }
+  if (
+    newParentId &&
+    (await consolesChartsRepo.wouldCreateConsoleFolderCycle(
+      workspaceId,
+      folderId,
+      newParentId,
+    ))
+  ) {
+    return false;
   }
 
-  const updateFields: Record<string, unknown> = {};
-  if (newParentId) {
-    updateFields.parentId = new Types.ObjectId(newParentId);
-  } else {
-    updateFields.parentId = null;
-  }
-
-  if (access) {
-    updateFields.access = access;
-    updateFields.isPrivate = access === "private";
-  }
-
-  const before = await ConsoleFolder.findOne({
-    _id: new Types.ObjectId(folderId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  }).lean();
+  const before = await consolesChartsRepo.findConsoleFolderById(
+    workspaceId,
+    folderId,
+  );
   if (!before) return false;
 
-  const result = await ConsoleFolder.updateOne(
+  const updated = await consolesChartsRepo.updateConsoleFolder(
+    workspaceId,
+    folderId,
     {
-      _id: new Types.ObjectId(folderId),
-      workspaceId: new Types.ObjectId(workspaceId),
+      parentId: newParentId ?? null,
+      ...(access ? { access, isPrivate: access === "private" } : {}),
     },
-    { $set: updateFields },
   );
-  if (result.modifiedCount === 0) return false;
+  if (!updated) return false;
 
   try {
     if (access) {
       // A folder's access moves its consoles between the workspace and
       // the owner's private root (apps.md §16.2).
-      await SavedConsole.updateMany(
-        {
-          workspaceId: new Types.ObjectId(workspaceId),
-          folderId: new Types.ObjectId(folderId),
-        },
-        { $set: { access, isPrivate: access === "private" } },
-      );
+      await consolesChartsRepo.updateConsolesInFolder(workspaceId, folderId, {
+        access,
+        isPrivate: access === "private",
+      });
     }
     await reprojectFolderSubtree(
       folderId,
@@ -390,16 +355,11 @@ export async function moveConsoleFolder(
       `move folder: ${before.name}`,
     );
   } catch (error) {
-    await ConsoleFolder.updateOne(
-      { _id: new Types.ObjectId(folderId) },
-      {
-        $set: {
-          parentId: before.parentId ?? null,
-          access: before.access,
-          isPrivate: before.isPrivate,
-        },
-      },
-    );
+    await consolesChartsRepo.updateConsoleFolder(workspaceId, folderId, {
+      parentId: before.parentId ?? null,
+      access: before.access,
+      isPrivate: before.isPrivate,
+    });
     throw error;
   }
   return true;
@@ -414,10 +374,10 @@ export async function consoleFolderWriteRefusal(
   ctx: { workspaceId: string; userId: string; role: string | undefined },
   folderId: string,
 ): Promise<{ ok: false; status: 403 | 404; error: string } | null> {
-  const folder = await ConsoleFolder.findOne({
-    _id: new Types.ObjectId(folderId),
-    workspaceId: new Types.ObjectId(ctx.workspaceId),
-  }).lean();
+  const folder = await consolesChartsRepo.findConsoleFolderById(
+    ctx.workspaceId,
+    folderId,
+  );
   if (!folder) return { ok: false, status: 404, error: "Folder not found" };
   const access = legacyAccess(folder);
   const allowed = canWriteResource(

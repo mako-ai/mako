@@ -5,9 +5,9 @@
  * readable" (the routes answer 404 either way, never leaking existence).
  */
 import { Types } from "mongoose";
-import { SavedConsole } from "../../database/workspace-schema";
 import { authRepo } from "../../repositories/auth";
 import { connectionsRepo } from "../../repositories/connections";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
 import { FolderChainCache } from "../../utils/folder-chain";
 import { queryExecutionService } from "../query-execution.service";
 import { queryExecutionSourceLabel } from "../query-execution-source";
@@ -147,11 +147,11 @@ export async function syncConsoleRevisions(input: {
 
   if (entries.length === 0) return { changed: [], deleted: [] };
 
-  const docs = await SavedConsole.find({
-    _id: { $in: entries.map(([id]) => new Types.ObjectId(id)) },
-    workspaceId: new Types.ObjectId(input.workspaceId),
-  });
-  const docsById = new Map(docs.map(d => [d._id.toString(), d]));
+  const docs = await consolesChartsRepo.findConsolesByIds(
+    input.workspaceId,
+    entries.map(([id]) => id),
+  );
+  const docsById = new Map(docs.map(d => [d.id, d]));
   // Every folder chain the ACL checks below walk, fetched once per tree
   // level for all docs (not one query per level per console).
   const folders = FolderChainCache.forWorkspace(input.workspaceId);
@@ -322,11 +322,11 @@ export async function consoleExecutions(input: {
   userId: string | undefined;
   limit: number;
 }) {
-  const savedConsole = await SavedConsole.findOne({
-    _id: new Types.ObjectId(input.consoleId),
-    workspaceId: new Types.ObjectId(input.workspaceId),
-    $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
-  });
+  const savedConsole = await consolesChartsRepo.findConsoleById(
+    input.workspaceId,
+    input.consoleId,
+    { excludeDeleted: true },
+  );
   if (!savedConsole) return null;
   if (
     input.userId &&

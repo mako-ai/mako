@@ -3,6 +3,7 @@
  * is dirty (Save enabled, autosave eligibility).
  */
 import type { ISavedConsole } from "../../database/workspace-schema";
+import type { SavedConsoleRecord } from "../../repositories/consoles-charts";
 import { savedConsoleStateFromRepo } from "../../apps/workspace-consoles.service";
 
 // IMPORTANT: this MUST stay byte-for-byte compatible with the client hash so
@@ -40,7 +41,9 @@ export function computeConsoleStateHash(
  * HEAD (git is the history; snapshot rows are no longer written).
  */
 export async function getLatestConsoleSavedStateHash(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
+  row:
+    | Pick<ISavedConsole, "workspaceId" | "path">
+    | Pick<SavedConsoleRecord, "workspaceId" | "path">,
 ): Promise<string | undefined> {
   const saved = await savedConsoleStateFromRepo(row);
   if (!saved) return undefined;

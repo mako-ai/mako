@@ -12,9 +12,9 @@ import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { Types } from "mongoose";
 import {
-  SavedConsole,
-  type ISavedConsole,
-} from "../../database/workspace-schema";
+  consolesChartsRepo,
+  type SavedConsoleRecord,
+} from "../../repositories/consoles-charts";
 import {
   consoleCommitChanges,
   consoleFileVersions,
@@ -101,7 +101,7 @@ async function loadReadableConsole(
   c: Context,
   opts: { write: boolean },
 ): Promise<
-  { doc: ISavedConsole; userId: string; workspaceId: string } | Response
+  { doc: SavedConsoleRecord; userId: string; workspaceId: string } | Response
 > {
   const workspaceId = c.req.param("workspaceId") as string;
   const consoleId = c.req.param("id") as string;
@@ -110,10 +110,7 @@ async function loadReadableConsole(
   if (!Types.ObjectId.isValid(consoleId)) {
     return fail(c, 400, "Invalid console ID");
   }
-  const doc = await SavedConsole.findOne({
-    _id: new Types.ObjectId(consoleId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const doc = await consolesChartsRepo.findConsoleById(workspaceId, consoleId);
   const memberRole = c.get("memberRole") as string | undefined;
   if (!doc || !(await canReadConsoleWithInheritance(doc, user.id))) {
     return fail(c, 404, "Console not found");

@@ -5,13 +5,12 @@
  * are the Mongo working copy. No GitHub binding → empty, never 412.
  */
 import { Types } from "mongoose";
+import type { ConsoleAccessLevel } from "../../database/workspace-schema";
 import {
-  ConsoleFolder,
-  SavedConsole,
-  type ConsoleAccessLevel,
-  type IConsoleFolder,
-  type ISavedConsole,
-} from "../../database/workspace-schema";
+  consolesChartsRepo,
+  type ConsoleFolderRecord,
+  type SavedConsoleRecord,
+} from "../../repositories/consoles-charts";
 import { getLogger } from "../../logging";
 import { sortTreeNodes } from "../../utils/folder-tree";
 import { FolderChainCache } from "../../utils/folder-chain";
@@ -57,34 +56,35 @@ export interface ConsoleFile {
 
 function folderIdForLive(
   live: LiveConsole,
-  folders: IConsoleFolder[],
-): Types.ObjectId | undefined {
+  folders: ConsoleFolderRecord[],
+): string | undefined {
   if (live.row?.folderId) return live.row.folderId;
   const segments = live.location.folderSegments;
   if (segments.length === 0) return undefined;
   let parentId: string | undefined;
-  let found: IConsoleFolder | undefined;
+  let found: ConsoleFolderRecord | undefined;
   for (const name of segments) {
     found = folders.find(folder => {
       const sameName = folder.name === name;
-      const parent = folder.parentId?.toString();
+      const parent = folder.parentId;
       return sameName && (parentId ? parent === parentId : !parent);
     });
     if (!found) return undefined;
-    parentId = found._id.toString();
+    parentId = found.id;
   }
-  return found?._id;
+  return found?.id;
 }
 
 /**
- * Git definition + Mongo overlay, shaped like a SavedConsole so the existing
- * tree/ACL helpers stay unchanged. `code` and front-matter always come from
- * the file; a missing Mongo body does not hide the console.
+ * Git definition + store overlay, shaped like a SavedConsoleRecord so the
+ * existing tree/ACL helpers stay unchanged. `code` and front-matter always
+ * come from the file; a missing overlay row does not hide the console.
  */
 function liveConsoleToRow(
   live: LiveConsole,
-  folderId: Types.ObjectId | undefined,
-): ISavedConsole {
+  folderId: string | undefined,
+  workspaceId: string,
+): SavedConsoleRecord {
   const loc = live.location;
   const access: ConsoleAccessLevel =
     loc.scope === "private" ? "private" : "workspace";
@@ -97,15 +97,19 @@ function liveConsoleToRow(
     ? (live.row?.connectionId ?? undefined)
     : live.parsed.meta.connectionId &&
         Types.ObjectId.isValid(live.parsed.meta.connectionId)
-      ? new Types.ObjectId(live.parsed.meta.connectionId)
+      ? live.parsed.meta.connectionId
       : live.row?.connectionId;
   const authored = live.parsed.meta.description;
   const generated =
     live.row && !descriptionIsAuthored(live.row)
       ? live.row.description
       : undefined;
+  const id = live.id.toString();
+  const now = new Date();
   return {
-    _id: live.id,
+    id,
+    _id: id,
+    workspaceId: live.row?.workspaceId ?? workspaceId,
     name: loc.name,
     code: live.parsed.code,
     language: loc.language,
@@ -119,29 +123,45 @@ function liveConsoleToRow(
     chartSpec: live.chartSpec ?? live.row?.chartSpec,
     resultsViewMode:
       live.parsed.meta.resultsViewMode ?? live.row?.resultsViewMode,
-    mongoOptions: live.parsed.meta.mongoOptions ?? live.row?.mongoOptions,
+    mongoOptions:
+      (live.parsed.meta.mongoOptions as SavedConsoleRecord["mongoOptions"]) ??
+      live.row?.mongoOptions,
     isPrivate: access === "private",
     isSaved: true,
     access,
     owner_id: live.row?.owner_id || ownerId,
     createdBy: live.row?.createdBy || ownerId,
-    sharedWith: live.row?.sharedWith,
-    workspaceRole: live.row?.workspaceRole,
+    sharedWith: live.row?.sharedWith ?? [],
+    workspaceRole: live.row?.workspaceRole ?? "viewer",
+    schedule: live.row?.schedule,
+    scheduledRun: live.row?.scheduledRun,
+    version: live.row?.version ?? 1,
+    draftRevision: live.row?.draftRevision ?? 1,
+    lastDraftOrigin: live.row?.lastDraftOrigin,
+    lastRun: live.row?.lastRun,
     lastExecutedAt: live.row?.lastExecutedAt,
     executionCount: live.row?.executionCount ?? 0,
-    createdAt: live.row?.createdAt,
-    updatedAt: live.row?.updatedAt,
-  } as ISavedConsole;
+    lastExternalUsedAt: live.row?.lastExternalUsedAt,
+    externalUseCount: live.row?.externalUseCount ?? 0,
+    lastExternalSource: live.row?.lastExternalSource,
+    is_deleted: live.row?.is_deleted ?? false,
+    deletedAt: live.row?.deletedAt,
+    createdAt: live.row?.createdAt ?? now,
+    updatedAt: live.row?.updatedAt ?? now,
+  };
 }
 
-function metadataFromRow(savedConsole: ISavedConsole, consolePath: string) {
+function metadataFromRow(
+  savedConsole: SavedConsoleRecord,
+  consolePath: string,
+) {
   return {
     content: savedConsole.code,
     connectionId: savedConsole.connectionId?.toString(),
     databaseName: savedConsole.databaseName,
     databaseId: savedConsole.databaseId,
     language: savedConsole.language,
-    id: savedConsole._id.toString(),
+    id: savedConsole.id,
     name: savedConsole.name,
     path: consolePath,
     isSaved: savedConsole.isSaved,
@@ -154,8 +174,8 @@ function metadataFromRow(savedConsole: ISavedConsole, consolePath: string) {
   };
 }
 /**
- * Saved-console tree from git at main. Mongo is overlay (ACL, lastRun).
- * No GitHub binding → empty list, even if leftover Mongo or local git
+ * Saved-console tree from git at main. Store row is overlay (ACL, lastRun).
+ * No GitHub binding → empty list, even if leftover store or local git
  * exists. Drafts never appear here.
  */
 export async function listConsoles(
@@ -167,13 +187,11 @@ export async function listConsoles(
     if (bound == null) return [];
 
     const [folders, live] = await Promise.all([
-      ConsoleFolder.find({
-        workspaceId: new Types.ObjectId(workspaceId),
-      }).sort({ name: 1 }),
+      consolesChartsRepo.listConsoleFolders(workspaceId, { sortByName: true }),
       loadLiveConsoles(workspaceId),
     ]);
     const consoles = live.map(item =>
-      liveConsoleToRow(item, folderIdForLive(item, folders)),
+      liveConsoleToRow(item, folderIdForLive(item, folders), workspaceId),
     );
 
     const visibleConsoles = userId
@@ -189,28 +207,26 @@ export async function listConsoles(
 }
 
 /**
- * Flat list for API clients: live saved consoles from git, plus Mongo
- * drafts when a repo is bound. Unbound → empty.
+ * Flat list for API clients: live saved consoles from git, plus drafts
+ * when a repo is bound. Unbound → empty.
  */
 export async function listConsolesFlat(
   workspaceId: string,
   userId?: string,
-): Promise<ISavedConsole[]> {
+): Promise<SavedConsoleRecord[]> {
   const bound = await boundRepoDirIfExists(workspaceId);
   if (bound == null) return [];
   const [folders, live, drafts] = await Promise.all([
-    ConsoleFolder.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-    }),
+    consolesChartsRepo.listConsoleFolders(workspaceId),
     loadLiveConsoles(workspaceId),
-    SavedConsole.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-      isSaved: { $ne: true },
-      $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
-    }).sort({ updatedAt: -1 }),
+    consolesChartsRepo.listConsolesByWorkspace(workspaceId, {
+      draftsOnly: true,
+      excludeDeleted: true,
+      sortBy: "updatedAtDesc",
+    }),
   ]);
   const saved = live.map(item =>
-    liveConsoleToRow(item, folderIdForLive(item, folders)),
+    liveConsoleToRow(item, folderIdForLive(item, folders), workspaceId),
   );
   const all = [...saved, ...drafts];
   const visible = userId ? all.filter(doc => canReadConsole(doc, userId)) : all;
@@ -223,8 +239,8 @@ export async function listConsolesFlat(
  * Build a tree from folders and consoles, preserving hierarchy.
  */
 function buildConsoleTree(
-  folders: IConsoleFolder[],
-  consoles: ISavedConsole[],
+  folders: ConsoleFolderRecord[],
+  consoles: SavedConsoleRecord[],
 ): ConsoleFile[] {
   const folderMap = new Map<string, ConsoleFile>();
   const rootItems: ConsoleFile[] = [];
@@ -236,14 +252,14 @@ function buildConsoleTree(
       content: "",
       isDirectory: true,
       children: [],
-      id: folder._id.toString(),
-      folderId: folder._id.toString(),
+      id: folder.id,
+      folderId: folder.id,
       isPrivate: folder.isPrivate,
       owner_id: folder.ownerId,
       access: legacyAccess(folder),
       createdAt: folder.createdAt,
     };
-    folderMap.set(folder._id.toString(), folderItem);
+    folderMap.set(folder.id, folderItem);
     if (!folder.parentId) {
       rootItems.push(folderItem);
     }
@@ -251,8 +267,8 @@ function buildConsoleTree(
 
   for (const folder of folders) {
     if (folder.parentId) {
-      const parent = folderMap.get(folder.parentId.toString());
-      const child = folderMap.get(folder._id.toString());
+      const parent = folderMap.get(folder.parentId);
+      const child = folderMap.get(folder.id);
       if (parent && child && parent.children) {
         parent.children.push(child);
         child.path = `${parent.path}/${child.name}`;
@@ -263,13 +279,13 @@ function buildConsoleTree(
   for (const console of consoles) {
     const consoleItem: ConsoleFile = {
       path: console.folderId
-        ? `${folderPathOf(console.folderId.toString(), folderMap)}/${console.name}`
+        ? `${folderPathOf(console.folderId, folderMap)}/${console.name}`
         : console.name,
       name: console.name,
       content: console.code,
       isDirectory: false,
-      id: console._id.toString(),
-      connectionId: console.connectionId?.toString(),
+      id: console.id,
+      connectionId: console.connectionId,
       databaseName: console.databaseName,
       databaseId: console.databaseId,
       language: console.language,
@@ -282,7 +298,7 @@ function buildConsoleTree(
     };
 
     if (console.folderId) {
-      const folder = folderMap.get(console.folderId.toString());
+      const folder = folderMap.get(console.folderId);
       if (folder && folder.children) {
         folder.children.push(consoleItem);
       } else {
@@ -335,32 +351,30 @@ export async function listConsolesSplit(
     }
 
     const [folders, live] = await Promise.all([
-      ConsoleFolder.find({
-        workspaceId: new Types.ObjectId(workspaceId),
-      }).sort({ name: 1 }),
+      consolesChartsRepo.listConsoleFolders(workspaceId, { sortByName: true }),
       loadLiveConsoles(workspaceId),
     ]);
     const consoles = live.map(item =>
-      liveConsoleToRow(item, folderIdForLive(item, folders)),
+      liveConsoleToRow(item, folderIdForLive(item, folders), workspaceId),
     );
 
-    const folderById = new Map<string, IConsoleFolder>();
+    const folderById = new Map<string, ConsoleFolderRecord>();
     for (const f of folders) {
-      folderById.set(f._id.toString(), f);
+      folderById.set(f.id, f);
     }
 
     // Walk up the folder chain; workspace wins over private.
     const effectiveAccess = (
       ownAccess: ConsoleAccessLevel,
-      folderId?: Types.ObjectId,
+      folderId?: string,
     ): ConsoleAccessLevel => {
       if (ownAccess === "workspace") return "workspace";
-      let currentFolderId = folderId?.toString();
+      let currentFolderId = folderId;
       while (currentFolderId) {
         const folder = folderById.get(currentFolderId);
         if (!folder) break;
         if (legacyAccess(folder) === "workspace") return "workspace";
-        currentFolderId = folder.parentId?.toString();
+        currentFolderId = folder.parentId;
       }
       return "private";
     };
@@ -368,7 +382,7 @@ export async function listConsolesSplit(
     const classify = (
       ownAccess: ConsoleAccessLevel,
       ownerId: string | undefined,
-      folderId?: Types.ObjectId,
+      folderId?: string,
     ): "my" | "workspace" | null => {
       const access = effectiveAccess(ownAccess, folderId);
       if (access === "workspace") return "workspace";
@@ -376,8 +390,8 @@ export async function listConsolesSplit(
       return null;
     };
 
-    const myConsolesRaw: ISavedConsole[] = [];
-    const sharedWithWorkspaceRaw: ISavedConsole[] = [];
+    const myConsolesRaw: SavedConsoleRecord[] = [];
+    const sharedWithWorkspaceRaw: SavedConsoleRecord[] = [];
 
     for (const c of consoles) {
       const ownerId = (c.owner_id || c.createdBy)?.toString();
@@ -392,8 +406,8 @@ export async function listConsolesSplit(
       else if (section === "workspace") sharedWithWorkspaceRaw.push(c);
     }
 
-    const myFolders: IConsoleFolder[] = [];
-    const sharedWithWorkspaceFolders: IConsoleFolder[] = [];
+    const myFolders: ConsoleFolderRecord[] = [];
+    const sharedWithWorkspaceFolders: ConsoleFolderRecord[] = [];
 
     for (const f of folders) {
       const ownerId = f.ownerId?.toString();
@@ -417,7 +431,7 @@ export async function listConsolesSplit(
 }
 
 /**
- * GET a console by id. Drafts are the Mongo working copy; saved consoles
+ * GET a console by id. Drafts are the working copy; saved consoles
  * are live only when the file exists at main.
  */
 export async function getConsoleWithMetadata(
@@ -436,10 +450,10 @@ export async function getConsoleWithMetadata(
   chartSpec?: Record<string, unknown>;
   resultsViewMode?: "table" | "json" | "chart";
   description?: string;
-  mongoOptions?: ISavedConsole["mongoOptions"];
+  mongoOptions?: SavedConsoleRecord["mongoOptions"];
   access?: ConsoleAccessLevel;
   owner_id?: string;
-  _raw?: ISavedConsole;
+  _raw?: SavedConsoleRecord;
 } | null> {
   try {
     if (!Types.ObjectId.isValid(consoleId)) {
@@ -456,7 +470,7 @@ export async function getConsoleWithMetadata(
       let consolePath = savedConsole.name;
       if (savedConsole.folderId) {
         const folderPath = await getFolderPathById(
-          savedConsole.folderId.toString(),
+          savedConsole.folderId,
           workspaceId,
           folderCache,
         );
@@ -475,11 +489,13 @@ export async function getConsoleWithMetadata(
     }
 
     const live = found.live;
-    const folders = await ConsoleFolder.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const folders = await consolesChartsRepo.listConsoleFolders(workspaceId);
     folderCache.seed(folders);
-    const row = liveConsoleToRow(live, folderIdForLive(live, folders));
+    const row = liveConsoleToRow(
+      live,
+      folderIdForLive(live, folders),
+      workspaceId,
+    );
     const displayPath = live.location.folderSegments.length
       ? `${live.location.folderSegments.join("/")}/${live.location.name}`
       : live.location.name;

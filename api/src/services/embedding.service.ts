@@ -2,6 +2,11 @@ import { propagateAttributes } from "@langfuse/tracing";
 import { embed, embedMany } from "ai";
 import { getEmbeddingModel } from "../agent-lib/ai-gateway";
 import { loggers } from "../logging";
+import { migrationRouter } from "../migration/router";
+import {
+  CONSOLES_CHARTS_DOMAIN,
+  consolesChartsRepo,
+} from "../repositories/consoles-charts";
 import { databaseConnectionService } from "./database-connection.service";
 
 const logger = loggers.app();
@@ -64,10 +69,27 @@ export async function embedTexts(
   return embeddings;
 }
 
-let _vectorSearchAvailable: boolean | null = null;
+let _mongoVectorSearchAvailable: boolean | null = null;
+let _pgVectorSearchAvailable: boolean | null = null;
 
-export async function isVectorSearchAvailable(): Promise<boolean> {
-  if (_vectorSearchAvailable !== null) return _vectorSearchAvailable;
+export async function isVectorSearchAvailable(
+  workspaceId?: string,
+): Promise<boolean> {
+  const mode = (
+    await migrationRouter.getState(CONSOLES_CHARTS_DOMAIN, workspaceId)
+  ).mode;
+  if (mode === "dual_write_pg_read" || mode === "pg_only") {
+    if (_pgVectorSearchAvailable !== null) return _pgVectorSearchAvailable;
+    _pgVectorSearchAvailable = await consolesChartsRepo.isPgVectorAvailable();
+    if (!_pgVectorSearchAvailable) {
+      logger.info(
+        "pgvector extension not available — falling back to Postgres full-text search",
+      );
+    }
+    return _pgVectorSearchAvailable;
+  }
+
+  if (_mongoVectorSearchAvailable !== null) return _mongoVectorSearchAvailable;
   try {
     const { db } = await databaseConnectionService.getMainConnection();
     await db
@@ -86,16 +108,17 @@ export async function isVectorSearchAvailable(): Promise<boolean> {
         },
       ])
       .toArray();
-    _vectorSearchAvailable = true;
+    _mongoVectorSearchAvailable = true;
   } catch {
-    _vectorSearchAvailable = false;
+    _mongoVectorSearchAvailable = false;
     logger.info(
       "Atlas Vector Search not available — falling back to text search",
     );
   }
-  return _vectorSearchAvailable;
+  return _mongoVectorSearchAvailable;
 }
 
 export function resetVectorSearchCache(): void {
-  _vectorSearchAvailable = null;
+  _mongoVectorSearchAvailable = null;
+  _pgVectorSearchAvailable = null;
 }

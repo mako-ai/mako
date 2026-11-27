@@ -3,7 +3,7 @@
  * last saved state (the file at HEAD) and what is about to be saved.
  */
 import { Types } from "mongoose";
-import { SavedConsole } from "../../database/workspace-schema";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
 import { getLogger } from "../../logging";
 import { savedConsoleStateFromRepo } from "../../apps/workspace-consoles.service";
 import { generateVersionComment } from "../version-comment.service";
@@ -27,10 +27,10 @@ export async function consoleVersionComment(input: {
   let previousContent = "";
   let versionFound = false;
   if (Types.ObjectId.isValid(consoleId)) {
-    const row = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const row = await consolesChartsRepo.findConsoleById(
+      workspaceId,
+      consoleId,
+    );
     // A stored console the caller cannot read gets no comment (it would
     // summarise its content). A draft has no row yet: empty baseline.
     if (row && !(await canReadConsoleWithInheritance(row, input.user.id))) {

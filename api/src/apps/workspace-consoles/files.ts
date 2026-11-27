@@ -5,11 +5,11 @@
  * plus the folder lookups it needs; no commits.
  */
 import { Types } from "mongoose";
-import {
-  ConsoleFolder,
-  type ConsoleAccessLevel,
-  type ISavedConsole,
+import type {
+  ConsoleAccessLevel,
+  ISavedConsole,
 } from "../../database/workspace-schema";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
 import type { OwnerDirectory } from "../user-handles";
 import { ownerDirectoryFor } from "../user-handles.service";
 import { requireWorkspaceRepo } from "../workspace-repo-required";
@@ -31,9 +31,9 @@ export const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 // ---------------------------------------------------------------------------
 
 export type FolderLean = {
-  _id: Types.ObjectId;
+  _id: Types.ObjectId | string;
   name: string;
-  parentId?: Types.ObjectId | null;
+  parentId?: Types.ObjectId | string | null;
 };
 
 /** The folder chain of a console as path segments, root first. */
@@ -47,12 +47,17 @@ export async function folderSegmentsFor(
   for (let depth = 0; current && depth < 32; depth++) {
     let folder = cache.get(current);
     if (folder === undefined) {
-      folder = await ConsoleFolder.findOne({
-        _id: new Types.ObjectId(current),
-        workspaceId: new Types.ObjectId(workspaceId),
-      })
-        .select("name parentId")
-        .lean<FolderLean | null>();
+      const found = await consolesChartsRepo.findConsoleFolderById(
+        workspaceId,
+        current,
+      );
+      folder = found
+        ? {
+            _id: found.id,
+            name: found.name,
+            parentId: found.parentId ?? null,
+          }
+        : null;
       cache.set(current, folder);
     }
     if (!folder) break;
@@ -72,61 +77,63 @@ export async function ensureFolderChain(
   workspaceId: string,
   scope: { access: ConsoleAccessLevel; ownerId?: string },
 ): Promise<Types.ObjectId | undefined> {
-  const ws = new Types.ObjectId(workspaceId);
-  let parentId: Types.ObjectId | undefined;
+  let parentId: string | null = null;
   for (const name of segments) {
-    const parentFilter = parentId
-      ? { parentId }
-      : { $or: [{ parentId: null }, { parentId: { $exists: false } }] };
-    let folder = await ConsoleFolder.findOne({
-      workspaceId: ws,
+    let folder = await consolesChartsRepo.findConsoleFolderByNameAndParent(
+      workspaceId,
       name,
-      ...parentFilter,
-    })
-      .select("_id")
-      .lean<{ _id: Types.ObjectId } | null>();
+      parentId,
+    );
     if (!folder) {
-      const created = await ConsoleFolder.create({
-        workspaceId: ws,
+      folder = await consolesChartsRepo.createConsoleFolder({
+        workspaceId,
         name,
         parentId,
         isPrivate: scope.access === "private",
         access: scope.access,
         ownerId: scope.ownerId,
       });
-      folder = { _id: created._id };
     }
-    parentId = folder._id;
+    parentId = folder.id;
   }
-  return parentId;
+  return parentId ? new Types.ObjectId(parentId) : undefined;
 }
 
 // ---------------------------------------------------------------------------
 // Row ↔ file
 // ---------------------------------------------------------------------------
 
-export type RowLike = Pick<
-  ISavedConsole,
-  | "name"
-  | "language"
-  | "code"
-  | "connectionId"
-  | "databaseName"
-  | "databaseId"
-  | "description"
-  | "descriptionSource"
-  | "descriptionGeneratedAt"
-  | "schedule"
-  | "resultsViewMode"
-  | "mongoOptions"
-  | "chartSpec"
-  | "access"
-  | "isPrivate"
-  | "owner_id"
-  | "createdBy"
-  | "folderId"
-  | "workspaceId"
->;
+export type RowLike = Omit<
+  Pick<
+    ISavedConsole,
+    | "name"
+    | "language"
+    | "code"
+    | "connectionId"
+    | "databaseName"
+    | "databaseId"
+    | "description"
+    | "descriptionSource"
+    | "descriptionGeneratedAt"
+    | "schedule"
+    | "resultsViewMode"
+    | "mongoOptions"
+    | "chartSpec"
+    | "access"
+    | "isPrivate"
+    | "owner_id"
+    | "createdBy"
+    | "folderId"
+    | "workspaceId"
+  >,
+  "connectionId" | "folderId" | "workspaceId" | "owner_id" | "createdBy"
+> & {
+  connectionId?: Types.ObjectId | string | null;
+  folderId?: Types.ObjectId | string | null;
+  workspaceId: Types.ObjectId | string;
+  owner_id?: string | null;
+  createdBy?: string | null;
+};
 
 export function rowLanguage(row: Pick<RowLike, "language">): ConsoleLanguage {
   return row.language === "javascript" || row.language === "mongodb"
@@ -159,7 +166,7 @@ export function rowScope(
   const access: ConsoleAccessLevel =
     row.access ?? (row.isPrivate ? "private" : "workspace");
   if (access === "workspace") return { scope: "workspace" };
-  const ownerId = row.owner_id || row.createdBy;
+  const ownerId = row.owner_id || row.createdBy || "";
   const ownerHandle = directory.handleOf(ownerId);
   if (!ownerHandle) {
     throw new Error(
@@ -179,7 +186,9 @@ export async function directoryForRow(
   const access = row.access ?? (row.isPrivate ? "private" : "workspace");
   return ownerDirectoryFor(
     row.workspaceId.toString(),
-    access === "private" ? row.owner_id || row.createdBy : undefined,
+    access === "private"
+      ? row.owner_id || row.createdBy || undefined
+      : undefined,
   );
 }
 

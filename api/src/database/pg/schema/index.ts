@@ -8,3 +8,4 @@ export * from "./control-plane";
 export * from "./auth";
 export * from "./workspaces";
 export * from "./connections";
+export * from "./consoles-charts";

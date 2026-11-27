@@ -22,14 +22,11 @@ import {
   pathParam,
 } from "../openapi/core";
 import {
-  NotebookFolder,
-  NotebookIndex,
-  type INotebookIndex,
-} from "../database/workspace-schema";
-import {
-  createModelFolderBackend,
-  registerFolderRoutes,
-} from "./lib/folder-routes";
+  consolesChartsRepo,
+  type NotebookIndexRecord,
+} from "../repositories/consoles-charts";
+import { canWriteResource } from "../utils/resource-acl";
+import { registerFolderRoutes, type FolderBackend } from "./lib/folder-routes";
 import {} from "./lib/version-routes";
 import { getNotebookStore } from "../notebooks/store";
 import { NotebookVersionConflictError } from "../notebooks/store/types";
@@ -315,7 +312,7 @@ async function loadReadableNotebook(
   c: AuthenticatedContext,
   mode: "read" | "write",
 ): Promise<
-  | { index: INotebookIndex; workspaceId: string; userId: string }
+  | { index: NotebookIndexRecord; workspaceId: string; userId: string }
   | { errorResponse: Response }
 > {
   const ws = workspaceId(c);
@@ -333,16 +330,7 @@ async function loadReadableNotebook(
       errorResponse: fail(c, access.status as 403 | 404, "Notebook not found"),
     };
   }
-  const index = await NotebookIndex.findOne({
-    workspaceId: new Types.ObjectId(ws),
-    notebookId: id,
-  });
-  if (!index) {
-    return {
-      errorResponse: fail(c, 404, "Notebook not found"),
-    };
-  }
-  return { index, workspaceId: ws, userId };
+  return { index: access.index, workspaceId: ws, userId };
 }
 
 notebookRoutes.openapi(
@@ -656,20 +644,15 @@ notebookRoutes.openapi(
       return fail(c, access.status, "Notebook not found");
     }
 
-    const doomedIndex = await NotebookIndex.findOne({
-      workspaceId: new Types.ObjectId(ws),
-      notebookId: id,
-    }).select("path name");
+    const doomedIndex = access.index;
     const ok = await getNotebookStore().remove(ws, id);
     if (!ok) {
       return fail(c, 404, "Notebook not found");
     }
     await deleteNotebookIndex(ws, id);
-    if (doomedIndex) {
-      await removeNotebookFile(ws, doomedIndex, editorUserId(c)).catch(
-        () => undefined,
-      );
-    }
+    await removeNotebookFile(ws, doomedIndex, editorUserId(c)).catch(
+      () => undefined,
+    );
     publishTreeUpdated(ws);
     return c.json({ success: true });
   },
@@ -677,9 +660,120 @@ notebookRoutes.openapi(
 
 // ── Folder + move endpoints (shared registrar) ──
 
-const notebookFolderBackend = createModelFolderBackend({
-  folderModel: NotebookFolder,
-  itemModel: NotebookIndex,
+const notebookFolderBackend: FolderBackend = {
+  createFolder: async (ctx, { name, parentId, access }) => {
+    const folder = await consolesChartsRepo.createNotebookFolder({
+      workspaceId: ctx.workspaceId,
+      name,
+      parentId: parentId ?? null,
+      ownerId: ctx.userId,
+      access: access ?? "private",
+    });
+    return {
+      ok: true,
+      data: {
+        id: folder.id,
+        name: folder.name,
+        parentId: folder.parentId ?? null,
+        access: folder.access,
+        ownerId: folder.ownerId,
+      },
+    };
+  },
+
+  renameFolder: async (ctx, { folderId, name }) => {
+    const folder = await consolesChartsRepo.findNotebookFolderById(
+      ctx.workspaceId,
+      folderId,
+    );
+    if (!folder) {
+      return { ok: false, status: 404, error: "Folder not found" };
+    }
+    if (
+      !canWriteResource(
+        { owner_id: folder.ownerId, access: folder.access || "private" },
+        ctx.userId,
+        ctx.role,
+        { effectiveAccess: folder.access || "private" },
+      )
+    ) {
+      return { ok: false, status: 403, error: "Access denied" };
+    }
+    const updated = await consolesChartsRepo.updateNotebookFolder(
+      ctx.workspaceId,
+      folderId,
+      { name },
+    );
+    return {
+      ok: true,
+      data: { id: folder.id, name: updated?.name ?? name },
+    };
+  },
+
+  deleteFolder: async (ctx, { folderId }) => {
+    const folder = await consolesChartsRepo.findNotebookFolderById(
+      ctx.workspaceId,
+      folderId,
+    );
+    if (!folder) {
+      return { ok: false, status: 404, error: "Folder not found" };
+    }
+    if (
+      !canWriteResource(
+        { owner_id: folder.ownerId, access: folder.access || "private" },
+        ctx.userId,
+        ctx.role,
+        { effectiveAccess: folder.access || "private" },
+      )
+    ) {
+      return { ok: false, status: 403, error: "Access denied" };
+    }
+    await consolesChartsRepo.deleteNotebookFolderSubtree(
+      ctx.workspaceId,
+      folderId,
+    );
+    return { ok: true };
+  },
+
+  moveFolder: async (ctx, { folderId, parentId, access }) => {
+    const folder = await consolesChartsRepo.findNotebookFolderById(
+      ctx.workspaceId,
+      folderId,
+    );
+    if (!folder) {
+      return { ok: false, status: 404, error: "Folder not found" };
+    }
+    if (
+      !canWriteResource(
+        { owner_id: folder.ownerId, access: folder.access || "private" },
+        ctx.userId,
+        ctx.role,
+        { effectiveAccess: folder.access || "private" },
+      )
+    ) {
+      return { ok: false, status: 403, error: "Access denied" };
+    }
+    if (
+      parentId &&
+      (await consolesChartsRepo.wouldCreateNotebookFolderCycle(
+        ctx.workspaceId,
+        folderId,
+        parentId,
+      ))
+    ) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Cannot move a folder into itself",
+      };
+    }
+    await consolesChartsRepo.updateNotebookFolder(ctx.workspaceId, folderId, {
+      ...(parentId !== undefined ? { parentId: parentId ?? null } : {}),
+      ...(access ? { access } : {}),
+    });
+    return { ok: true };
+  },
+
   // Moving a notebook (and optionally changing its access) goes through the
   // notebook index, which is the ACL + tree source of truth.
   moveItem: async (ctx, { itemId, folderId, access }) => {
@@ -694,10 +788,10 @@ const notebookFolderBackend = createModelFolderBackend({
       return { ok: false, status: access_.status, error: "Notebook not found" };
     }
     if (folderId) {
-      const folder = await NotebookFolder.findOne({
-        _id: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(ctx.workspaceId),
-      });
+      const folder = await consolesChartsRepo.findNotebookFolderById(
+        ctx.workspaceId,
+        folderId,
+      );
       if (!folder) {
         return { ok: false, status: 404, error: "Folder not found" };
       }
@@ -711,7 +805,7 @@ const notebookFolderBackend = createModelFolderBackend({
     });
     return { ok: true };
   },
-});
+};
 
 registerFolderRoutes(notebookRoutes, {
   tag: "Notebooks",

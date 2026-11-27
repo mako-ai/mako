@@ -1,7 +1,7 @@
 import { Types } from "mongoose";
 import { tool } from "ai";
 import { z } from "zod";
-import { SavedConsole } from "../../database/workspace-schema";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
 import {
   getNextScheduledConsoleRunAt,
   resumedScheduledRun,
@@ -25,7 +25,6 @@ const scheduleQueryInputSchema = z.object({
 
 export function createScheduleQueryTool(options: ScheduleQueryToolOptions) {
   const { workspaceId, canManageScheduledQueries } = options;
-  const wsOid = new Types.ObjectId(workspaceId);
 
   return {
     schedule_query: tool({
@@ -51,14 +50,11 @@ export function createScheduleQueryTool(options: ScheduleQueryToolOptions) {
             };
           }
 
-          const savedConsole = await SavedConsole.findOne({
-            _id: new Types.ObjectId(consoleId),
-            workspaceId: wsOid,
-            $or: [
-              { is_deleted: { $ne: true } },
-              { is_deleted: { $exists: false } },
-            ],
-          });
+          const savedConsole = await consolesChartsRepo.findConsoleById(
+            workspaceId,
+            consoleId,
+            { excludeDeleted: true },
+          );
 
           if (!savedConsole) {
             return {
@@ -81,22 +77,24 @@ export function createScheduleQueryTool(options: ScheduleQueryToolOptions) {
           });
           const nextAt = getNextScheduledConsoleRunAt(schedule);
 
-          savedConsole.schedule = schedule;
           // Setting the schedule resumes one Mako paused.
-          savedConsole.scheduledRun = resumedScheduledRun(
+          const scheduledRun = resumedScheduledRun(
             savedConsole.scheduledRun,
             nextAt,
           );
-          savedConsole.isSaved = true;
-          await savedConsole.save();
+          await consolesChartsRepo.updateConsole(workspaceId, savedConsole.id, {
+            schedule,
+            scheduledRun,
+            isSaved: true,
+          });
 
           return {
             success: true,
-            consoleId: savedConsole._id.toString(),
+            consoleId: savedConsole.id,
             name: savedConsole.name,
-            schedule: savedConsole.schedule,
-            nextAt: savedConsole.scheduledRun?.nextAt?.toISOString?.() ?? null,
-            scheduledRun: savedConsole.scheduledRun,
+            schedule,
+            nextAt: scheduledRun.nextAt?.toISOString?.() ?? null,
+            scheduledRun,
           };
         } catch (error) {
           return {

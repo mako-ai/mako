@@ -5,6 +5,7 @@
  */
 import { Types } from "mongoose";
 import type { ISavedConsole } from "../../database/workspace-schema";
+import type { SavedConsoleRecord } from "../../repositories/consoles-charts";
 import { loggers } from "../../logging";
 import {
   freshenBeforeMainWrite,
@@ -192,7 +193,7 @@ export interface Projection {
  */
 export async function projectSavedConsole(input: {
   workspaceId: string;
-  current: ISavedConsole | null;
+  current: ISavedConsole | SavedConsoleRecord | null;
   set: Record<string, unknown>;
   onInsert?: Record<string, unknown>;
   actorUserId: string;
@@ -205,7 +206,10 @@ export async function projectSavedConsole(input: {
   previousPath?: string | null;
 }): Promise<Projection> {
   const base: Record<string, unknown> = input.current
-    ? (input.current.toObject() as Record<string, unknown>)
+    ? typeof (input.current as { toObject?: () => unknown }).toObject ===
+      "function"
+      ? ((input.current as ISavedConsole).toObject() as Record<string, unknown>)
+      : ({ ...input.current } as Record<string, unknown>)
     : {
         workspaceId: new Types.ObjectId(input.workspaceId),
         language: "sql",

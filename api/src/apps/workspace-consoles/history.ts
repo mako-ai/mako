@@ -5,6 +5,10 @@
  */
 import { Types } from "mongoose";
 import type { ISavedConsole } from "../../database/workspace-schema";
+import {
+  consolesChartsRepo,
+  type SavedConsoleRecord,
+} from "../../repositories/consoles-charts";
 import { workspaceOwnsConnection } from "../../services/consoles/connection-scope";
 import { validateScheduledConsoleSchedule } from "../../services/scheduled-query-schedule.service";
 import { RepoRequiredError } from "../config";
@@ -36,10 +40,13 @@ import {
 import { descriptionIsAuthored, readAt, rowLanguage } from "./files";
 import { commitConsoleState } from "./write-through";
 
+type ConsoleScopeRow = {
+  workspaceId: Types.ObjectId | string;
+  path?: string;
+};
+
 /** The console's file and chart sidecar, as one history scope. */
-function consoleScope(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
-): EntityGitScope | null {
+function consoleScope(row: ConsoleScopeRow): EntityGitScope | null {
   if (!row.path) return null;
   return fileScope(
     row.workspaceId.toString(),
@@ -50,7 +57,7 @@ function consoleScope(
 
 /** Commits that touched a console's file (renames included via its row path). */
 export async function consoleHistory(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
+  row: ConsoleScopeRow,
   limit = 50,
 ): Promise<CommitInfo[]> {
   const scope = consoleScope(row);
@@ -59,7 +66,7 @@ export async function consoleHistory(
 
 /** What one commit did to this console (its file and chart sidecar). */
 export async function consoleCommitChanges(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
+  row: ConsoleScopeRow,
   sha: string,
 ): Promise<CommitChanges> {
   const scope = consoleScope(row) ?? {
@@ -75,7 +82,7 @@ export async function consoleCommitChanges(
  * Throws {@link NotEntityPathError} for any other path.
  */
 export async function consoleFileVersions(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
+  row: ConsoleScopeRow,
   sha: string,
   relPath: string,
 ): Promise<FileVersions> {
@@ -91,12 +98,13 @@ export async function consoleFileVersions(
  * that commit when it has since moved.
  */
 export async function restoreConsoleTo(
-  row: ISavedConsole,
+  row: ISavedConsole | SavedConsoleRecord,
   sha: string,
   actorUserId: string,
 ): Promise<{ commitOid: string; unchanged: boolean }> {
   if (!row.path) throw new Error("This console has no file in the repo yet");
-  const repoDir = await boundRepoDirIfExists(row.workspaceId.toString());
+  const wsId = row.workspaceId.toString();
+  const repoDir = await boundRepoDirIfExists(wsId);
   if (repoDir == null) throw new RepoRequiredError();
   const oid = await resolveCommit(repoDir, sha);
   if (!oid) throw new Error(`No such commit: ${sha}`);
@@ -132,54 +140,89 @@ export async function restoreConsoleTo(
   const [info] = await repoLog(repoDir, oid, 1);
   const subject = info?.subject ? ` "${info.subject}"` : "";
 
-  row.code = parsed.code;
-  // A version can name any ObjectId (a pushed file): only a connection of
-  // this workspace comes back with it.
-  row.connectionId =
+  const nextConnectionId =
     parsed.meta.connectionId &&
     Types.ObjectId.isValid(parsed.meta.connectionId) &&
-    (await workspaceOwnsConnection(row.workspaceId, parsed.meta.connectionId))
-      ? new Types.ObjectId(parsed.meta.connectionId)
+    (await workspaceOwnsConnection(wsId, parsed.meta.connectionId))
+      ? parsed.meta.connectionId
       : undefined;
-  row.databaseName = parsed.meta.databaseName;
-  // Legacy files default database_id to the connection id: a dropped
-  // connection takes that copy with it.
-  row.databaseId =
-    !row.connectionId && parsed.meta.databaseId === parsed.meta.connectionId
+  const nextDatabaseId =
+    !nextConnectionId && parsed.meta.databaseId === parsed.meta.connectionId
       ? undefined
       : parsed.meta.databaseId;
-  row.resultsViewMode = parsed.meta.resultsViewMode;
-  row.mongoOptions = parsed.meta.mongoOptions as ISavedConsole["mongoOptions"];
-  row.chartSpec =
+  const nextChartSpec =
     sidecar && !sidecar.isBinary ? parseChartSpec(sidecar.contents) : undefined;
+  let nextDescription = row.description;
+  let nextDescriptionSource = row.descriptionSource;
   if (parsed.meta.description) {
-    row.description = parsed.meta.description;
-    row.descriptionSource = "authored";
+    nextDescription = parsed.meta.description;
+    nextDescriptionSource = "authored";
   } else if (descriptionIsAuthored(row)) {
-    row.description = "";
-    row.descriptionSource = "generated";
+    nextDescription = "";
+    nextDescriptionSource = "generated";
   }
+  let nextSchedule: { cron: string; timezone: string } | undefined;
   if (parsed.meta.schedule) {
     try {
-      row.schedule = validateScheduledConsoleSchedule(parsed.meta.schedule);
+      nextSchedule = validateScheduledConsoleSchedule(parsed.meta.schedule);
     } catch {
-      row.schedule = undefined;
+      nextSchedule = undefined;
     }
-  } else {
-    row.schedule = undefined;
   }
+
+  const baseRow: Record<string, unknown> =
+    typeof (row as { toObject?: () => unknown }).toObject === "function"
+      ? ((row as ISavedConsole).toObject() as Record<string, unknown>)
+      : ({ ...row } as Record<string, unknown>);
+  const nextRow = {
+    ...baseRow,
+    workspaceId: wsId,
+    code: parsed.code,
+    connectionId: nextConnectionId,
+    databaseName: parsed.meta.databaseName,
+    databaseId: nextDatabaseId,
+    resultsViewMode: parsed.meta.resultsViewMode,
+    mongoOptions: parsed.meta.mongoOptions as ISavedConsole["mongoOptions"],
+    chartSpec: nextChartSpec,
+    description: nextDescription,
+    descriptionSource: nextDescriptionSource,
+    schedule: nextSchedule,
+  } as unknown as SavedConsoleRecord;
   const committed = await commitConsoleState({
-    row,
+    row: nextRow,
     previousPath: row.path,
     actorUserId,
     message: `Restore${subject} (${oid.slice(0, 7)})`,
   });
+  const nextVersion = (row.version ?? 1) + 1;
+  const nextDraftRevision = (row.draftRevision ?? 1) + 1;
+
+  await consolesChartsRepo.updateConsole(wsId, row._id.toString(), {
+    code: parsed.code,
+    connectionId: nextConnectionId ?? null,
+    databaseName: parsed.meta.databaseName ?? null,
+    databaseId: nextDatabaseId ?? null,
+    resultsViewMode: parsed.meta.resultsViewMode ?? null,
+    mongoOptions:
+      (parsed.meta.mongoOptions as ISavedConsole["mongoOptions"]) ?? null,
+    chartSpec: nextChartSpec ?? null,
+    description: nextDescription ?? null,
+    descriptionSource: nextDescriptionSource ?? null,
+    schedule: nextSchedule ?? null,
+    path: committed.path,
+    sourceBlobSha: committed.sourceBlobSha,
+    version: nextVersion,
+    draftRevision: nextDraftRevision,
+    lastDraftOrigin: "user",
+  });
+
+  row.code = parsed.code;
   row.path = committed.path;
   row.sourceBlobSha = committed.sourceBlobSha;
-  row.version = (row.version ?? 1) + 1;
-  row.draftRevision = (row.draftRevision ?? 1) + 1;
+  row.version = nextVersion;
+  row.draftRevision = nextDraftRevision;
   row.lastDraftOrigin = "user";
-  await row.save();
+
   return { commitOid: committed.commitOid, unchanged: committed.unchanged };
 }
 
@@ -187,9 +230,7 @@ export async function restoreConsoleTo(
  * The last explicitly saved state of a console — its file at HEAD. Git is
  * the history now; snapshot rows are no longer written (§16.6).
  */
-export async function savedConsoleStateFromRepo(
-  row: Pick<ISavedConsole, "workspaceId" | "path">,
-): Promise<{
+export async function savedConsoleStateFromRepo(row: ConsoleScopeRow): Promise<{
   code: string;
   connectionId?: string;
   databaseId?: string;

@@ -121,6 +121,45 @@ export async function claimDueScheduledRuns(
   return claimed;
 }
 
+export interface ScheduledRunClaimStore {
+  findDue(now: Date): Promise<DueScheduledRunDoc[]>;
+  claim(
+    doc: DueScheduledRunDoc,
+    nextAt: Date,
+  ): Promise<{ modifiedCount: number }>;
+}
+
+/**
+ * Store-agnostic equivalent of `claimDueScheduledRuns` for repository-backed
+ * domains (e.g. `consolesChartsRepo`), while Mongoose-backed callers (`DbtJob`)
+ * continue using `claimDueScheduledRuns(model, now)`.
+ */
+export async function claimDueScheduledRunsFromStore(
+  store: ScheduledRunClaimStore,
+  now: Date,
+): Promise<ClaimedScheduledRun[]> {
+  const due = await store.findDue(now);
+  const claimed: ClaimedScheduledRun[] = [];
+  for (const doc of due) {
+    if (!doc.schedule?.cron || !doc.schedule?.timezone) continue;
+    const nextAt = getNextScheduledConsoleRunAt(
+      {
+        cron: doc.schedule.cron,
+        timezone: doc.schedule.timezone,
+      },
+      now,
+    );
+    const result = await store.claim(doc, nextAt);
+    if (result.modifiedCount === 0) continue;
+    claimed.push({
+      id: doc.id,
+      workspaceId: doc.workspaceId,
+      occurrence: doc.nextAt ? new Date(doc.nextAt).toISOString() : "none",
+    });
+  }
+  return claimed;
+}
+
 /**
  * Deterministic Inngest event id for one claimed occurrence. Inngest drops
  * a second event with the same id (24h window), so a replayed dispatch

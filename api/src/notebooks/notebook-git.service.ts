@@ -16,11 +16,11 @@
  * history, and the next checkpoint records the resolution. A hot-document
  * system must never clobber the screen someone is typing into.
  */
-import { Types } from "mongoose";
+import type { INotebookIndex } from "../database/workspace-schema";
 import {
-  NotebookIndex,
-  type INotebookIndex,
-} from "../database/workspace-schema";
+  consolesChartsRepo,
+  type NotebookIndexRecord,
+} from "../repositories/consoles-charts";
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import { ensureLocalRepo, queueMirrorPush } from "../apps/cloud-repo.service";
@@ -77,13 +77,13 @@ async function repoDirIfExists(workspaceId: string): Promise<string | null> {
   return boundRepoDirIfExists(workspaceId);
 }
 
-async function uniqueNotebookPath(index: INotebookIndex): Promise<string> {
+async function uniqueNotebookPath(index: NotebookIndexRecord): Promise<string> {
   const base = slugifyNotebookName(index.name);
   const ownerHandle =
     index.access === "private"
-      ? (
-          await ownerDirectoryFor(index.workspaceId.toString(), index.ownerId)
-        ).handleOf(index.ownerId)
+      ? (await ownerDirectoryFor(index.workspaceId, index.ownerId)).handleOf(
+          index.ownerId,
+        )
       : undefined;
   let slug = base;
   for (let i = 2; i < 100; i++) {
@@ -91,11 +91,11 @@ async function uniqueNotebookPath(index: INotebookIndex): Promise<string> {
       access: index.access,
       ownerHandle,
     });
-    const clash = await NotebookIndex.findOne({
-      workspaceId: index.workspaceId,
-      path: wanted,
-      notebookId: { $ne: index.notebookId },
-    }).select("_id");
+    const clash = await consolesChartsRepo.findNotebookIndexByPath(
+      index.workspaceId,
+      wanted,
+      { excludeNotebookId: index.notebookId },
+    );
     if (!clash) return wanted;
     slug = `${base}-${i}`;
   }
@@ -122,10 +122,7 @@ export async function checkpointNotebook(
   }
   const [doc, index] = await Promise.all([
     getNotebookStore().get(workspaceId, notebookId),
-    NotebookIndex.findOne({
-      workspaceId: new Types.ObjectId(workspaceId),
-      notebookId,
-    }),
+    consolesChartsRepo.findNotebookIndex(workspaceId, notebookId),
   ]);
   if (!doc || !index) return { committed: false };
 
@@ -151,9 +148,10 @@ export async function checkpointNotebook(
       author: actorUserId ? await authorForUser(actorUserId) : undefined,
     },
   );
-  index.path = wantedPath;
-  index.checkpointBlobSha = sha;
-  await index.save();
+  await consolesChartsRepo.updateNotebookIndex(workspaceId, notebookId, {
+    path: wantedPath,
+    checkpointBlobSha: sha,
+  });
   queueMirrorPush(workspaceId);
   return { committed: true };
 }
@@ -161,7 +159,7 @@ export async function checkpointNotebook(
 /** Remove the notebook's file when the notebook itself is deleted. */
 export async function removeNotebookFile(
   workspaceId: string,
-  index: Pick<INotebookIndex, "path" | "name">,
+  index: Pick<INotebookIndex | NotebookIndexRecord, "path" | "name">,
   actorUserId?: string,
 ): Promise<void> {
   if (!index.path) return;
@@ -291,10 +289,10 @@ async function syncNotebooksNow(
   const store = getNotebookStore();
   for (const path of paths) {
     try {
-      const index = await NotebookIndex.findOne({
-        workspaceId: new Types.ObjectId(workspaceId),
+      const index = await consolesChartsRepo.findNotebookIndexByPath(
+        workspaceId,
         path,
-      });
+      );
       // Files with no index row are externally-created notebooks; creating
       // store documents for them is a follow-up (the store API cannot yet
       // create with a caller-chosen id). Skip quietly.
@@ -335,9 +333,11 @@ async function syncNotebooksNow(
         blocks: parsed.blocks,
       });
       if (!updated) continue;
-      index.name = parsed.name;
-      index.checkpointBlobSha = sha;
-      await index.save();
+      await consolesChartsRepo.updateNotebookIndex(
+        workspaceId,
+        index.notebookId,
+        { name: parsed.name, checkpointBlobSha: sha },
+      );
       publishRealtimeEvent(workspaceId, {
         type: "notebook.updated",
         notebookId: index.notebookId,
@@ -371,12 +371,13 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
   const repoDir = await repoDirIfExists(workspaceId);
   if (repoDir == null) return { notebooks: 0, written: 0 };
   const store = getNotebookStore();
-  const indexes = await NotebookIndex.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+  const indexes = await consolesChartsRepo.listNotebookIndexes(workspaceId);
   const writes: Record<string, string> = {};
-  const stamps: Array<{ index: INotebookIndex; path: string; sha: string }> =
-    [];
+  const stamps: Array<{
+    index: NotebookIndexRecord;
+    path: string;
+    sha: string;
+  }> = [];
   for (const index of indexes) {
     const doc = await store.get(workspaceId, index.notebookId);
     if (!doc) continue;
@@ -400,9 +401,11 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
       },
     );
     for (const { index, path, sha } of stamps) {
-      index.path = path;
-      index.checkpointBlobSha = sha;
-      await index.save();
+      await consolesChartsRepo.updateNotebookIndex(
+        workspaceId,
+        index.notebookId,
+        { path, checkpointBlobSha: sha },
+      );
     }
     queueMirrorPush(workspaceId);
   }
@@ -414,9 +417,12 @@ export async function adoptWorkspaceNotebooks(workspaceId: string): Promise<{
 // (apps.md §24) — reads shared via entity-git-history.
 // ---------------------------------------------------------------------------
 
-function notebookScope(
-  index: Pick<INotebookIndex, "workspaceId" | "path">,
-): EntityGitScope | null {
+type NotebookHistoryRef = Pick<
+  INotebookIndex | NotebookIndexRecord,
+  "workspaceId" | "path"
+>;
+
+function notebookScope(index: NotebookHistoryRef): EntityGitScope | null {
   return index.path
     ? fileScope(index.workspaceId.toString(), index.path)
     : null;
@@ -424,7 +430,7 @@ function notebookScope(
 
 /** Commits that touched this notebook's file (moves included via its path). */
 export async function notebookHistory(
-  index: Pick<INotebookIndex, "workspaceId" | "path">,
+  index: NotebookHistoryRef,
   limit = 50,
 ): Promise<CommitInfo[]> {
   const scope = notebookScope(index);
@@ -433,7 +439,7 @@ export async function notebookHistory(
 
 /** What one commit did to this notebook's file. */
 export async function notebookCommitChanges(
-  index: Pick<INotebookIndex, "workspaceId" | "path">,
+  index: NotebookHistoryRef,
   sha: string,
 ): Promise<CommitChanges> {
   const scope = notebookScope(index) ?? {
@@ -450,7 +456,7 @@ export async function notebookCommitChanges(
  * files, and this route must not read them.
  */
 export async function notebookFileVersions(
-  index: Pick<INotebookIndex, "workspaceId" | "path">,
+  index: NotebookHistoryRef,
   sha: string,
   relPath: string,
 ): Promise<FileVersions> {
@@ -471,10 +477,10 @@ export async function restoreNotebookTo(
   sha: string,
   actorUserId: string,
 ): Promise<{ commitOid?: string; restoredFrom: string }> {
-  const index = await NotebookIndex.findOne({
-    workspaceId: new Types.ObjectId(workspaceId),
+  const index = await consolesChartsRepo.findNotebookIndex(
+    workspaceId,
     notebookId,
-  });
+  );
   if (!index?.path) {
     throw new Error("This notebook has no file in the repo yet");
   }
@@ -513,8 +519,9 @@ export async function restoreNotebookTo(
   });
   if (!updated) throw new Error("Notebook not found");
   if (parsed.name && parsed.name !== index.name) {
-    index.name = parsed.name;
-    await index.save();
+    await consolesChartsRepo.updateNotebookIndex(workspaceId, notebookId, {
+      name: parsed.name,
+    });
   }
   publishRealtimeEvent(workspaceId, {
     type: "notebook.updated",

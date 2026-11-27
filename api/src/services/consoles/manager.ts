@@ -4,7 +4,6 @@
  * tools, the execute routes) need not change. Every member delegates to the
  * functions in this directory; new code should import those directly.
  */
-import type { ISavedConsole } from "../../database/workspace-schema";
 import {
   canReadConsole,
   canReadConsoleWithInheritance,
@@ -12,6 +11,7 @@ import {
   isConsoleCollaborator,
   resolveConsoleAccess,
   resolveConsoleAccessWithInheritance,
+  type ConsoleAccessSubject,
 } from "./access";
 import {
   getConsoleWithMetadata,
@@ -45,7 +45,7 @@ export class ConsoleManager {
 
   /** Admins can write any workspace-level console. */
   static canWrite(
-    console: ISavedConsole,
+    console: ConsoleAccessSubject,
     userId: string,
     isAdmin: boolean = false,
     memberRole?: string,
