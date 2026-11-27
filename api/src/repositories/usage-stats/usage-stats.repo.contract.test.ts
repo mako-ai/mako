@@ -1216,14 +1216,15 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
     const isoDb = drizzle(isoPg, { schema: pgSchema }) as unknown as MakoPgDb;
 
     try {
-      await isoPg.exec(
-        `CREATE TABLE IF NOT EXISTS database_connections (id uuid PRIMARY KEY);`,
-      );
+      const isoWsUuid = newDualId().uuid;
       const validConn = generateUuidv7();
       const danglingConn = generateUuidv7();
-      await isoPg.exec(
-        `INSERT INTO database_connections (id) VALUES ('${validConn}');`,
-      );
+      await isoPg.exec(`
+        INSERT INTO workspaces (id, name, slug)
+        VALUES ('${isoWsUuid}', 'ISO WS', 'iso-ws');
+        INSERT INTO database_connections (id, workspace_id, name, type, connection_encrypted)
+        VALUES ('${validConn}', '${isoWsUuid}', 'ISO DB', 'postgresql', '{}'::jsonb);
+      `);
 
       const v1 = generateUuidv7();
       const v2 = generateUuidv7();
