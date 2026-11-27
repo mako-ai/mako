@@ -3216,4 +3216,199 @@ describe("Phase 2A-1 ConnectionsRepository contract & migration lifecycle", () =
     await dualForcedMongo.listSourceConnectionIdNames();
     expect(pgCalls).toBe(0);
   });
+
+  it("PR #1555 verifier follow-up: fails closed on PG override-query errors and partitions all workspace-optional by-id lookups + injected getDb default", async () => {
+    const mongoRepo = new MongoConnectionsRepository();
+    const pgRepo = new PgConnectionsRepository({ getDb: () => db });
+    const router = new MigrationRouter({
+      getDb: () => db,
+      hasPg: () => true,
+      isForceMongoOnly: () => false,
+    });
+    // Intentionally omit `hasPg` while injecting `getDb` (with POSTGRES_URL unset)
+    // to verify `deps.getDb ? () => true : hasPostgresConfig` activates overrides.
+    const dual = new DualConnectionsRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: () => db,
+      isForceMongoOnly: () => false,
+    });
+
+    await router.setDomainState({ domain: "connections", mode: "mongo_only" });
+    await router.setDomainState({
+      domain: "connections",
+      workspaceId: wsAOid,
+      mode: "pg_only",
+    });
+
+    const wsAPgDb = await pgRepo.createDatabaseConnection({
+      workspaceId: wsAOid,
+      name: "WS-A PG DB",
+      type: "postgresql",
+      connection: { host: "pg-a.internal" },
+      createdBy: nativeUserUuid,
+    });
+    const wsAStaleMongoDb = await mongoRepo.createDatabaseConnection({
+      workspaceId: wsAOid,
+      name: "WS-A Stale Mongo DB",
+      type: "postgresql",
+      connection: { host: "stale-a.internal" },
+      createdBy: nativeUserUuid,
+    });
+    const wsBMongoDb = await mongoRepo.createDatabaseConnection({
+      workspaceId: wsBOid,
+      name: "WS-B Mongo DB",
+      type: "mongodb",
+      connection: { connectionString: "mongodb://b.internal/db" },
+      createdBy: nativeUserUuid,
+    });
+
+    const wsAPgSrc = await pgRepo.createSourceConnection({
+      workspaceId: wsAOid,
+      name: "WS-A PG Src",
+      type: "stripe",
+      config: { k: "pg" },
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      createdBy: nativeUserUuid,
+      isActive: true,
+    });
+    const wsAStaleMongoSrc = await mongoRepo.createSourceConnection({
+      workspaceId: wsAOid,
+      name: "WS-A Stale Mongo Src",
+      type: "stripe",
+      config: { k: "stale" },
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      createdBy: nativeUserUuid,
+      isActive: true,
+    });
+    const wsBMongoSrc = await mongoRepo.createSourceConnection({
+      workspaceId: wsBOid,
+      name: "WS-B Mongo Src",
+      type: "stripe",
+      config: { k: "mongo" },
+      settings: { sync_batch_size: 100, rate_limit_delay_ms: 200 },
+      createdBy: nativeUserUuid,
+      isActive: true,
+    });
+
+    // All workspace-optional lookups partition cleanly and ignore stale secondary rows
+    expect((await dual.findSourceConnectionById(wsAPgSrc.id))?.name).toBe(
+      "WS-A PG Src",
+    );
+    expect((await dual.findSourceConnectionById(wsBMongoSrc.id))?.name).toBe(
+      "WS-B Mongo Src",
+    );
+    expect(await dual.findSourceConnectionById(wsAStaleMongoSrc.id)).toBeNull();
+
+    const srcByIds = await dual.findSourceConnectionsByIds([
+      wsAPgSrc.id,
+      wsAStaleMongoSrc.id,
+      wsBMongoSrc.id,
+    ]);
+    expect(srcByIds.map(r => r.id).sort()).toEqual(
+      [wsAPgSrc.id, wsBMongoSrc.id].sort(),
+    );
+
+    const dbByIds = await dual.findDatabaseConnectionsByIds([
+      wsAPgDb.id,
+      wsAStaleMongoDb.id,
+      wsBMongoDb.id,
+    ]);
+    expect(dbByIds.map(r => r.id).sort()).toEqual(
+      [wsAPgDb.id, wsBMongoDb.id].sort(),
+    );
+
+    const dbSummariesByIds = await dual.findDatabaseConnectionSummariesByIds([
+      wsAPgDb.id,
+      wsAStaleMongoDb.id,
+      wsBMongoDb.id,
+    ]);
+    expect(dbSummariesByIds.map(r => r.id).sort()).toEqual(
+      [wsAPgDb.id, wsBMongoDb.id].sort(),
+    );
+
+    // Fail-closed: PG error inside resolveCrossWorkspaceReadPlan() MUST propagate
+    // when PG is enabled (never fall back silently to Mongo!)
+    const failingDb = () => {
+      throw new Error("Simulated PG control-plane outage");
+    };
+    const dualFailingPg = new DualConnectionsRepository({
+      mongo: mongoRepo,
+      pg: pgRepo,
+      router,
+      getDb: failingDb,
+      hasPg: () => true,
+      isForceMongoOnly: () => false,
+    });
+
+    await expect(
+      dualFailingPg.findDatabaseConnectionSummary(wsAPgDb.id),
+    ).rejects.toThrow(/Simulated PG control-plane outage/);
+    await expect(
+      dualFailingPg.findDatabaseConnectionById(wsAPgDb.id),
+    ).rejects.toThrow(/Simulated PG control-plane outage/);
+    await expect(
+      dualFailingPg.findDatabaseConnectionsByIds([wsAPgDb.id]),
+    ).rejects.toThrow(/Simulated PG control-plane outage/);
+    await expect(
+      dualFailingPg.findDatabaseConnectionSummariesByIds([wsAPgDb.id]),
+    ).rejects.toThrow(/Simulated PG control-plane outage/);
+    await expect(
+      dualFailingPg.findSourceConnectionById(wsAPgSrc.id),
+    ).rejects.toThrow(/Simulated PG control-plane outage/);
+    await expect(
+      dualFailingPg.findSourceConnectionsByIds([wsAPgSrc.id]),
+    ).rejects.toThrow(/Simulated PG control-plane outage/);
+    await expect(dualFailingPg.listActiveSourceConnections()).rejects.toThrow(
+      /Simulated PG control-plane outage/,
+    );
+    await expect(dualFailingPg.listSourceConnectionIdNames()).rejects.toThrow(
+      /Simulated PG control-plane outage/,
+    );
+    await expect(
+      dualFailingPg.listAllDatabaseConnectionMetadata(),
+    ).rejects.toThrow(/Simulated PG control-plane outage/);
+    await expect(
+      dualFailingPg.listWorkspaceIdsWithDueRetries(),
+    ).rejects.toThrow(/Simulated PG control-plane outage/);
+
+    // Verify zero PG calls on the newly partitioned methods when PG is disabled
+    let disabledPgCalls = 0;
+    const countingDisabledDb = () => {
+      disabledPgCalls += 1;
+      throw new Error("PG must not be called when disabled");
+    };
+    const dualDisabled = new DualConnectionsRepository({
+      mongo: mongoRepo,
+      pg: new PgConnectionsRepository({ getDb: countingDisabledDb }),
+      router: new MigrationRouter({
+        getDb: countingDisabledDb,
+        hasPg: () => false,
+        isForceMongoOnly: () => false,
+      }),
+      getDb: countingDisabledDb,
+      hasPg: () => false,
+      isForceMongoOnly: () => false,
+    });
+    expect(
+      (await dualDisabled.findSourceConnectionById(wsBMongoSrc.id))?.id,
+    ).toBe(wsBMongoSrc.id);
+    expect(
+      (await dualDisabled.findSourceConnectionsByIds([wsBMongoSrc.id])).map(
+        r => r.id,
+      ),
+    ).toEqual([wsBMongoSrc.id]);
+    expect(
+      (await dualDisabled.findDatabaseConnectionsByIds([wsBMongoDb.id])).map(
+        r => r.id,
+      ),
+    ).toEqual([wsBMongoDb.id]);
+    expect(
+      (
+        await dualDisabled.findDatabaseConnectionSummariesByIds([wsBMongoDb.id])
+      ).map(r => r.id),
+    ).toEqual([wsBMongoDb.id]);
+    expect(disabledPgCalls).toBe(0);
+  });
 });

@@ -174,7 +174,7 @@ export class DualConnectionsRepository implements ConnectionsRepository {
     this.pg = deps.pg ?? new PgConnectionsRepository({ getDb: deps.getDb });
     this.router = deps.router ?? migrationRouter;
     this.getDb = deps.getDb ?? getPgDb;
-    this.hasPg = deps.hasPg ?? hasPostgresConfig;
+    this.hasPg = deps.hasPg ?? (deps.getDb ? () => true : hasPostgresConfig);
     this.isForceMongoOnly = deps.isForceMongoOnly ?? isMigrationForceMongoOnly;
   }
 
@@ -204,7 +204,8 @@ export class DualConnectionsRepository implements ConnectionsRepository {
   /**
    * Partition cross-workspace reads across Mongo and Postgres whenever
    * per-workspace `migration_domain_state` overrides exist for `connections`.
-   * Performs ZERO Postgres queries when PG is unconfigured or forced off.
+   * Performs ZERO Postgres queries when PG is unconfigured or forced off, and
+   * propagates Postgres errors (fails closed) when PG is enabled.
    */
   private async resolveCrossWorkspaceReadPlan(): Promise<
     | { kind: "global" }
@@ -219,25 +220,20 @@ export class DualConnectionsRepository implements ConnectionsRepository {
       return { kind: "global" };
     }
 
-    let wsOverrides: Map<string, string>;
-    try {
-      const db = this.getDb();
-      const overrideRows = await db
-        .select({
-          scopeKey: migrationDomainState.scopeKey,
-          workspaceId: migrationDomainState.workspaceId,
-          mode: migrationDomainState.mode,
-        })
-        .from(migrationDomainState)
-        .where(eq(migrationDomainState.domain, CONNECTIONS_DOMAIN));
-      wsOverrides = new Map<string, string>();
-      for (const row of overrideRows) {
-        if (row.scopeKey !== GLOBAL_SCOPE_KEY && row.workspaceId) {
-          wsOverrides.set(toWireId(row.workspaceId), row.mode);
-        }
+    const db = this.getDb();
+    const overrideRows = await db
+      .select({
+        scopeKey: migrationDomainState.scopeKey,
+        workspaceId: migrationDomainState.workspaceId,
+        mode: migrationDomainState.mode,
+      })
+      .from(migrationDomainState)
+      .where(eq(migrationDomainState.domain, CONNECTIONS_DOMAIN));
+    const wsOverrides = new Map<string, string>();
+    for (const row of overrideRows) {
+      if (row.scopeKey !== GLOBAL_SCOPE_KEY && row.workspaceId) {
+        wsOverrides.set(toWireId(row.workspaceId), row.mode);
       }
-    } catch {
-      return { kind: "global" };
     }
 
     if (wsOverrides.size === 0) {
@@ -433,10 +429,36 @@ export class DualConnectionsRepository implements ConnectionsRepository {
     );
   }
 
-  findDatabaseConnectionsByIds(
+  async findDatabaseConnectionsByIds(
     ids: readonly string[],
     workspaceId?: string,
   ): Promise<DatabaseConnectionRecord[]> {
+    if (workspaceId === undefined) {
+      if (this.isForceMongoOnly() || !this.hasPg()) {
+        return this.mongo.findDatabaseConnectionsByIds(ids);
+      }
+      const plan = await this.resolveCrossWorkspaceReadPlan();
+      if (plan.kind === "partitioned") {
+        const merged = new Map<string, DatabaseConnectionRecord>();
+        if (plan.anyReadsMongo) {
+          const mongoRows = await this.mongo.findDatabaseConnectionsByIds(ids);
+          for (const row of mongoRows) {
+            if (!plan.effectiveReadsPg(row.workspaceId)) {
+              merged.set(row.id, row);
+            }
+          }
+        }
+        if (plan.anyReadsPg) {
+          const pgRows = await this.pg.findDatabaseConnectionsByIds(ids);
+          for (const row of pgRows) {
+            if (plan.effectiveReadsPg(row.workspaceId)) {
+              merged.set(row.id, row);
+            }
+          }
+        }
+        return [...merged.values()];
+      }
+    }
     return this.router.executeRead(
       {
         domain: CONNECTIONS_DOMAIN,
@@ -452,10 +474,38 @@ export class DualConnectionsRepository implements ConnectionsRepository {
     );
   }
 
-  findDatabaseConnectionSummariesByIds(
+  async findDatabaseConnectionSummariesByIds(
     ids: readonly string[],
     workspaceId?: string,
   ): Promise<DatabaseConnectionSummary[]> {
+    if (workspaceId === undefined) {
+      if (this.isForceMongoOnly() || !this.hasPg()) {
+        return this.mongo.findDatabaseConnectionSummariesByIds(ids);
+      }
+      const plan = await this.resolveCrossWorkspaceReadPlan();
+      if (plan.kind === "partitioned") {
+        const merged = new Map<string, DatabaseConnectionSummary>();
+        if (plan.anyReadsMongo) {
+          const mongoRows =
+            await this.mongo.findDatabaseConnectionSummariesByIds(ids);
+          for (const row of mongoRows) {
+            if (!plan.effectiveReadsPg(row.workspaceId)) {
+              merged.set(row.id, row);
+            }
+          }
+        }
+        if (plan.anyReadsPg) {
+          const pgRows =
+            await this.pg.findDatabaseConnectionSummariesByIds(ids);
+          for (const row of pgRows) {
+            if (plan.effectiveReadsPg(row.workspaceId)) {
+              merged.set(row.id, row);
+            }
+          }
+        }
+        return [...merged.values()];
+      }
+    }
     return this.router.executeRead(
       {
         domain: CONNECTIONS_DOMAIN,
@@ -789,10 +839,31 @@ export class DualConnectionsRepository implements ConnectionsRepository {
     return [...merged.values()];
   }
 
-  findSourceConnectionById(
+  async findSourceConnectionById(
     id: string,
     workspaceId?: string,
   ): Promise<SourceConnectionRecord | null> {
+    if (workspaceId === undefined) {
+      if (this.isForceMongoOnly() || !this.hasPg()) {
+        return this.mongo.findSourceConnectionById(id);
+      }
+      const plan = await this.resolveCrossWorkspaceReadPlan();
+      if (plan.kind === "partitioned") {
+        if (plan.anyReadsPg) {
+          const pgRow = await this.pg.findSourceConnectionById(id);
+          if (pgRow && plan.effectiveReadsPg(pgRow.workspaceId)) {
+            return pgRow;
+          }
+        }
+        if (plan.anyReadsMongo) {
+          const mongoRow = await this.mongo.findSourceConnectionById(id);
+          if (mongoRow && !plan.effectiveReadsPg(mongoRow.workspaceId)) {
+            return mongoRow;
+          }
+        }
+        return null;
+      }
+    }
     return this.router.executeRead(
       {
         domain: CONNECTIONS_DOMAIN,
@@ -809,10 +880,36 @@ export class DualConnectionsRepository implements ConnectionsRepository {
     );
   }
 
-  findSourceConnectionsByIds(
+  async findSourceConnectionsByIds(
     ids: readonly string[],
     workspaceId?: string,
   ): Promise<SourceConnectionRecord[]> {
+    if (workspaceId === undefined) {
+      if (this.isForceMongoOnly() || !this.hasPg()) {
+        return this.mongo.findSourceConnectionsByIds(ids);
+      }
+      const plan = await this.resolveCrossWorkspaceReadPlan();
+      if (plan.kind === "partitioned") {
+        const merged = new Map<string, SourceConnectionRecord>();
+        if (plan.anyReadsMongo) {
+          const mongoRows = await this.mongo.findSourceConnectionsByIds(ids);
+          for (const row of mongoRows) {
+            if (!plan.effectiveReadsPg(row.workspaceId)) {
+              merged.set(row.id, row);
+            }
+          }
+        }
+        if (plan.anyReadsPg) {
+          const pgRows = await this.pg.findSourceConnectionsByIds(ids);
+          for (const row of pgRows) {
+            if (plan.effectiveReadsPg(row.workspaceId)) {
+              merged.set(row.id, row);
+            }
+          }
+        }
+        return [...merged.values()];
+      }
+    }
     return this.router.executeRead(
       {
         domain: CONNECTIONS_DOMAIN,
