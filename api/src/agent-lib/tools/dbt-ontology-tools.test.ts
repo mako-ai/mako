@@ -1,8 +1,8 @@
 /**
  * The ontology lookups end to end: find_models, describe_model, lookup_term
  * and model_readers against a real bare workspace repo (apps with bindings,
- * the registry file), in-memory Mongo (the dbt project and its runs) and an
- * in-memory artifact store holding a manifest and a catalog.
+ * the registry file), dbt projects and runs in PGlite, and an in-memory
+ * artifact store holding a manifest and a catalog.
  *
  * The claims under test:
  *
@@ -27,8 +27,7 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
   ensureTestUser,
   ensureTestWorkspace,
@@ -58,7 +57,7 @@ import { generateUuidv7 } from "../../database/pg/id-codec";
 import { workspaceUserHandles } from "../../database/pg/schema";
 import { createDbtServerTools } from "./dbt-tools";
 import { createDbtOntologyTools } from "./dbt-ontology-tools";
-import { DbtProject, DbtRun } from "../../database/workspace-schema";
+import { dbtRepo } from "../../repositories/dbt";
 import {
   commitBlobsOnBranch,
   DEFAULT_BRANCH,
@@ -88,7 +87,6 @@ import {
 } from "../../dbt/test-support/ontology-fixtures";
 
 let pg: PgTestDb;
-let mongo: MongoMemoryServer;
 let tmpRoot: string;
 const WS = new Types.ObjectId().toString();
 const CONN = new Types.ObjectId();
@@ -133,21 +131,25 @@ async function seedProject(
   options: { prod?: boolean; catalog?: boolean } = {},
 ) {
   const { prod = true, catalog = true } = options;
-  const project = await DbtProject.create({
-    workspaceId: new Types.ObjectId(WS),
+  const project = await dbtRepo.createProject({
+    workspaceId: WS,
     name: "Analytics",
     environments: [
       {
         name: "prod",
-        connectionId: CONN,
+        connectionId: String(CONN),
         targetSchema: "dbt_prod",
         threads: 4,
       },
     ],
     defaultEnvironment: "prod",
     createdBy: "tester",
-    ...(prod ? { lastProdManifestKey: "runs/1/manifest.json" } : {}),
   });
+  if (prod) {
+    await dbtRepo.updateProject(project._id, {
+      lastProdManifestKey: "runs/1/manifest.json",
+    });
+  }
   stored.set(
     "runs/1/manifest.json",
     Buffer.from(JSON.stringify(ONTOLOGY_MANIFEST)),
@@ -158,17 +160,22 @@ async function seedProject(
       Buffer.from(JSON.stringify(ONTOLOGY_CATALOG)),
     );
   }
-  await DbtRun.collection.insertOne({
-    workspaceId: new Types.ObjectId(WS),
+  const run = await dbtRepo.createRun({
+    workspaceId: WS,
     projectId: project._id,
+    environment: "prod",
+    commands: ["build"],
+    trigger: "manual",
+    triggeredBy: "tester",
     status: "success",
-    createdAt: new Date(),
+  });
+  await dbtRepo.updateRun(run._id, {
     artifactKeys: {
       manifest: "runs/1/manifest.json",
       ...(catalog ? { catalog: "runs/1/catalog.json" } : {}),
     },
   });
-  return project;
+  return { project, run };
 }
 
 beforeAll(async () => {
@@ -178,14 +185,10 @@ beforeAll(async () => {
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   pg = await setupPgTestDb();
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
   await pg?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -195,11 +198,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await Promise.all([
-    DbtProject.deleteMany({}),
-    DbtRun.deleteMany({}),
-    pg.reset(),
-  ]);
+  await pg.reset();
   const workspace = await ensureTestWorkspace(pg.db, { id: WS });
   const user = await ensureTestUser(pg.db, { id: ANA });
   await pg.db.insert(workspaceUserHandles).values({
@@ -376,7 +375,7 @@ describe("find_models", () => {
   });
 
   it("parses a manifest once per version", async () => {
-    const project = await seedProject();
+    const { project } = await seedProject();
     await run(tools.find_models, { query: "account" });
     await run(tools.describe_model, { name: "dim_account" });
     await run(tools.model_readers, { name: "dim_account" });
@@ -388,10 +387,9 @@ describe("find_models", () => {
       "runs/2/manifest.json",
       Buffer.from(JSON.stringify({ ...ONTOLOGY_MANIFEST, sources: {} })),
     );
-    await DbtProject.updateOne(
-      { _id: project._id },
-      { $set: { lastProdManifestKey: "runs/2/manifest.json" } },
-    );
+    await dbtRepo.updateProject(project._id, {
+      lastProdManifestKey: "runs/2/manifest.json",
+    });
     const after = await run<{ results: Array<Record<string, unknown>> }>(
       tools.find_models,
       { query: "subscriptions", layer: "source" },
@@ -686,7 +684,7 @@ describe("lookup_term", () => {
     async function seedMetrics(
       metrics: Array<{ name: string; label?: string; type?: string }>,
     ) {
-      await seedProject();
+      const { run } = await seedProject();
       stored.set(
         "runs/1/semantic_manifest.json",
         Buffer.from(
@@ -700,15 +698,9 @@ describe("lookup_term", () => {
           }),
         ),
       );
-      await DbtRun.collection.updateOne(
-        { "artifactKeys.manifest": "runs/1/manifest.json" },
-        {
-          $set: {
-            environment: "prod",
-            "artifactKeys.semanticManifest": "runs/1/semantic_manifest.json",
-          },
-        },
-      );
+      await dbtRepo.updateRun(run._id, {
+        artifactKeys: { semanticManifest: "runs/1/semantic_manifest.json" },
+      });
     }
 
     it("marks a term the dbt project also defines as a metric", async () => {
@@ -964,7 +956,7 @@ describe("model_readers", () => {
 
   it("matches a raw table no dbt node describes, with or without a manifest", async () => {
     for (const withManifest of [true, false]) {
-      await DbtProject.deleteMany({});
+      await dbtRepo.deleteProjectsByWorkspace(WS);
       clearManifestIndexCache();
       if (withManifest) await seedProject();
       const result = await run<Record<string, unknown>>(tools.model_readers, {

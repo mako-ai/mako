@@ -13,10 +13,10 @@
  * All tools go through the same workspace-scoped ad-hoc service path as the
  * IDE buttons (api/src/dbt/dbt-project.service.ts).
  */
+import { parseEntityId } from "../../database/pg/id-codec";
 
 import { tool } from "ai";
 import { z } from "zod";
-import { Types } from "mongoose";
 import type { QueryAccess } from "../../auth/api-key-scopes";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import {
@@ -29,7 +29,11 @@ import {
   applyStrReplace,
   buildStrReplaceDiff,
 } from "@mako/agent-tools";
-import { DbtJob, DbtProject, DbtRun } from "../../database/workspace-schema";
+import {
+  dbtRepo,
+  DbtDuplicateProjectNameError,
+  type DbtRunQuery,
+} from "../../repositories/dbt";
 import { connectionsRepo } from "../../repositories/connections";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { workspaceService } from "../../services/workspace.service";
@@ -244,13 +248,10 @@ export const createDbtServerTools = (
   };
 
   const assertProject = async (projectId: string) => {
-    if (!Types.ObjectId.isValid(projectId)) {
+    if (!parseEntityId(projectId)) {
       throw new Error("Invalid dbt project id");
     }
-    const project = await DbtProject.findOne({
-      _id: new Types.ObjectId(projectId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const project = await dbtRepo.findProjectById(projectId, workspaceId);
     if (!project) throw new Error("dbt project not found or access denied");
     return project;
   };
@@ -427,11 +428,7 @@ export const createDbtServerTools = (
       execute: async ({ projectId, pathPrefix, detail }) => {
         try {
           if (!projectId) {
-            const projects = await DbtProject.find({
-              workspaceId: new Types.ObjectId(workspaceId),
-            })
-              .sort({ updatedAt: -1 })
-              .lean();
+            const projects = await dbtRepo.listProjectsByWorkspace(workspaceId);
             return {
               success: true as const,
               projects: projects.map(p => ({
@@ -556,10 +553,7 @@ export const createDbtServerTools = (
             };
           }
           await writeWorkingFile(project, actingUserId, path, contents ?? "");
-          await DbtProject.updateOne(
-            { _id: project._id },
-            { $currentDate: { updatedAt: true } },
-          );
+          await dbtRepo.updateProject(project._id, {});
           publishFileUpdated(projectId, path);
           return { success: true, path };
         } catch (error) {
@@ -586,10 +580,7 @@ export const createDbtServerTools = (
             return { success: false, error: "File too large (max 1MB)" };
           }
           await writeWorkingFile(project, actingUserId, path, contents ?? "");
-          await DbtProject.updateOne(
-            { _id: project._id },
-            { $currentDate: { updatedAt: true } },
-          );
+          await dbtRepo.updateProject(project._id, {});
           publishFileUpdated(projectId, path);
           return { success: true, path };
         } catch (error) {
@@ -650,10 +641,7 @@ export const createDbtServerTools = (
             result.replacements,
           );
           await writeWorkingFile(project, actingUserId, path, result.contents);
-          await DbtProject.updateOne(
-            { _id: project._id },
-            { $currentDate: { updatedAt: true } },
-          );
+          await dbtRepo.updateProject(project._id, {});
           publishFileUpdated(projectId, path);
           return {
             success: true,
@@ -729,7 +717,7 @@ export const createDbtServerTools = (
         dbtVersion,
       }) => {
         try {
-          if (!Types.ObjectId.isValid(connectionId)) {
+          if (!parseEntityId(connectionId)) {
             return { success: false, error: "Invalid connection id" };
           }
           const connection =
@@ -752,23 +740,23 @@ export const createDbtServerTools = (
             };
           }
 
-          const project = new DbtProject({
-            workspaceId: new Types.ObjectId(workspaceId),
+          const input = {
+            workspaceId,
             name,
             dbtVersion: dbtVersion ?? "1.12",
             environments: [
               {
                 name: environmentName,
-                connectionId: new Types.ObjectId(connection.id),
+                connectionId: connection.id,
                 targetSchema,
                 threads: 4,
               },
             ],
             defaultEnvironment: environmentName,
             createdBy: "agent",
-          });
-          await commitDbtEnvironmentsFile(project, actingUserId);
-          await project.save();
+          };
+          await commitDbtEnvironmentsFile(input, actingUserId);
+          const project = await dbtRepo.createProject(input);
 
           const scaffold = buildStarterScaffold(name);
           await commitDbtFiles(
@@ -791,7 +779,7 @@ export const createDbtServerTools = (
               "scaffolded files, then build your models.",
           };
         } catch (error) {
-          if ((error as { code?: number }).code === 11000) {
+          if (error instanceof DbtDuplicateProjectNameError) {
             return {
               success: false,
               error: "A dbt project with this name already exists",
@@ -1109,7 +1097,7 @@ export const createDbtServerTools = (
       execute: async ({ projectId, jobId }) => {
         try {
           const project = await assertProject(projectId);
-          if (!Types.ObjectId.isValid(jobId)) {
+          if (!parseEntityId(jobId)) {
             return { success: false, error: "Invalid job id" };
           }
           const resolved = await resolveLiveJobRow(project, jobId);
@@ -1168,7 +1156,7 @@ export const createDbtServerTools = (
       execute: async ({ projectId, runId }) => {
         try {
           await assertProject(projectId);
-          if (!Types.ObjectId.isValid(runId)) {
+          if (!parseEntityId(runId)) {
             return { success: false, error: "Invalid run id" };
           }
           const result = await requestDbtRunCancel({
@@ -1281,20 +1269,16 @@ export const createDbtServerTools = (
             return { success: false, error: "Provide runId or jobId" };
           }
 
-          const query: Record<string, unknown> = {
-            workspaceId: new Types.ObjectId(workspaceId),
-            projectId: project._id,
-          };
+          const query: DbtRunQuery = { workspaceId, projectId: project._id };
           if (runId) {
-            if (!Types.ObjectId.isValid(runId)) {
+            if (!parseEntityId(runId)) {
               return { success: false, error: "Invalid run id" };
             }
-            query._id = new Types.ObjectId(runId);
           } else if (jobId) {
-            if (!Types.ObjectId.isValid(jobId)) {
+            if (!parseEntityId(jobId)) {
               return { success: false, error: "Invalid job id" };
             }
-            query.jobId = new Types.ObjectId(jobId);
+            query.jobId = jobId;
           }
 
           const isTerminal = (status: string) =>
@@ -1304,9 +1288,11 @@ export const createDbtServerTools = (
 
           const deadline = Date.now() + Math.min(waitMs ?? 0, maxRunWaitMs);
 
-          let found = await DbtRun.findOne(query)
-            .sort({ createdAt: -1 })
-            .lean();
+          const read = () =>
+            runId
+              ? dbtRepo.findRunById(runId, query)
+              : dbtRepo.findLatestRun(query);
+          let found = await read();
           if (!found) return { success: false, error: "Run not found" };
           // A run stuck in "queued" past the watchdog deadline is finalized as
           // an error here, so a never-picked-up run terminates the wait loop
@@ -1321,7 +1307,7 @@ export const createDbtServerTools = (
             !abortSignal?.aborted
           ) {
             await sleep(RUN_POLL_INTERVAL_MS, abortSignal);
-            found = await DbtRun.findOne(query).sort({ createdAt: -1 }).lean();
+            found = await read();
             if (!found) return { success: false, error: "Run not found" };
             run = await reconcileStaleQueuedRun(found);
           }
@@ -1354,11 +1340,13 @@ export const createDbtServerTools = (
               stepLimit,
             }),
             logs: summarizeRunLogs(
-              (run.logs ?? []).map(log => ({
-                ts: log.ts,
-                level: log.level,
-                line: log.line,
-              })) as DbtLogLine[],
+              ((await dbtRepo.findRunWithLogs(run._id, query))?.logs ?? []).map(
+                log => ({
+                  ts: log.ts,
+                  level: log.level,
+                  line: log.line,
+                }),
+              ) as DbtLogLine[],
               { tail: logTail ?? 10 },
             ),
           };
@@ -1468,7 +1456,7 @@ export const createDbtServerTools = (
           if (validationError) {
             return { success: false, error: validationError };
           }
-          const job = new DbtJob({
+          const input = {
             workspaceId: project.workspaceId,
             projectId: project._id,
             slug: await reserveJobSlug(project._id, name),
@@ -1479,9 +1467,13 @@ export const createDbtServerTools = (
             enabled,
             deferToProduction,
             createdBy: "agent",
-          });
-          await commitDbtJobFile(project, job, actingUserId);
-          await job.save();
+          };
+          const sourceBlobSha = await commitDbtJobFile(
+            project,
+            input,
+            actingUserId,
+          );
+          const job = await dbtRepo.createJob({ ...input, sourceBlobSha });
           await applyJobScheduleChange(job);
           publishJobUpdated(projectId);
           return {
@@ -1521,7 +1513,7 @@ export const createDbtServerTools = (
       execute: async ({ projectId, jobId, ...updates }) => {
         try {
           const project = await assertProject(projectId);
-          if (!Types.ObjectId.isValid(jobId)) {
+          if (!parseEntityId(jobId)) {
             return { success: false, error: "Invalid job id" };
           }
           const resolved = await resolveLiveJobRow(project, jobId);
@@ -1549,8 +1541,12 @@ export const createDbtServerTools = (
           if (updates.deferToProduction !== undefined) {
             job.deferToProduction = updates.deferToProduction;
           }
-          await commitDbtJobFile(project, job, actingUserId);
-          await job.save();
+          const sourceBlobSha = await commitDbtJobFile(
+            project,
+            job,
+            actingUserId,
+          );
+          await dbtRepo.updateJob(job._id, { ...updates, sourceBlobSha });
           await applyJobScheduleChange(job);
           publishJobUpdated(projectId);
           return {
@@ -1581,7 +1577,7 @@ export const createDbtServerTools = (
       execute: async ({ projectId, jobId }) => {
         try {
           const project = await assertProject(projectId);
-          if (!Types.ObjectId.isValid(jobId)) {
+          if (!parseEntityId(jobId)) {
             return { success: false, error: "Invalid job id" };
           }
           const resolved = await resolveLiveJobRow(project, jobId);
@@ -1589,7 +1585,7 @@ export const createDbtServerTools = (
           const job = resolved.row;
           const name = job.name;
           await deleteDbtJobFile(project, job.slug, actingUserId);
-          await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
+          await dbtRepo.deleteJob(job._id, { projectId: project._id });
           publishJobUpdated(projectId);
           return { success: true, jobId: job._id.toString(), name };
         } catch (error) {

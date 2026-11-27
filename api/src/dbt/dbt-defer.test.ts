@@ -1,4 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+vi.mock(
+  import("../repositories/dbt"),
+  () => import("../test-support/dbt-mongo"),
+);
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import {

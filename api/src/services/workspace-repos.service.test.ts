@@ -20,7 +20,8 @@ import {
   savedConsoles,
   workspaces,
 } from "../database/pg/schema";
-import { DbtProject, Flow } from "../database/workspace-schema";
+import { Flow } from "../database/workspace-schema";
+import { dbtRepo } from "../repositories/dbt";
 import {
   mongoWorkspaceToRecord,
   workspaceRecordToPgRow,
@@ -58,11 +59,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await Promise.all([
-    pg.reset(),
-    Flow.deleteMany({}),
-    DbtProject.deleteMany({}),
-  ]);
+  await Promise.all([pg.reset(), Flow.deleteMany({})]);
   workspace = await ensureTestWorkspace(pg.db, { ownerUserId: "u1" });
   workspaceId = workspace.id;
 });
@@ -417,21 +414,21 @@ describe("git is the only store (issue #956)", () => {
       defaultBranch: "main",
       linkedBy: "u1",
     });
-    const ws = new Types.ObjectId(workspaceId);
-    await DbtProject.create({
-      workspaceId: ws,
+    await dbtRepo.createProject({
+      workspaceId,
       name: "ghost",
       createdBy: "u1",
       environments: [
         {
           name: "dev",
-          connectionId: new Types.ObjectId(),
+          connectionId: String(new Types.ObjectId()),
           targetSchema: "analytics",
+          threads: 4,
         },
       ],
     });
-    expect(await DbtProject.countDocuments({ workspaceId: ws })).toBe(1);
+    expect(await dbtRepo.listProjectsByWorkspace(workspaceId)).toHaveLength(1);
     await disconnectWorkspaceRepo(workspaceId, "mako-ai", "test-workspace");
-    expect(await DbtProject.countDocuments({ workspaceId: ws })).toBe(0);
+    expect(await dbtRepo.listProjectsByWorkspace(workspaceId)).toHaveLength(0);
   });
 });

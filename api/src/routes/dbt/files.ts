@@ -1,7 +1,7 @@
 /** The dbt/ folder of the workspace repo at the caller's session branch. */
 import { Hono } from "hono";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
-import { DbtProject } from "../../database/workspace-schema";
+import { dbtRepo } from "../../repositories/dbt";
 import {
   deleteWorkingFile,
   listWorkingFiles,
@@ -101,10 +101,7 @@ dbtFileRoutes.put(
       // replaces the retired dbt-file entity-version snapshots.
       await writeWorkingFile(project, userId, path, body.content);
 
-      await DbtProject.updateOne(
-        { _id: project._id },
-        { $currentDate: { updatedAt: true } },
-      );
+      await dbtRepo.updateProject(project._id, {});
       // A save is a commit: poke the workspace so every open window on the
       // branch refreshes (branch scoping happens at read time).
       publishDbtEvent(c, {

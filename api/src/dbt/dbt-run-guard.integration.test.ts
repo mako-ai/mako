@@ -1,7 +1,7 @@
 /**
  * triggerDbtRun protected-environment guard — integration.
  *
- * Real service + real Mongoose models against mongodb-memory-server; only
+ * Real service and Postgres repository against PGlite; only
  * Inngest is mocked. Verifies the ad-hoc/job asymmetry end-to-end:
  *
  *  - ad-hoc (agent/manual, no jobId) warehouse writes into the prod-like
@@ -19,9 +19,9 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
+  ensureTestUser,
   ensureTestWorkspace,
   setupPgTestDb,
   type PgTestDb,
@@ -42,42 +42,26 @@ import {
   resolveDevEnvironmentForUser,
   setUserDevEnvPreference,
 } from "./dbt-environments.service";
-import {
-  DbtEnvPreference,
-  DbtJob,
-  DbtProject,
-  DbtRun,
-} from "../database/workspace-schema";
+import { dbtRepo } from "../repositories/dbt";
 
 import { appsMetadataRepo } from "../repositories/apps-metadata";
 
 const sendMock = inngest.send as unknown as ReturnType<typeof vi.fn>;
 
 let pg: PgTestDb;
-let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId();
 
 beforeAll(async () => {
   pg = await setupPgTestDb();
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
 });
 
 afterAll(async () => {
   await pg?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
 });
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  await Promise.all([
-    DbtProject.deleteMany({}),
-    DbtRun.deleteMany({}),
-    DbtJob.deleteMany({}),
-    pg.reset(),
-    DbtEnvPreference.deleteMany({}),
-  ]);
+  await pg.reset();
   await ensureTestWorkspace(pg.db, { id: String(WS), ownerUserId: "u1" });
 });
 
@@ -85,13 +69,13 @@ function envs() {
   return [
     {
       name: "dev",
-      connectionId: new Types.ObjectId(),
+      connectionId: String(new Types.ObjectId()),
       targetSchema: "dbt_dev",
       threads: 4,
     },
     {
       name: "prod",
-      connectionId: new Types.ObjectId(),
+      connectionId: String(new Types.ObjectId()),
       targetSchema: "dbt_prod",
       threads: 4,
     },
@@ -99,8 +83,8 @@ function envs() {
 }
 
 async function seedProject() {
-  return DbtProject.create({
-    workspaceId: WS,
+  return dbtRepo.createProject({
+    workspaceId: String(WS),
     name: `p-${new Types.ObjectId().toString()}`,
     environments: envs(),
     defaultEnvironment: "dev",
@@ -128,7 +112,7 @@ describe("triggerDbtRun protected-environment guard", () => {
       triggerDbtRun(adhocParams(project._id.toString(), "prod")),
     ).rejects.toThrow(DbtProtectedEnvironmentError);
     // Nothing persisted, nothing enqueued.
-    expect(await DbtRun.countDocuments({})).toBe(0);
+    expect(await dbtRepo.runExists({ workspaceId: String(WS) })).toBe(false);
     expect(sendMock).not.toHaveBeenCalled();
   });
 
@@ -151,8 +135,8 @@ describe("triggerDbtRun protected-environment guard", () => {
 
   it("allows prod runs through a saved job (the sanctioned deploy path)", async () => {
     const project = await seedProject();
-    const job = await DbtJob.create({
-      workspaceId: WS,
+    const job = await dbtRepo.createJob({
+      workspaceId: String(WS),
       projectId: project._id,
       name: "Deploy prod",
       environment: "prod",
@@ -207,8 +191,8 @@ describe("sourceBranch provenance stamping", () => {
 
   it("job runs record the default branch (no working tree)", async () => {
     const project = await seedProject();
-    const job = await DbtJob.create({
-      workspaceId: WS,
+    const job = await dbtRepo.createJob({
+      workspaceId: String(WS),
       projectId: project._id,
       name: "Nightly",
       environment: "prod",
@@ -254,17 +238,19 @@ describe("resolveDevEnvironmentForUser — per-user dev environment", () => {
     // Personal env provisioned → it wins over the default.
     project.environments.push({
       name: "alice",
-      connectionId: new Types.ObjectId(),
+      connectionId: String(new Types.ObjectId()),
       targetSchema: "dbt_alice",
       threads: 4,
       ownerUserId: "u1",
     });
-    await project.save();
+    await dbtRepo.updateProject(project._id, {
+      environments: project.environments,
+    });
     expect(await resolveDevEnvironmentForUser(project, "u1")).toBe("alice");
 
     // A saved per-user choice beats the personal env.
     await setUserDevEnvPreference({
-      workspaceId: WS,
+      workspaceId: String(WS),
       projectId: project._id,
       userId: "u1",
       environment: "dev",
@@ -278,7 +264,7 @@ describe("resolveDevEnvironmentForUser — per-user dev environment", () => {
 
     // Clearing the choice falls back to the personal env.
     await setUserDevEnvPreference({
-      workspaceId: WS,
+      workspaceId: String(WS),
       projectId: project._id,
       userId: "u1",
       environment: null,
@@ -288,8 +274,8 @@ describe("resolveDevEnvironmentForUser — per-user dev environment", () => {
 
   it("ignores a stale saved choice pointing at a removed environment", async () => {
     const project = await seedProject();
-    await DbtEnvPreference.create({
-      workspaceId: WS,
+    await dbtRepo.upsertEnvPreference({
+      workspaceId: String(WS),
       projectId: project._id,
       userId: "u1",
       environment: "gone",
@@ -298,9 +284,10 @@ describe("resolveDevEnvironmentForUser — per-user dev environment", () => {
   });
 
   it("is scoped per user", async () => {
+    await ensureTestUser(pg.db, { id: "u2" });
     const project = await seedProject();
     await setUserDevEnvPreference({
-      workspaceId: WS,
+      workspaceId: String(WS),
       projectId: project._id,
       userId: "u1",
       environment: "prod",
@@ -345,7 +332,8 @@ describe("recordCompletedAdhocDbtRun", () => {
     });
 
     expect(recorded).not.toBeNull();
-    const doc = await DbtRun.findById(recorded?._id).lean();
+    if (!recorded) throw new Error("Expected the run to be recorded");
+    const doc = await dbtRepo.findRunWithLogs(recorded._id);
     expect(doc?.status).toBe("success");
     expect(doc?.trigger).toBe("manual");
     expect(doc?.commands).toEqual(["build --select stg_orders --full-refresh"]);

@@ -1,7 +1,7 @@
 /**
  * dbt agent FILE tools against the git-backed working tree (apps.md §20):
- * a real bare workspace repo, a dbt project in MongoDB, and a session
- * worktree in PGlite. A file edit is a COMMIT on the actor's session branch —
+ * a real bare workspace repo, plus a dbt project and session worktree in
+ * PGlite. A file edit is a COMMIT on the actor's session branch —
  * these specs pin exactly that: content lands under dbt/<path> in git,
  * branch-scoped, with ordinary git history.
  */
@@ -17,8 +17,7 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
   ensureTestUser,
   setupPgTestDb,
@@ -47,7 +46,7 @@ vi.mock("../../services/scheduled-query-schedule.service", () => ({
 }));
 
 import { createDbtServerTools } from "./dbt-tools";
-import { DbtProject } from "../../database/workspace-schema";
+import { dbtRepo } from "../../repositories/dbt";
 import { appsMetadataRepo } from "../../repositories/apps-metadata";
 import { seedDbtGitTree } from "../../dbt/test-support/git-tree";
 import { bindTestWorkspaceRepo } from "../../apps/bind-test-workspace-repo";
@@ -59,7 +58,6 @@ import {
 } from "../../apps/repository.service";
 
 let pg: PgTestDb;
-let mongo: MongoMemoryServer;
 let tmpRoot: string;
 const WS = new Types.ObjectId().toString();
 const CONN = new Types.ObjectId();
@@ -75,14 +73,10 @@ beforeAll(async () => {
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   pg = await setupPgTestDb();
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
   await pg?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -92,7 +86,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await Promise.all([pg.reset(), DbtProject.deleteMany({})]);
+  await pg.reset();
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
     force: true,
@@ -103,11 +97,16 @@ beforeEach(async () => {
 });
 
 async function seedProject() {
-  const project = await DbtProject.create({
-    workspaceId: new Types.ObjectId(WS),
+  const project = await dbtRepo.createProject({
+    workspaceId: WS,
     name: "Analytics",
     environments: [
-      { name: "dev", connectionId: CONN, targetSchema: "dbt_dev", threads: 4 },
+      {
+        name: "dev",
+        connectionId: String(CONN),
+        targetSchema: "dbt_dev",
+        threads: 4,
+      },
     ],
     defaultEnvironment: "dev",
     createdBy: "tester",

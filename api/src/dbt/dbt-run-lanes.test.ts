@@ -2,7 +2,7 @@
  * dbt run lanes: a project runs one dbt invocation at a time per lane.
  * Scheduled runs of a job whose median successful run is under 5 min (over
  * at least 5 of its last 20) use the "fast" lane. Everything else uses
- * "default". Real Mongoose models against mongodb-memory-server; only
+ * "default". Real Postgres repositories against PGlite; only
  * Inngest is mocked.
  */
 import {
@@ -14,8 +14,7 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
   ensureTestWorkspace,
   setupPgTestDb,
@@ -27,12 +26,9 @@ vi.mock("../inngest/client", () => ({
 }));
 
 import { inngest } from "../inngest/client";
-import {
-  DbtJob,
-  DbtProject,
-  DbtRun,
-  type DbtRunLane,
-} from "../database/workspace-schema";
+import { dbtRuns } from "../database/pg/schema";
+import { dbtRepo, type DbtRunLane } from "../repositories/dbt";
+import { dbtUuid, pgRunToRecord, runValues } from "../repositories/dbt/mapper";
 import {
   FAST_LANE_TTL_MS,
   chooseRunLane,
@@ -54,40 +50,30 @@ const sendMock = inngest.send as unknown as ReturnType<typeof vi.fn>;
 const MIN = 60_000;
 const WS = new Types.ObjectId();
 
-let mongo: MongoMemoryServer;
 let pg: PgTestDb;
 
 beforeAll(async () => {
   pg = await setupPgTestDb();
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
 });
 
 afterAll(async () => {
   await pg?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
 });
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  await Promise.all([
-    pg.reset(),
-    DbtProject.deleteMany({}),
-    DbtRun.deleteMany({}),
-    DbtJob.deleteMany({}),
-  ]);
+  await pg.reset();
   await ensureTestWorkspace(pg.db, { id: String(WS) });
 });
 
 async function seedProject() {
-  return DbtProject.create({
-    workspaceId: WS,
+  return dbtRepo.createProject({
+    workspaceId: String(WS),
     name: `p-${new Types.ObjectId().toString()}`,
     environments: [
       {
         name: "prod",
-        connectionId: new Types.ObjectId(),
+        connectionId: String(new Types.ObjectId()),
         targetSchema: "dbt_prod",
         threads: 4,
       },
@@ -97,9 +83,9 @@ async function seedProject() {
   });
 }
 
-async function seedJob(projectId: Types.ObjectId) {
-  return DbtJob.create({
-    workspaceId: WS,
+async function seedJob(projectId: string) {
+  return dbtRepo.createJob({
+    workspaceId: String(WS),
     projectId,
     name: `job-${new Types.ObjectId().toString()}`,
     environment: "prod",
@@ -110,18 +96,18 @@ async function seedJob(projectId: Types.ObjectId) {
 
 /** Successful past runs of a job, one per duration. */
 async function seedHistory(
-  job: { _id: Types.ObjectId; projectId: Types.ObjectId },
+  job: { _id: string; projectId: string },
   durationsMs: number[],
 ) {
-  await DbtRun.insertMany(
+  await pg.db.insert(dbtRuns).values(
     durationsMs.map((durationMs, i) => ({
-      workspaceId: WS,
-      projectId: job.projectId,
-      jobId: job._id,
+      workspaceId: dbtUuid(String(WS)),
+      projectId: dbtUuid(job.projectId),
+      jobId: dbtUuid(job._id),
       environment: "prod",
       commands: ["build"],
-      status: "success",
-      trigger: "schedule",
+      status: "success" as const,
+      trigger: "schedule" as const,
       triggeredBy: "scheduler",
       actor: { kind: "user" as const, userId: "u1" },
       durationMs,
@@ -164,7 +150,7 @@ describe("resolveJobLane and chooseRunLane", () => {
     expect(await chooseRunLane({ trigger: "schedule", jobId: job._id })).toBe(
       "fast",
     );
-    const stored = await DbtJob.findById(job._id).lean();
+    const stored = await dbtRepo.findJobById(job._id);
     expect(stored?.lane).toBe("fast");
     expect(stored?.laneMedianMs).toBe(108_000);
     expect(stored?.laneEvaluatedAt).toBeInstanceOf(Date);
@@ -231,15 +217,15 @@ describe("resolveJobLane and chooseRunLane", () => {
     expect(await resolveJobLane(job._id, t0)).toBe("fast");
 
     // The job got slow: 20 newer 30-minute runs.
-    await DbtRun.insertMany(
+    await pg.db.insert(dbtRuns).values(
       Array.from({ length: 20 }, () => ({
-        workspaceId: WS,
-        projectId: project._id,
-        jobId: job._id,
+        workspaceId: dbtUuid(String(WS)),
+        projectId: dbtUuid(project._id),
+        jobId: dbtUuid(job._id),
         environment: "prod",
         commands: ["build"],
-        status: "success",
-        trigger: "schedule",
+        status: "success" as const,
+        trigger: "schedule" as const,
         triggeredBy: "scheduler",
         actor: { kind: "user" as const, userId: "u1" },
         durationMs: 30 * MIN,
@@ -252,7 +238,7 @@ describe("resolveJobLane and chooseRunLane", () => {
 
     const stale = new Date(t0.getTime() + FAST_LANE_TTL_MS + 1);
     expect(await resolveJobLane(job._id, stale)).toBe("default");
-    const stored = await DbtJob.findById(job._id).lean();
+    const stored = await dbtRepo.findJobById(job._id);
     expect(stored?.lane).toBe("default");
     expect(stored?.laneMedianMs).toBe(30 * MIN);
     expect(stored?.laneEvaluatedAt?.getTime()).toBe(stale.getTime());
@@ -385,26 +371,34 @@ describe("fast lane isolation", () => {
 });
 
 async function seedRun(
-  projectId: Types.ObjectId,
+  projectId: string,
   status: "queued" | "running",
   extra: {
     lane?: DbtRunLane;
-    jobId?: Types.ObjectId;
+    jobId?: string;
     createdAt?: Date;
     startedAt?: Date;
   } = {},
 ) {
-  return DbtRun.create({
-    workspaceId: WS,
-    projectId,
-    environment: "prod",
-    commands: ["build"],
-    status,
-    trigger: extra.jobId ? "schedule" : "manual",
-    triggeredBy: "u1",
-    actor: { kind: "user" as const, userId: "u1" },
-    ...extra,
-  });
+  const { createdAt, ...run } = extra;
+  const [row] = await pg.db
+    .insert(dbtRuns)
+    .values({
+      ...runValues({
+        workspaceId: String(WS),
+        projectId,
+        environment: "prod",
+        commands: ["build"],
+        status,
+        trigger: run.jobId ? "schedule" : "manual",
+        triggeredBy: "u1",
+        actor: { kind: "user", userId: "u1" },
+        ...run,
+      }),
+      createdAt,
+    })
+    .returning();
+  return pgRunToRecord(row);
 }
 
 describe("reconcileStaleQueuedRun counts only its own lane", () => {
@@ -420,7 +414,7 @@ describe("reconcileStaleQueuedRun counts only its own lane", () => {
       createdAt: stale(),
     });
 
-    const out = await reconcileStaleQueuedRun(queued.toObject(), {
+    const out = await reconcileStaleQueuedRun(queued, {
       persist: false,
     });
     expect(out.status).toBe("error");
@@ -435,7 +429,7 @@ describe("reconcileStaleQueuedRun counts only its own lane", () => {
       createdAt: stale(),
     });
 
-    const out = await reconcileStaleQueuedRun(queued.toObject(), {
+    const out = await reconcileStaleQueuedRun(queued, {
       persist: false,
     });
     expect(out.status).toBe("queued");
@@ -459,7 +453,7 @@ describe("describeQueuedRun counts only its own lane", () => {
       createdAt: new Date(t),
     });
 
-    const info = await describeQueuedRun(queued.toObject());
+    const info = await describeQueuedRun(queued);
     expect(info?.lane).toBe("default");
     expect(info?.blockedBy).toBeNull();
     expect(info?.runsAhead).toBe(0);
@@ -485,7 +479,7 @@ describe("describeQueuedRun counts only its own lane", () => {
       createdAt: new Date(t),
     });
 
-    const info = await describeQueuedRun(queued.toObject());
+    const info = await describeQueuedRun(queued);
     expect(info?.lane).toBe("fast");
     expect(info?.blockedBy?.runId).toBe(fastRunning._id.toString());
     expect(info?.runsAhead).toBe(1);
@@ -506,7 +500,7 @@ describe("describeQueuedRun counts only its own lane", () => {
       createdAt: new Date(),
     });
 
-    const info = await describeQueuedRun(queued.toObject());
+    const info = await describeQueuedRun(queued);
     expect(info?.blockedBy?.runId).toBe(manual._id.toString());
   });
 });

@@ -137,7 +137,12 @@ dbtLocalRunRoutes.get("/local-runs/:runId", async (c: AuthenticatedContext) => {
     if (!workspaceId || !caller) {
       return fail(c, 401, "Unauthorized");
     }
+    const logsSince = Math.max(
+      0,
+      Math.floor(Number(c.req.query("logsSince")) || 0),
+    );
     const found = await findOwnLocalRun({
+      logsSince,
       workspaceId,
       userId: caller.userId,
       runId: c.req.param("runId") as string,
@@ -145,16 +150,12 @@ dbtLocalRunRoutes.get("/local-runs/:runId", async (c: AuthenticatedContext) => {
     if (!found) {
       return fail(c, 404, "Run not found");
     }
-    const run = await reconcileStaleQueuedRun(found.toObject(), {
+    const run = await reconcileStaleQueuedRun(found, {
       persist: false,
     });
     // logsSince = the absolute line number the client has read up to (the
     // previous answer's logCursor) — it survives the executor's log cap.
-    const page = sliceRunLogs(
-      run.logs ?? [],
-      run.logTotal,
-      Number(c.req.query("logsSince")) || 0,
-    );
+    const page = sliceRunLogs(run.logs ?? [], run.logTotal, logsSince);
     return c.json({
       success: true,
       run: {

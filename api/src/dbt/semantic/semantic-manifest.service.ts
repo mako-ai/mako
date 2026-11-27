@@ -16,8 +16,8 @@
  * A manifest is parsed once per version, like the manifest index
  * (ontology/manifest-index.service.ts).
  */
-import { Types } from "mongoose";
-import { DbtProject, DbtRun } from "../../database/workspace-schema";
+import { parseEntityId } from "../../database/pg/id-codec";
+import { dbtRepo } from "../../repositories/dbt";
 import { loggers } from "../../logging";
 import { getArtifactStore } from "../../services/artifact-store.service";
 import {
@@ -88,14 +88,14 @@ async function buildCatalog(key: string): Promise<SemanticCatalog | null> {
 }
 
 type ProjectFields = {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
+  _id: string;
+  workspaceId: string;
   name: string;
   lastProdManifestKey?: string;
   environments: Array<{
     name: string;
-    connectionId?: Types.ObjectId;
-    readConnectionId?: Types.ObjectId;
+    connectionId?: string;
+    readConnectionId?: string;
   }>;
 };
 
@@ -113,29 +113,23 @@ async function semanticKeysFor(
   environmentName: string;
 } | null> {
   if (environment) {
-    const run = await DbtRun.findOne({
+    const run = await dbtRepo.findLatestArtifactRun({
       workspaceId: project.workspaceId,
       projectId: project._id,
       environment,
-      "artifactKeys.semanticManifest": { $exists: true, $ne: null },
-    })
-      .select("artifactKeys environment")
-      .sort({ createdAt: -1 })
-      .lean();
+      hasSemanticManifest: true,
+    });
     const key = run?.artifactKeys?.semanticManifest;
     return key
       ? { key, source: "environment", environmentName: environment }
       : null;
   }
   if (project.lastProdManifestKey) {
-    const owner = await DbtRun.findOne({
+    const owner = await dbtRepo.findLatestArtifactRun({
       workspaceId: project.workspaceId,
       projectId: project._id,
-      "artifactKeys.manifest": project.lastProdManifestKey,
-    })
-      .select("artifactKeys environment")
-      .sort({ createdAt: -1 })
-      .lean();
+      manifestKey: project.lastProdManifestKey,
+    });
     if (owner?.artifactKeys?.semanticManifest) {
       return {
         key: owner.artifactKeys.semanticManifest,
@@ -144,14 +138,11 @@ async function semanticKeysFor(
       };
     }
   }
-  const latest = await DbtRun.findOne({
+  const latest = await dbtRepo.findLatestArtifactRun({
     workspaceId: project.workspaceId,
     projectId: project._id,
-    "artifactKeys.semanticManifest": { $exists: true, $ne: null },
-  })
-    .select("artifactKeys environment")
-    .sort({ createdAt: -1 })
-    .lean();
+    hasSemanticManifest: true,
+  });
   const key = latest?.artifactKeys?.semanticManifest;
   if (!key || !latest) return null;
   return { key, source: "latest-run", environmentName: latest.environment };
@@ -168,19 +159,13 @@ export async function loadSemanticProjects(
   workspaceId: string,
   options: { projectId?: string; environment?: string } = {},
 ): Promise<SemanticProject[]> {
-  if (!Types.ObjectId.isValid(workspaceId)) return [];
-  if (options.projectId && !Types.ObjectId.isValid(options.projectId)) {
+  if (!parseEntityId(workspaceId)) return [];
+  if (options.projectId && !parseEntityId(options.projectId)) {
     return [];
   }
-  const projects = await DbtProject.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    ...(options.projectId
-      ? { _id: new Types.ObjectId(options.projectId) }
-      : {}),
-  })
-    .select("_id workspaceId name lastProdManifestKey environments")
-    .sort({ updatedAt: -1 })
-    .lean<ProjectFields[]>();
+  const projects = await dbtRepo.listProjectsByWorkspace(workspaceId, {
+    projectId: options.projectId,
+  });
 
   const out: SemanticProject[] = [];
   for (const project of projects) {
@@ -246,13 +231,10 @@ export async function explainNoSemanticProjects(
   workspaceId: string,
   options: { projectId?: string; environment?: string } = {},
 ): Promise<NoSemanticProjects> {
-  if (!Types.ObjectId.isValid(workspaceId)) return { reason: "no-manifest" };
-  const projects = await DbtProject.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-  })
-    .select("_id name environments.name")
-    .sort({ name: 1 })
-    .lean<Array<Pick<ProjectFields, "_id" | "name" | "environments">>>();
+  if (!parseEntityId(workspaceId)) return { reason: "no-manifest" };
+  const projects = await dbtRepo.listProjectsByWorkspace(workspaceId, {
+    sort: "nameAsc",
+  });
   const named = options.projectId
     ? projects.filter(project => project._id.toString() === options.projectId)
     : projects;

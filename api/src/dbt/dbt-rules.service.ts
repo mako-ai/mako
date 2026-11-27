@@ -12,7 +12,6 @@
  * by agent.routes.ts; see dbt-rules-turn.service.ts for turn-level resolution.
  */
 
-import type { IDbtProject } from "../database/workspace-schema";
 import { readWorkingFile } from "./dbt-working-tree.service";
 
 /** Recognized filenames, highest precedence first. */
@@ -34,7 +33,7 @@ export interface DbtRules {
  * no recognized file exists or every candidate is blank.
  */
 export async function resolveDbtRules(
-  project: IDbtProject,
+  project: Parameters<typeof readWorkingFile>[0],
   userId: string | undefined,
 ): Promise<DbtRules | null> {
   // Drafts are keyed by user; agent turns without a session act as "agent",

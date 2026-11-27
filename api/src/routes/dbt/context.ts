@@ -3,11 +3,11 @@
  * (RepoRequiredError → 412, protected environment → 400), realtime pokes and
  * the project loader. Access checks run once, in ../dbt.routes.ts.
  */
-import { workspaceResourceLoader } from "../lib/load-resource";
+import { parseEntityId } from "../../database/pg/id-codec";
 import { RepoRequiredError } from "../../apps/config";
 import { loggers } from "../../logging";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
-import { DbtProject } from "../../database/workspace-schema";
+import { dbtRepo, type DbtProjectRecord } from "../../repositories/dbt";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { DbtProtectedEnvironmentError } from "../../dbt/dbt-environments.service";
 import { fail } from "../lib/respond";
@@ -65,4 +65,19 @@ export function publishDbtEvent(
   if (workspaceId) publishRealtimeEvent(workspaceId, event);
 }
 
-export const findProject = workspaceResourceLoader(DbtProject, "projectId");
+/** Workspace-scoped project by route params; null for invalid ids or absent rows. */
+export async function findProject(
+  c: AuthenticatedContext,
+): Promise<DbtProjectRecord | null> {
+  const workspaceId = c.req.param("workspaceId");
+  const projectId = c.req.param("projectId");
+  if (
+    !workspaceId ||
+    !projectId ||
+    !parseEntityId(workspaceId) ||
+    !parseEntityId(projectId)
+  ) {
+    return null;
+  }
+  return dbtRepo.findProjectById(projectId, workspaceId);
+}

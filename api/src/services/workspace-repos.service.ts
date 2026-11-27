@@ -11,12 +11,8 @@
  */
 import { Types } from "mongoose";
 import fs from "node:fs/promises";
-import {
-  DbtJob,
-  DbtProject,
-  Flow,
-  type IWorkspaceRepoBinding,
-} from "../database/workspace-schema";
+import { Flow, type IWorkspaceRepoBinding } from "../database/workspace-schema";
+import { dbtRepo } from "../repositories/dbt";
 import { appsMetadataRepo } from "../repositories/apps-metadata";
 import { consolesChartsRepo } from "../repositories/consoles-charts";
 import { workspaceRepo } from "../repositories/workspaces";
@@ -162,8 +158,7 @@ export async function purgeMigratedContentIndex(
     Flow.deleteMany({ workspaceId: id }),
     consolesChartsRepo.purgeWorkspaceContentIndex(workspaceId),
     appsMetadataRepo.deleteProjectsByWorkspace(workspaceId),
-    DbtJob.deleteMany({ workspaceId: id }),
-    DbtProject.deleteMany({ workspaceId: id }),
+    dbtRepo.deleteProjectsByWorkspace(workspaceId),
   ]);
   await workspaceRepo.unsetLegacyCustomPrompt(workspaceId, {
     includeSelfDirective: true,

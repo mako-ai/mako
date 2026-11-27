@@ -1,10 +1,10 @@
+import { parseEntityId } from "../../database/pg/id-codec";
 /** dbt run history, triggers, retries, cancels and logs. */
 import { describeQueuedRun } from "../../dbt/dbt-run-queue";
 import { Hono } from "hono";
 import { Readable } from "stream";
-import { Types } from "mongoose";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
-import { DbtRun } from "../../database/workspace-schema";
+import { dbtRepo } from "../../repositories/dbt";
 import {
   reconcileStaleQueuedRun,
   reconcileStaleQueuedRuns,
@@ -45,15 +45,14 @@ dbtRunRoutes.get(
       }
       const jobId = c.req.query("jobId");
       const limit = Math.min(Number(c.req.query("limit")) || 50, 100);
-      const filter: Record<string, unknown> = { projectId: project._id };
-      if (jobId && Types.ObjectId.isValid(jobId)) {
-        filter.jobId = new Types.ObjectId(jobId);
-      }
-      const runs = await DbtRun.find(filter)
-        .select("-logs")
-        .sort({ createdAt: -1 })
-        .limit(limit)
-        .lean();
+      const runs = await dbtRepo.listRuns(
+        {
+          workspaceId: project.workspaceId,
+          projectId: project._id,
+          ...(jobId && parseEntityId(jobId) ? { jobId } : {}),
+        },
+        { limit },
+      );
       // Present any run stuck in "queued" past the worker-pickup deadline as
       // errored so history never shows a perpetually-queued run. Read-only on
       // this GET path (persist: false) — the cron sweeper is the single writer.
@@ -79,13 +78,20 @@ dbtRunRoutes.get(
         return fail(c, 404, "dbt project not found");
       }
       const runId = c.req.param("runId") as string;
-      if (!Types.ObjectId.isValid(runId)) {
+      if (!parseEntityId(runId)) {
         return badRequest(c, "Invalid run id");
       }
-      const found = await DbtRun.findOne({
-        _id: new Types.ObjectId(runId),
-        projectId: project._id,
-      }).lean();
+      const logsSince = Math.max(
+        0,
+        Math.floor(Number(c.req.query("logsSince")) || 0),
+      );
+      const found = await dbtRepo.findRunWithLogs(
+        runId,
+        {
+          projectId: project._id,
+        },
+        logsSince,
+      );
       if (!found) {
         return fail(c, 404, "Run not found");
       }
@@ -94,7 +100,7 @@ dbtRunRoutes.get(
       // on this GET path (persist: false) — the cron sweeper is the writer.
       const run = await reconcileStaleQueuedRun(found, { persist: false });
       // logsSince = number of log lines the client already has (cursor).
-      const logsSince = Number(c.req.query("logsSince")) || 0;
+
       const logs = run.logs ?? [];
       // Why a queued run is waiting (the run holding its lane's slot).
       const queue =
@@ -103,8 +109,8 @@ dbtRunRoutes.get(
         success: true,
         run: {
           ...withRedactedActor(run),
-          logs: logs.slice(logsSince),
-          logCursor: logs.length,
+          logs,
+          logCursor: run.logTotal,
           ...(queue ? { queue } : {}),
         },
       });
@@ -123,7 +129,7 @@ dbtRunRoutes.post(
         return fail(c, 404, "dbt project not found");
       }
       const runId = c.req.param("runId") as string;
-      if (!Types.ObjectId.isValid(runId)) {
+      if (!parseEntityId(runId)) {
         return badRequest(c, "Invalid run id");
       }
       const result = await requestDbtRunCancel({
@@ -163,7 +169,7 @@ dbtRunRoutes.post(
         return fail(c, 404, "dbt project not found");
       }
       const runId = c.req.param("runId") as string;
-      if (!Types.ObjectId.isValid(runId)) {
+      if (!parseEntityId(runId)) {
         return badRequest(c, "Invalid run id");
       }
       const run = await triggerDbtRunRetry({
@@ -201,7 +207,7 @@ dbtRunRoutes.get(
       }
       const runId = c.req.param("runId") as string;
       const kind = c.req.param("kind") as string;
-      if (!Types.ObjectId.isValid(runId)) {
+      if (!parseEntityId(runId)) {
         return badRequest(c, "Invalid run id");
       }
       if (
@@ -218,12 +224,9 @@ dbtRunRoutes.get(
           "kind must be manifest | semanticManifest | runResults | catalog | sources",
         );
       }
-      const run = await DbtRun.findOne({
-        _id: new Types.ObjectId(runId),
+      const run = await dbtRepo.findRunById(runId, {
         projectId: project._id,
-      })
-        .select("artifactKeys")
-        .lean();
+      });
       const key =
         run?.artifactKeys?.[
           kind as

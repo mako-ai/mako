@@ -1,9 +1,8 @@
 /**
  * Agent dbt job tools — in-process integration tests.
  *
- * Boots `createDbtServerTools` against an ephemeral mongodb-memory-server
- * (Dbt* models), PGlite (workspace and connection rows) and
- * exercises the `dbt_delete_job` tool end-to-end through real Mongoose
+ * Boots `createDbtServerTools` against a disposable PGlite database and
+ * exercises the `dbt_delete_job` tool end-to-end through real Postgres
  * persistence. Heavy collaborators (runner, run scheduler, GitHub git, realtime
  * bus, entity versioning) are mocked so the test stays deterministic and
  * offline — it only verifies the tool's workspace scoping, validation, and
@@ -25,10 +24,11 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
   ensureTestDatabaseConnection,
+  ensureTestWorkspace,
+  ensureTestUser,
   setupPgTestDb,
   type PgTestDb,
 } from "../../test-support/pg-test";
@@ -66,12 +66,7 @@ vi.mock("../../services/scheduled-query-schedule.service", () => ({
 
 // Imported after the mocks are registered.
 import { createDbtServerTools } from "./dbt-tools";
-import {
-  DbtEnvPreference,
-  DbtJob,
-  DbtProject,
-  DbtRun,
-} from "../../database/workspace-schema";
+import { dbtRepo } from "../../repositories/dbt";
 import { workspaceService } from "../../services/workspace.service";
 import { triggerDbtJobRun, triggerDbtRun } from "../../dbt/dbt-run.service";
 import {
@@ -87,7 +82,6 @@ import {
 import { DBT_ENVIRONMENTS_PATH } from "../../dbt/dbt-config-files";
 import { commitDbtJobFile, reserveJobSlug } from "../../dbt/dbt-config.service";
 
-let mongo: MongoMemoryServer;
 let pgh: PgTestDb;
 let tmpRoot: string;
 const WS = new Types.ObjectId().toString();
@@ -114,13 +108,13 @@ function deleteJob(input: DeleteJobInput): Promise<ToolResult> {
 }
 
 async function seedProject(): Promise<string> {
-  const project = await DbtProject.create({
-    workspaceId: new Types.ObjectId(WS),
+  const project = await dbtRepo.createProject({
+    workspaceId: WS,
     name: "Analytics",
     environments: [
       {
         name: "dev",
-        connectionId: new Types.ObjectId(CONN),
+        connectionId: CONN,
         targetSchema: "analytics",
         threads: 4,
       },
@@ -135,12 +129,12 @@ async function seedProject(): Promise<string> {
  * A job is live only when `dbt/jobs/<slug>.yml` exists at main (the tools
  * resolve through the git overlay); seed the row AND commit its file.
  */
-async function seedJob(projectId: string, opts?: { mongoOnly?: boolean }) {
-  const project = await DbtProject.findById(projectId);
-  const job = await DbtJob.create({
-    workspaceId: new Types.ObjectId(WS),
-    projectId: new Types.ObjectId(projectId),
-    slug: await reserveJobSlug(new Types.ObjectId(projectId), "nightly"),
+async function seedJob(projectId: string, opts?: { rowOnly?: boolean }) {
+  const project = await dbtRepo.findProjectById(projectId);
+  const job = await dbtRepo.createJob({
+    workspaceId: WS,
+    projectId,
+    slug: await reserveJobSlug(projectId, "nightly"),
     name: "nightly",
     environment: "dev",
     commands: ["build"],
@@ -148,7 +142,7 @@ async function seedJob(projectId: string, opts?: { mongoOnly?: boolean }) {
     deferToProduction: false,
     createdBy: "tester",
   });
-  if (!opts?.mongoOnly) await commitDbtJobFile(project!, job);
+  if (!opts?.rowOnly) await commitDbtJobFile(project!, job);
   return job._id.toString();
 }
 
@@ -157,15 +151,11 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
   pgh = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
   await pgh.close();
-  await mongoose.disconnect();
-  await mongo.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -176,6 +166,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await pgh.reset();
+  await ensureTestUser(pgh.db, { id: "u1" });
   await ensureTestDatabaseConnection(pgh.db, {
     workspaceId: WS,
     id: CONN,
@@ -187,11 +178,6 @@ beforeEach(async () => {
     { userId: "u1" },
     { userId: "u2" },
   ] as never);
-  await Promise.all([
-    mongoose.connection.collection("dbt_projects").deleteMany({}),
-    mongoose.connection.collection("dbt_jobs").deleteMany({}),
-    mongoose.connection.collection("dbt_env_preferences").deleteMany({}),
-  ]);
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
     force: true,
@@ -212,16 +198,16 @@ describe("dbt_delete_job", () => {
     expect(result.success).toBe(true);
     expect(result.jobId).toBe(jobId);
     expect(result.name).toBe("nightly");
-    expect(await DbtJob.countDocuments({})).toBe(0);
+    expect(await dbtRepo.listJobsByProject(projectId)).toHaveLength(0);
   });
 
   it("refuses a row whose file is not at main (not a live definition)", async () => {
     const projectId = await seedProject();
-    const jobId = await seedJob(projectId, { mongoOnly: true });
+    const jobId = await seedJob(projectId, { rowOnly: true });
     const result = await deleteJob({ projectId, jobId });
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/not found/i);
-    expect(await DbtJob.countDocuments({})).toBe(1);
+    expect(await dbtRepo.listJobsByProject(projectId)).toHaveLength(1);
   });
 
   it("returns an error for an unknown job id", async () => {
@@ -243,14 +229,15 @@ describe("dbt_delete_job", () => {
 
   it("does not delete a job that belongs to another workspace's project", async () => {
     // Project + job exist, but under a different workspace than the tool's WS.
-    const otherWs = new Types.ObjectId();
-    const project = await DbtProject.create({
+    const otherWs = new Types.ObjectId().toString();
+    await ensureTestWorkspace(pgh.db, { id: otherWs });
+    const project = await dbtRepo.createProject({
       workspaceId: otherWs,
       name: "Other",
       environments: [
         {
           name: "dev",
-          connectionId: new Types.ObjectId(CONN),
+          connectionId: CONN,
           targetSchema: "analytics",
           threads: 4,
         },
@@ -258,7 +245,7 @@ describe("dbt_delete_job", () => {
       defaultEnvironment: "dev",
       createdBy: "tester",
     });
-    const job = await DbtJob.create({
+    const job = await dbtRepo.createJob({
       workspaceId: otherWs,
       projectId: project._id,
       name: "foreign",
@@ -276,7 +263,7 @@ describe("dbt_delete_job", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/not found|access denied/i);
-    expect(await DbtJob.countDocuments({ _id: job._id })).toBe(1);
+    expect(await dbtRepo.findJobById(job._id)).toBeTruthy();
   });
 });
 
@@ -300,7 +287,7 @@ describe("dbt_run_model — per-user environment resolution", () => {
     expect(result.success).toBe(true);
 
     // Personal env exists now (slug from the mocked display name "Tester").
-    const project = await DbtProject.findById(projectId).lean();
+    const project = await dbtRepo.findProjectById(projectId);
     const personal = project?.environments.find(e => e.ownerUserId === "u1");
     expect(personal?.name).toBe("tester");
     expect(personal?.targetSchema).toBe("dbt_tester");
@@ -315,7 +302,7 @@ describe("dbt_run_model — per-user environment resolution", () => {
 
     // Idempotent: a second build reuses it without adding another env.
     await runModel({ projectId, model: "stg_orders" });
-    const after = await DbtProject.findById(projectId).lean();
+    const after = await dbtRepo.findProjectById(projectId);
     expect(
       after?.environments.filter(e => e.ownerUserId === "u1"),
     ).toHaveLength(1);
@@ -329,7 +316,7 @@ describe("dbt_run_model — per-user environment resolution", () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/Connect a GitHub repository/i);
     expect(vi.mocked(triggerDbtRun)).not.toHaveBeenCalled();
-    const project = await DbtProject.findById(projectId).lean();
+    const project = await dbtRepo.findProjectById(projectId);
     expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(false);
   });
 
@@ -344,15 +331,15 @@ describe("dbt_run_model — per-user environment resolution", () => {
     expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
       expect.objectContaining({ environment: "dev" }),
     );
-    const project = await DbtProject.findById(projectId).lean();
+    const project = await dbtRepo.findProjectById(projectId);
     expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(false);
   });
 
   it("a saved per-user dev environment wins and suppresses auto-provisioning", async () => {
     const projectId = await seedProject();
-    await DbtEnvPreference.create({
-      workspaceId: new Types.ObjectId(WS),
-      projectId: new Types.ObjectId(projectId),
+    await dbtRepo.upsertEnvPreference({
+      workspaceId: WS,
+      projectId,
       userId: "u1",
       environment: "dev",
     });
@@ -363,7 +350,7 @@ describe("dbt_run_model — per-user environment resolution", () => {
       expect.objectContaining({ environment: "dev" }),
     );
     // Even in a multi-user workspace the explicit choice stops provisioning.
-    const project = await DbtProject.findById(projectId).lean();
+    const project = await dbtRepo.findProjectById(projectId);
     expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(false);
   });
 
@@ -379,7 +366,7 @@ describe("dbt_run_model — per-user environment resolution", () => {
     expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
       expect.objectContaining({ environment: "dev" }),
     );
-    const project = await DbtProject.findById(projectId).lean();
+    const project = await dbtRepo.findProjectById(projectId);
     expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(false);
   });
 });
@@ -451,9 +438,9 @@ describe("dbt runs record who started them (actor)", () => {
 
   it("dbt_get_run shows the actor without the user's email", async () => {
     const projectId = await seedProject();
-    const run = await DbtRun.create({
-      workspaceId: new Types.ObjectId(WS),
-      projectId: new Types.ObjectId(projectId),
+    const run = await dbtRepo.createRun({
+      workspaceId: WS,
+      projectId,
       environment: "dev",
       commands: ["build"],
       status: "success",

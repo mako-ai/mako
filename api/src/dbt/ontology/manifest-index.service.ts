@@ -13,8 +13,8 @@
  * project, keyed by the artifact keys it was built from, so a new prod build
  * replaces the entry and nothing accumulates.
  */
-import { Types } from "mongoose";
-import { DbtProject, DbtRun } from "../../database/workspace-schema";
+import { parseEntityId } from "../../database/pg/id-codec";
+import { dbtRepo } from "../../repositories/dbt";
 import { loggers } from "../../logging";
 import { getArtifactStore } from "../../services/artifact-store.service";
 import {
@@ -85,8 +85,8 @@ async function buildIndex(
  * `{workspaceId, projectId, createdAt}` index.
  */
 async function artifactKeysFor(project: {
-  _id: Types.ObjectId;
-  workspaceId: Types.ObjectId;
+  _id: string;
+  workspaceId: string;
   lastProdManifestKey?: string;
 }): Promise<{
   manifestKey: string;
@@ -97,24 +97,18 @@ async function artifactKeysFor(project: {
   let source: ProjectManifestIndex["source"] = "prod";
   let catalogKey: string | null;
   if (manifestKey) {
-    const owner = await DbtRun.findOne({
+    const owner = await dbtRepo.findLatestArtifactRun({
       workspaceId: project.workspaceId,
       projectId: project._id,
-      "artifactKeys.manifest": manifestKey,
-    })
-      .select("artifactKeys")
-      .sort({ createdAt: -1 })
-      .lean();
+      manifestKey,
+    });
     catalogKey = owner?.artifactKeys?.catalog ?? null;
   } else {
-    const latest = await DbtRun.findOne({
+    const latest = await dbtRepo.findLatestArtifactRun({
       workspaceId: project.workspaceId,
       projectId: project._id,
-      "artifactKeys.manifest": { $exists: true, $ne: null },
-    })
-      .select("artifactKeys")
-      .sort({ createdAt: -1 })
-      .lean();
+      hasManifest: true,
+    });
     manifestKey = latest?.artifactKeys?.manifest;
     if (!manifestKey) return null;
     source = "latest-run";
@@ -132,19 +126,13 @@ export async function loadManifestIndexes(
   workspaceId: string,
   options: { projectId?: string } = {},
 ): Promise<ProjectManifestIndex[]> {
-  if (!Types.ObjectId.isValid(workspaceId)) return [];
-  if (options.projectId && !Types.ObjectId.isValid(options.projectId)) {
+  if (!parseEntityId(workspaceId)) return [];
+  if (options.projectId && !parseEntityId(options.projectId)) {
     return [];
   }
-  const projects = await DbtProject.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    ...(options.projectId
-      ? { _id: new Types.ObjectId(options.projectId) }
-      : {}),
-  })
-    .select("_id workspaceId name lastProdManifestKey")
-    .sort({ updatedAt: -1 })
-    .lean();
+  const projects = await dbtRepo.listProjectsByWorkspace(workspaceId, {
+    projectId: options.projectId,
+  });
 
   const out: ProjectManifestIndex[] = [];
   for (const project of projects) {

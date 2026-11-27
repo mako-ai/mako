@@ -8,7 +8,7 @@
  * run uses the default lane. Two Inngest concurrency locks enforce it: one
  * keyed on `<projectId>:<lane>`, one keyed on `job:<jobId>` (a run without a
  * job holds `run:<runId>`, which locks nothing else). `claimDbtRunSlot`
- * checks the same two slots in Mongo before a run starts, so a lapse of the
+ * checks the same two slots in the database before a run starts, so a lapse of the
  * Inngest locks never starts a second run.
  *
  * A run triggered while another run of its lane holds the slot sits in
@@ -23,11 +23,11 @@
  */
 import { Types } from "mongoose";
 import {
-  DbtJob,
-  DbtRun,
+  dbtRepo,
   type DbtRunLane,
-  type IDbtRun,
-} from "../database/workspace-schema";
+  type DbtRunRecord,
+  type DbtRunSlotClaim,
+} from "../repositories/dbt";
 
 export type { DbtRunLane };
 
@@ -68,8 +68,7 @@ export async function resolveJobLane(
   jobId: Types.ObjectId | string,
   now: Date = new Date(),
 ): Promise<DbtRunLane> {
-  const _id = typeof jobId === "string" ? new Types.ObjectId(jobId) : jobId;
-  const job = await DbtJob.findById(_id).select("lane laneEvaluatedAt").lean();
+  const job = await dbtRepo.findJobById(String(jobId));
   if (!job) return "default";
   if (
     job.lane &&
@@ -78,26 +77,20 @@ export async function resolveJobLane(
   ) {
     return job.lane;
   }
-  const recent = await DbtRun.find({
-    jobId: _id,
-    status: "success",
-    durationMs: { $gt: 0 },
-  })
-    .sort({ createdAt: -1 })
-    .limit(FAST_LANE_SAMPLE)
-    .select("durationMs")
-    .lean();
+  const recent = await dbtRepo.listRuns(
+    { jobId: String(jobId), status: "success", durationMsGreaterThan: 0 },
+    { limit: FAST_LANE_SAMPLE },
+  );
   const { lane, medianMs } = laneForDurations(
     recent
       .map(r => r.durationMs)
       .filter((d): d is number => typeof d === "number"),
   );
-  await DbtJob.updateOne(
-    { _id },
-    medianMs !== undefined
-      ? { $set: { lane, laneEvaluatedAt: now, laneMedianMs: medianMs } }
-      : { $set: { lane, laneEvaluatedAt: now }, $unset: { laneMedianMs: "" } },
-  );
+  await dbtRepo.updateJob(String(jobId), {
+    lane,
+    laneEvaluatedAt: now,
+    laneMedianMs: medianMs ?? null,
+  });
   return lane;
 }
 
@@ -106,21 +99,14 @@ export async function resolveJobLane(
  * fast. Manual, agent, CI and pre-deploy runs (no job) use the default lane.
  */
 export async function chooseRunLane(
-  run: { trigger: IDbtRun["trigger"]; jobId?: string | Types.ObjectId | null },
+  run: {
+    trigger: DbtRunRecord["trigger"];
+    jobId?: string | Types.ObjectId | null;
+  },
   now: Date = new Date(),
 ): Promise<DbtRunLane> {
   if (run.trigger !== "schedule" || !run.jobId) return "default";
   return resolveJobLane(run.jobId, now);
-}
-
-/**
- * Mongo filter for the runs of one lane. Runs that predate lanes carry no
- * `lane` and ran in the single project queue, which is the default lane.
- */
-export function dbtRunLaneFilter(
-  lane: DbtRunLane | null | undefined,
-): Record<string, unknown> {
-  return lane === "fast" ? { lane: "fast" } : { lane: { $ne: "fast" } };
 }
 
 /** The two concurrency keys a "dbt/run.requested" event carries. */
@@ -162,30 +148,7 @@ export function dbtRunFallbackQueueKeys(event: {
   };
 }
 
-/**
- * Mongo filter for the runs holding the slot `run` needs: a running run of
- * its project lane, or a running run of its own job in the other lane. These
- * are the two Inngest concurrency locks, read from the runs collection.
- */
-export function dbtRunSlotHolderFilter(run: {
-  _id: Types.ObjectId;
-  projectId: Types.ObjectId;
-  jobId?: Types.ObjectId | null;
-  lane?: DbtRunLane | null;
-}): Record<string, unknown> {
-  const laneFilter = dbtRunLaneFilter(run.lane);
-  return {
-    projectId: run.projectId,
-    status: "running",
-    _id: { $ne: run._id },
-    ...(run.jobId ? { $or: [laneFilter, { jobId: run.jobId }] } : laneFilter),
-  };
-}
-
-export type DbtRunSlotClaim =
-  | { state: "claimed"; run: IDbtRun }
-  | { state: "busy"; holderId: string }
-  | { state: "gone" };
+export type { DbtRunSlotClaim };
 
 /**
  * Move a queued run to "running" only when no other run holds its slot.
@@ -195,47 +158,12 @@ export type DbtRunSlotClaim =
  * around the switch ran under no lock. This check reads the runs collection,
  * so it holds whatever Inngest does with its keys.
  *
- * Two runs can claim at the same moment. Each re-reads after its write and
- * steps back to "queued" when it sees another holder, so at most one keeps
- * the slot. Both may step back. The caller waits and tries again.
  */
 export async function claimDbtRunSlot(
-  runId: Types.ObjectId,
+  runId: Types.ObjectId | string,
   now: Date = new Date(),
 ): Promise<DbtRunSlotClaim> {
-  const queued = await DbtRun.findOne({ _id: runId, status: "queued" })
-    .select("_id projectId jobId lane")
-    .lean();
-  if (!queued) return { state: "gone" };
-
-  const holderOf = async () =>
-    queued.projectId
-      ? DbtRun.findOne(
-          dbtRunSlotHolderFilter({ ...queued, projectId: queued.projectId }),
-        )
-          .select("_id")
-          .lean()
-      : null;
-
-  const before = await holderOf();
-  if (before) return { state: "busy", holderId: before._id.toString() };
-
-  const claimed = await DbtRun.findOneAndUpdate(
-    { _id: runId, status: "queued" },
-    { $set: { status: "running", startedAt: now } },
-    { returnDocument: "after" },
-  ).lean();
-  if (!claimed) return { state: "gone" };
-
-  const after = await holderOf();
-  if (after) {
-    await DbtRun.updateOne(
-      { _id: runId, status: "running" },
-      { $set: { status: "queued" }, $unset: { startedAt: 1 } },
-    );
-    return { state: "busy", holderId: after._id.toString() };
-  }
-  return { state: "claimed", run: claimed as IDbtRun };
+  return dbtRepo.claimRunSlot(String(runId), now);
 }
 
 /** Runs listed in `queuedAhead`; the count stays exact past it. */
@@ -278,9 +206,9 @@ export interface DbtRunQueueInfo {
 }
 
 type QueueRun = {
-  _id: Types.ObjectId;
-  projectId?: Types.ObjectId;
-  jobId?: Types.ObjectId;
+  _id: Types.ObjectId | string;
+  projectId?: Types.ObjectId | string;
+  jobId?: Types.ObjectId | string;
   trigger?: string;
   commands?: string[];
   status: string;
@@ -314,45 +242,40 @@ export async function describeQueuedRun(
   if (run.status !== "queued" || !run.projectId) return null;
 
   const lane: DbtRunLane = run.lane === "fast" ? "fast" : "default";
-  const laneFilter = dbtRunLaneFilter(lane);
   const [running, ahead] = await Promise.all([
     // The run holding this lane's slot. A job run also waits on a run of the
     // same job in the other lane (the per-job lock).
-    DbtRun.findOne(dbtRunSlotHolderFilter({ ...run, projectId: run.projectId }))
-      .sort({ startedAt: 1 })
-      .select("_id jobId trigger commands createdAt startedAt")
-      .lean(),
-    DbtRun.find({
-      projectId: run.projectId,
-      status: "queued",
-      _id: { $ne: run._id },
-      ...laneFilter,
-      ...(run.createdAt ? { createdAt: { $lt: run.createdAt } } : {}),
-    })
-      .sort({ createdAt: 1 })
-      .select("_id jobId trigger commands createdAt")
-      .lean(),
+    dbtRepo.findRunSlotHolder({
+      _id: String(run._id),
+      projectId: String(run.projectId),
+      jobId: run.jobId?.toString(),
+      lane,
+    }),
+    dbtRepo.listRuns(
+      {
+        projectId: String(run.projectId),
+        status: "queued",
+        excludeRunId: String(run._id),
+        lane,
+        createdBefore: run.createdAt,
+      },
+      { sort: "createdAtAsc" },
+    ),
   ]);
 
   const jobIds = [
     ...new Set(
       [running?.jobId, ...ahead.map(r => r.jobId)]
-        .filter((id): id is Types.ObjectId => !!id)
+        .filter((id): id is string => !!id)
         .map(id => id.toString()),
     ),
   ];
-  const jobs = jobIds.length
-    ? await DbtJob.find({
-        _id: { $in: jobIds.map(id => new Types.ObjectId(id)) },
-      })
-        .select("_id name")
-        .lean()
-    : [];
+  const jobs = jobIds.length ? await dbtRepo.listJobsByIds(jobIds) : [];
   const jobName = new Map(jobs.map(j => [j._id.toString(), j.name]));
 
   const ref = (r: {
-    _id: Types.ObjectId;
-    jobId?: Types.ObjectId;
+    _id: Types.ObjectId | string;
+    jobId?: Types.ObjectId | string;
     trigger?: string;
     commands?: string[];
     createdAt?: Date;
@@ -382,15 +305,10 @@ export async function describeQueuedRun(
       runningForMs: startedAt ? now.getTime() - startedAt.getTime() : undefined,
     };
     if (running.jobId) {
-      const recent = await DbtRun.find({
-        jobId: running.jobId,
-        status: "success",
-        durationMs: { $gt: 0 },
-      })
-        .sort({ createdAt: -1 })
-        .limit(DURATION_SAMPLE)
-        .select("durationMs")
-        .lean();
+      const recent = await dbtRepo.listRuns(
+        { jobId: running.jobId, status: "success", durationMsGreaterThan: 0 },
+        { limit: DURATION_SAMPLE },
+      );
       typical = median(
         recent
           .map(r => r.durationMs)

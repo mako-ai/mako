@@ -227,7 +227,7 @@ export function getDbtAdapterPackage(type: string): string | undefined {
  */
 export function renderDbtProfile(
   connection: IDatabaseConnection,
-  environment: IDbtEnvironment,
+  environment: Pick<IDbtEnvironment, "name" | "targetSchema" | "threads">,
 ): RenderedProfile {
   const adapter = ADAPTERS[connection.type];
   if (!adapter) {

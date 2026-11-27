@@ -19,8 +19,7 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
   ensureTestWorkspace,
   setupPgTestDb,
@@ -40,7 +39,7 @@ vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: async () => undefined,
 }));
 
-import { DbtProject, type IDbtProject } from "../database/workspace-schema";
+import { dbtRepo, type DbtProjectRecord } from "../repositories/dbt";
 import { runGit } from "../apps/git";
 import { ensureLocalRepo, mirrorPushNow } from "../apps/cloud-repo.service";
 import {
@@ -59,7 +58,6 @@ import {
 } from "./dbt-working-tree.service";
 import { listJobDefinitionsAtMain } from "./dbt-config.service";
 
-let mongo: MongoMemoryServer;
 let pg: PgTestDb;
 let tmpRoot: string;
 let remotesRoot: string;
@@ -75,14 +73,10 @@ beforeAll(async () => {
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   pg = await setupPgTestDb();
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
   await pg?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -93,7 +87,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   WS = new Types.ObjectId();
-  await Promise.all([pg.reset(), DbtProject.deleteMany({})]);
+  await pg.reset();
   await ensureTestWorkspace(pg.db, { id: String(WS) });
   process.env.APPS_CONNECTED_REPO_PUSH = "allow";
   const repo = `ws-${WS.toString()}`;
@@ -102,15 +96,15 @@ beforeEach(async () => {
   state.binding = { owner: "acme", repo };
 });
 
-async function seedProject(): Promise<IDbtProject> {
-  return DbtProject.create({
-    workspaceId: WS,
+async function seedProject(): Promise<DbtProjectRecord> {
+  return dbtRepo.createProject({
+    workspaceId: String(WS),
     name: "Analytics",
     dbtVersion: "1.9",
     environments: [
       {
         name: "prod",
-        connectionId: new Types.ObjectId(),
+        connectionId: String(new Types.ObjectId()),
         targetSchema: "dbt_prod",
         threads: 8,
       },
