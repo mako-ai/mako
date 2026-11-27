@@ -1220,11 +1220,12 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
       getDbCalls += 1;
       return db;
     };
+    let rngValue = 0.0;
     const router = new MigrationRouter({
       enablePubSub: false,
       getDb: () => db,
       shadowRunner,
-      rng: () => 0.0,
+      rng: () => rngValue,
     });
     const dual = new DualAppsMetadataRepository({
       router,
@@ -1322,12 +1323,13 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
       expiresAt: new Date(now.getTime() + 600_000),
     });
 
-    // Unsampled Stage 3 read: ZERO extra getDb calls from DualAppsMetadataRepository!
+    // Unsampled Stage 3 read (rng >= shadowSampleRate): ZERO extra getDb calls from DualAppsMetadataRepository!
+    rngValue = 0.99;
     await router.setDomainState({
       domain: APPS_METADATA_DOMAIN,
       workspaceId: wsId,
       mode: "dual_write_shadow_compare",
-      shadowSampleRate: 0,
+      shadowSampleRate: 0.5,
     });
     getDbCalls = 0;
     const unsampled = await dual.findProjectById(proj.id, wsId);
@@ -1336,6 +1338,7 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
     expect(getDbCalls).toBe(0);
 
     // 100% sampled Stage 3 reads across ALL user-bearing & timestamped ops -> 0 mismatches!
+    rngValue = 0.0;
     await router.setDomainState({
       domain: APPS_METADATA_DOMAIN,
       workspaceId: wsId,

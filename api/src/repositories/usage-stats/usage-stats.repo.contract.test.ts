@@ -1321,11 +1321,12 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
       getDbCalls += 1;
       return db;
     };
+    let rngValue = 0.0;
     const router = new MigrationRouter({
       enablePubSub: false,
       getDb: () => db,
       shadowRunner,
-      rng: () => 0.0,
+      rng: () => rngValue,
     });
     const dual = new DualUsageStatsRepository({
       router,
@@ -1426,12 +1427,13 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
     );
     expect(pgSummary.byUser.system).toBe(1);
 
-    // Unsampled Stage 3 read executes ZERO extra PG queries
+    // Unsampled Stage 3 read (rng >= shadowSampleRate) executes ZERO extra PG queries
+    rngValue = 0.99;
     await router.setDomainState({
       domain: USAGE_STATS_DOMAIN,
       workspaceId: wsId,
       mode: "dual_write_shadow_compare",
-      shadowSampleRate: 0,
+      shadowSampleRate: 0.5,
     });
     getDbCalls = 0;
     await dual.loadAppUsageRollups(wsId, "2026-11-25");
@@ -1439,6 +1441,7 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
     expect(getDbCalls).toBe(0);
 
     // 100% sampled Stage 3 reads across all 8 user-bearing reads -> 0 mismatches!
+    rngValue = 0.0;
     await router.setDomainState({
       domain: USAGE_STATS_DOMAIN,
       workspaceId: wsId,
