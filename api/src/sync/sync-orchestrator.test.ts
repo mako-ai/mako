@@ -11,15 +11,13 @@ import type { CdcDestinationAdapter } from "../sync-cdc/adapters/registry";
  * never truncate, no matter how many times a run calls it.
  */
 
-vi.mock("../database/workspace-schema", () => ({
-  DatabaseConnection: {
-    // Scoped by workspace (utils/workspace-scope.ts): findOne, not findById.
-    findOne: vi.fn(() => ({
-      select: () => ({
-        lean: () => Promise.resolve({ type: "bigquery" }),
-      }),
-    })),
+vi.mock("../repositories/connections", () => ({
+  connectionsRepo: {
+    findDatabaseConnectionSummary: vi.fn(async () => ({ type: "bigquery" })),
   },
+}));
+
+vi.mock("../database/workspace-schema", () => ({
   // performPrepareStaging clears the staged marks in the flush buffer.
   Flow: {
     db: {

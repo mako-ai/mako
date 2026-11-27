@@ -1,21 +1,14 @@
 /**
  * Auth domain repository entry point (Neon Postgres `pg_only`).
  */
-import { createPgFirstRepoProxy } from "../resolve-repo";
-import { MongoAuthRepository } from "./mongo.repo";
 import { PgAuthRepository } from "./pg.repo";
 import type { AuthRepository } from "./types";
 
 export * from "./types";
 export * from "./mapper";
-export { MongoAuthRepository } from "./mongo.repo";
 export { PgAuthRepository } from "./pg.repo";
 
-const defaultAuthRepo: AuthRepository = createPgFirstRepoProxy<AuthRepository>(
-  "auth",
-  new PgAuthRepository(),
-  new MongoAuthRepository(),
-);
+const defaultAuthRepo: AuthRepository = new PgAuthRepository();
 let activeAuthRepo: AuthRepository = defaultAuthRepo;
 
 export function getAuthRepo(): AuthRepository {

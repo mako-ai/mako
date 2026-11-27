@@ -2,9 +2,8 @@
  * Test-only: one migrated PGlite per test file, wired into `getPgDb()`.
  *
  * Replaces the `MongoMemoryServer` + `mongoose.connect` rig in suites whose
- * data lives in Postgres (`api/src/repositories/*`). Every repository proxy
- * dispatches to its `Pg*Repository` while `setPgTestDb()` is active, so a
- * suite on this harness never reads or writes Mongo through a repository.
+ * data lives in Postgres (`api/src/repositories/*`). Core repositories use the
+ * injected database.
  *
  *   let h: PgTestDb;
  *   beforeAll(async () => { h = await setupPgTestDb(); });

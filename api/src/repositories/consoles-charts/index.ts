@@ -1,25 +1,18 @@
 /**
  * Consoles & Charts domain repository entry point (Neon Postgres `pg_only`).
  */
-import { createPgFirstRepoProxy } from "../resolve-repo";
-import { MongoConsolesChartsRepository } from "./mongo.repo";
 import { PgConsolesChartsRepository } from "./pg.repo";
 import type { ConsolesChartsRepository } from "./types";
 
 export * from "./types";
 export * from "./mapper";
-export { MongoConsolesChartsRepository } from "./mongo.repo";
 export {
   PgConsolesChartsRepository,
   type PgConsolesChartsRepositoryDeps,
 } from "./pg.repo";
 
 const defaultConsolesChartsRepo: ConsolesChartsRepository =
-  createPgFirstRepoProxy<ConsolesChartsRepository>(
-    "consoles_charts",
-    new PgConsolesChartsRepository(),
-    new MongoConsolesChartsRepository(),
-  );
+  new PgConsolesChartsRepository();
 let activeConsolesChartsRepo: ConsolesChartsRepository =
   defaultConsolesChartsRepo;
 

@@ -1,33 +1,7 @@
-/**
- * Phase 3 (Part 2) normalized `chat` domain repository & migration contract test suite.
- *
- * Covers:
- *   - 0008_phase3_chat schema (6 normalized tables, NO `chat_messages.parts` column,
- *     NO `chat_stream_events` / `stream_event` table) + deferred `0008a_llm_usage_chat_fk.sql`.
- *   - Lossless unpack/repack of EVERY AI SDK v7 & Local ACP part type:
- *     `text`, `reasoning` + Anthropic `providerMetadata.anthropic.signature`,
- *     `file` + `/chat-images/:id` attachment FK link, `tool-*` & `dynamic-tool`
- *     with explicit JSON `null` (`'null'::jsonb`) vs omitted `output` (`SQL NULL`),
- *     `step-start`, `source-url`, `source-document`, and Local ACP custom `other` parts.
- *   - Diff-aware prefix preservation on `saveMessages` (unchanged prefix IDs preserved;
- *     edit/regenerate rewinds tail >= N cleanly).
- *   - Multi-segment `chat_usage_entries.entry_index` idempotency with identical
- *     `assistant_message_index`.
- *   - Tied-`updatedAt` keyset pagination parity between Mongo and PG (UUIDv8 ordering).
- *   - `extractModifiedConsoleIds()` reading normalized `parts[]` + legacy `toolCalls`.
- *   - Transactional `deleteOwned` (wrong user preserves attachments; authorized delete
- *     cascades and returns `deletedAttachmentKeys`; Stage 2 tombstone blocks resurrection).
- *   - Full 5-stage lifecycle + Stage 4 -> Stage 2 instant rollback (PG->Mongo repack).
- *   - Backfill of `chats` (incl. legacy pre-`parts` synthesis) -> `chat_attachments`
- *     with orphan `ChatAttachment` quarantine + part `attachment_id` back-linking + verifier `--repair`.
- */
 import type { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate as drizzlePgliteMigrate } from "drizzle-orm/pglite/migrator";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose from "mongoose";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Chat, ChatAttachment } from "../../database/models/chats";
 import {
   resetPgTestDb,
   setPgTestDb,
@@ -49,16 +23,13 @@ import { createTestPglite } from "../../database/pg/test-pglite";
 import { extractModifiedConsoleIds } from "../../routes/chats";
 import {
   decodeChatListCursor,
-  MongoChatRepository,
   PgChatRepository,
   type StoredChatMessage,
 } from "./index";
 
-describe("Phase 3 normalized Chat repository & migration contract suite", () => {
-  let mongoServer: MongoMemoryServer;
+describe("Postgres chat repository and schema", () => {
   let pg: PGlite;
   let db: MakoPgDb;
-  let mongoRepo: MongoChatRepository;
   let pgRepo: PgChatRepository;
 
   const user1Uuid = generateUuidv7();
@@ -67,11 +38,6 @@ describe("Phase 3 normalized Chat repository & migration contract suite", () => 
   const wsUuid = objectIdToUuid(wsId);
 
   beforeAll(async () => {
-    mongoServer = await MongoMemoryServer.create();
-    await mongoose.connect(mongoServer.getUri(), { dbName: "mako_chat_test" });
-    await Chat.createIndexes();
-    await ChatAttachment.createIndexes();
-
     pg = createTestPglite();
     db = drizzle(pg, { schema }) as unknown as MakoPgDb;
     const migrationsFolder = resolveMigrationsFolder();
@@ -90,19 +56,15 @@ describe("Phase 3 normalized Chat repository & migration contract suite", () => 
       [wsUuid, user1Uuid],
     );
 
-    mongoRepo = new MongoChatRepository();
     pgRepo = new PgChatRepository({ getDb: () => db });
   });
 
   afterAll(async () => {
     resetPgTestDb();
     await pg.close();
-    await mongoose.disconnect();
-    await mongoServer.stop();
   });
 
   beforeEach(async () => {
-    await Promise.all([Chat.deleteMany({}), ChatAttachment.deleteMany({})]);
     await pg.exec(`
       TRUNCATE chat_message_part_metadata, chat_message_parts, chat_attachments,
                chat_usage_entries, chat_messages, chats,
@@ -537,49 +499,29 @@ describe("Phase 3 normalized Chat repository & migration contract suite", () => 
     expect(idsAfterEdit.messages[1].id).not.toBe(idsAfterSeg1.messages[1].id);
   });
 
-  it("matches Mongo and Postgres keyset pagination byte-for-byte across tied updatedAt timestamps", async () => {
+  it("paginates user chats by descending timestamp and ID and lists app chats separately", async () => {
     const base = Date.UTC(2026, 6, 1, 12, 0, 0);
+    const chatId = (index: number) => index.toString(16).padStart(24, "0");
     // 11 chats across 3 tied updatedAt buckets + 1 workflow + 1 app chat (both excluded from user list)
     for (let i = 0; i < 11; i++) {
-      const id = newDualId(base + i * 1000).oid;
-      const tiedUpdatedAt = new Date(base + Math.floor(i / 4) * 60_000);
-      const input = {
-        id,
+      await pgRepo.create({
+        id: chatId(i),
         workspaceId: wsId,
         createdBy: user1Uuid,
         title: `Chat ${i}`,
         createdAt: new Date(base),
-        updatedAt: tiedUpdatedAt,
-      };
-      await mongoRepo.create(input);
-      await pgRepo.create(input);
+        updatedAt: new Date(base + (i % 3) * 60_000),
+      });
     }
     const wfId = newDualId(base + 50_000).oid;
     const appChatId = newDualId(base + 51_000).oid;
     const appId = newDualId().oid;
-    await mongoRepo.create({
-      id: wfId,
-      workspaceId: wsId,
-      createdBy: user1Uuid,
-      title: "Workflow run",
-      source: "workflow",
-      updatedAt: new Date(base + 999_000),
-    });
     await pgRepo.create({
       id: wfId,
       workspaceId: wsId,
       createdBy: user1Uuid,
       title: "Workflow run",
       source: "workflow",
-      updatedAt: new Date(base + 999_000),
-    });
-    await mongoRepo.create({
-      id: appChatId,
-      workspaceId: wsId,
-      createdBy: user1Uuid,
-      title: "App chat",
-      source: "app",
-      appId,
       updatedAt: new Date(base + 999_000),
     });
     await pgRepo.create({
@@ -592,42 +534,37 @@ describe("Phase 3 normalized Chat repository & migration contract suite", () => 
       updatedAt: new Date(base + 999_000),
     });
 
-    // Walk pages of size 3 (regularly splits tied buckets) on BOTH stores and compare every page!
-    let mongoCursor: string | null = null;
-    let pgCursor: string | null = null;
-    const mongoWalk: string[] = [];
-    const pgWalk: string[] = [];
-
-    do {
-      const mPage = await mongoRepo.listUserChats({
+    const pages = [
+      [8, 5, 2],
+      [10, 7, 4],
+      [1, 9, 6],
+      [3, 0],
+    ];
+    let cursor: string | null = null;
+    for (const expected of pages) {
+      const page = await pgRepo.listUserChats({
         workspaceId: wsId,
         userId: user1Uuid,
         limit: 3,
-        after: mongoCursor ? decodeChatListCursor(mongoCursor) : null,
+        after: cursor ? decodeChatListCursor(cursor) : null,
       });
-      const pPage = await pgRepo.listUserChats({
-        workspaceId: wsId,
-        userId: user1Uuid,
-        limit: 3,
-        after: pgCursor ? decodeChatListCursor(pgCursor) : null,
-      });
-      expect(pPage.chats.map(c => c._id)).toEqual(mPage.chats.map(c => c._id));
-      expect(pPage.nextCursor).toBe(mPage.nextCursor);
-      mongoWalk.push(...mPage.chats.map(c => c._id));
-      pgWalk.push(...pPage.chats.map(c => c._id));
-      mongoCursor = mPage.nextCursor;
-      pgCursor = pPage.nextCursor;
-    } while (mongoCursor || pgCursor);
+      expect(page.chats.map(chat => chat._id)).toEqual(expected.map(chatId));
+      const last = expected[expected.length - 1];
+      const expectedCursor =
+        expected.length === 3
+          ? Buffer.from(
+              JSON.stringify({
+                u: base + (last % 3) * 60_000,
+                i: chatId(last),
+              }),
+            ).toString("base64url")
+          : null;
+      expect(page.nextCursor).toBe(expectedCursor);
+      cursor = page.nextCursor;
+    }
 
-    expect(pgWalk).toHaveLength(11);
-    expect(new Set(pgWalk).size).toBe(11);
-    expect(pgWalk).toEqual(mongoWalk);
-
-    // App chats list parity too.
-    const mApp = await mongoRepo.listAppChats(wsId, appId, user1Uuid);
-    const pApp = await pgRepo.listAppChats(wsId, appId, user1Uuid);
-    expect(pApp.map(c => c.id)).toEqual([appChatId]);
-    expect(mApp.map(c => c.id)).toEqual([appChatId]);
+    const appChats = await pgRepo.listAppChats(wsId, appId, user1Uuid);
+    expect(appChats.map(chat => chat.id)).toEqual([appChatId]);
   });
 
   it("executes deleteOwned transactionally (preserving blobs on wrong user; returning storage keys only on authorized commit)", async () => {

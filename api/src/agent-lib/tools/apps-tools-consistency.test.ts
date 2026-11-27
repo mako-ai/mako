@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 
 const state = vi.hoisted(() => ({
   events: [] as string[],
@@ -20,13 +21,6 @@ const state = vi.hoisted(() => ({
           stageStartedAt: Date;
           updatedAt: Date;
         },
-  },
-}));
-
-vi.mock("../../database/workspace-schema", () => ({
-  AppProject: {
-    find: vi.fn(async () => []),
-    findOne: vi.fn(async () => null),
   },
 }));
 
@@ -153,6 +147,10 @@ const tools = () =>
     workspaceId: "6a9411eb4c8b33609a65e666",
   }) as unknown as Record<string, Executable>;
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 beforeEach(() => {
   state.events = [];
   state.role = null;
@@ -162,7 +160,11 @@ beforeEach(() => {
 
 describe("app tool repository consistency", () => {
   it("lists from the repo primitive, which freshens the mirror itself (throttled)", async () => {
+    const listProjects = vi
+      .spyOn(appsMetadataRepo, "listProjectsByWorkspace")
+      .mockResolvedValue([]);
     const result = await tools().app_list_apps.execute({});
+    expect(listProjects).toHaveBeenCalledWith("6a9411eb4c8b33609a65e666");
 
     expect(result.success).toBe(true);
     // No per-call force fetch here: listAppFolders owns the throttled

@@ -1,20 +1,7 @@
-/**
- * Phase 2A-2 (`consoles_charts` domain — 7 tables) repository contract,
- * 5-stage dual-run + rollback parity, pgvector + tsvector + trigram search,
- * UUIDv7/Lucia/sentinel user mapping, 10-stage 2-pass self-FK backfill,
- * legacy `"dashboard"` + orphan quarantine, parity verifier (`--repair`),
- * tombstone protection, sync-retry, sparse 90d TTL reaper, and post-backfill
- * `consoles-connection-fk` test suite.
- */
 import { randomUUID } from "node:crypto";
-import type { PGlite } from "@electric-sql/pglite";
 import { eq, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/pglite";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
 import {
   afterAll,
-  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -22,41 +9,20 @@ import {
   it,
   vi,
 } from "vitest";
+import type { MakoPgDb } from "../../database/pg/client";
 import {
-  resetPgTestDb,
-  setPgTestDb,
-  type MakoPgDb,
-} from "../../database/pg/client";
-import {
+  generateObjectIdHex,
   generateUuidv7,
   legacyUserIdToUuidv7,
   objectIdToUuid,
 } from "../../database/pg/id-codec";
-import { runPgliteMigrations } from "../../database/pg/migrate";
 import { runPostBackfillStep } from "../../database/pg/post-backfill";
 import * as pgSchema from "../../database/pg/schema";
-import { createTestPglite } from "../../database/pg/test-pglite";
-import { User } from "../../database/schema";
-import {
-  ConsoleFolder,
-  EntityVersion,
-  Favourite,
-  NotebookFolder,
-  NotebookIndex,
-  SavedConsole,
-  ScheduledQueryRun,
-  Workspace,
-  WorkspaceMember,
-} from "../../database/workspace-schema";
+import { setupPgTestDb, type PgTestDb } from "../../test-support/pg-test";
 import { createRouter } from "../../openapi/core";
 import { consoleSharingRoutes } from "../../routes/consoles/sharing";
 import { PgAuthRepository } from "../auth/pg.repo";
-import {
-  MongoConsolesChartsRepository,
-  PgConsolesChartsRepository,
-  consolesChartsRepo,
-  type ConsolesChartsRepository,
-} from "./index";
+import { PgConsolesChartsRepository, consolesChartsRepo } from "./index";
 
 /** Build a deterministic normalized 1536-dim embedding vector. */
 function makeUnitVector(primaryAxis: number, secondaryAxis = 1): number[] {
@@ -67,12 +33,10 @@ function makeUnitVector(primaryAxis: number, secondaryAxis = 1): number[] {
   return vec.map(v => v / norm);
 }
 
-/** Generate a deterministic 24-hex ObjectId with an explicit 4-byte timestamp prefix. */
-
-describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", () => {
-  let mongo: MongoMemoryServer;
-  let pg: PGlite;
+describe("PostgreSQL consoles and charts repository", () => {
+  let harness: PgTestDb;
   let db: MakoPgDb;
+  let repo: PgConsolesChartsRepository;
 
   let wsId: string;
   let wsUuid: string;
@@ -85,27 +49,9 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
   let userV4Id: string;
   let userV4Uuid: string;
 
-  let userLookupMap: Map<string, string>;
-  let resolveUserUuid: (id: string) => Promise<string | null>;
-
   beforeAll(async () => {
-    mongo = await MongoMemoryServer.create();
-    await mongoose.connect(mongo.getUri());
-    await Promise.all([
-      User.syncIndexes(),
-      Workspace.syncIndexes(),
-      ConsoleFolder.syncIndexes(),
-      SavedConsole.syncIndexes(),
-      EntityVersion.syncIndexes(),
-      NotebookFolder.syncIndexes(),
-      NotebookIndex.syncIndexes(),
-      Favourite.syncIndexes(),
-      ScheduledQueryRun.syncIndexes(),
-    ]);
-
-    pg = createTestPglite();
-    await runPgliteMigrations(pg);
-    db = drizzle(pg, { schema: pgSchema }) as unknown as MakoPgDb;
+    harness = await setupPgTestDb();
+    db = harness.db;
   }, 120_000);
 
   async function seedBaseFixtures(): Promise<void> {
@@ -117,14 +63,17 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
     userV4Id = randomUUID();
     userV4Uuid = legacyUserIdToUuidv7(userV4Id, createdAt);
 
-    userLookupMap = new Map<string, string>([
+    const userLookupMap = new Map<string, string>([
       [userLuciaId, userLuciaUuid],
       [userLuciaUuid, userLuciaUuid],
       [userV7Id, userV7Id],
       [userV4Id, userV4Uuid],
       [userV4Uuid, userV4Uuid],
     ]);
-    resolveUserUuid = async (raw: string) => userLookupMap.get(raw) ?? null;
+    repo = new PgConsolesChartsRepository({
+      getDb: () => db,
+      resolveUserUuid: async raw => userLookupMap.get(raw) ?? null,
+    });
 
     const pgAuth = new PgAuthRepository({ getDb: () => db });
     await pgAuth.createUser({
@@ -146,9 +95,9 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       createdAt,
     });
 
-    wsId = new Types.ObjectId().toString();
+    wsId = generateObjectIdHex();
     wsUuid = objectIdToUuid(wsId);
-    ws2Id = new Types.ObjectId().toString();
+    ws2Id = generateObjectIdHex();
     ws2Uuid = objectIdToUuid(ws2Id);
 
     await db.insert(pgSchema.workspaces).values([
@@ -171,644 +120,560 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
     ]);
   }
 
-  async function cleanAllStores(): Promise<void> {
-    await Promise.all([
-      User.deleteMany({}),
-      Workspace.deleteMany({}),
-      WorkspaceMember.deleteMany({}),
-      ConsoleFolder.deleteMany({}),
-      SavedConsole.deleteMany({}),
-      EntityVersion.deleteMany({}),
-      NotebookFolder.deleteMany({}),
-      NotebookIndex.deleteMany({}),
-      Favourite.deleteMany({}),
-      ScheduledQueryRun.deleteMany({}),
-    ]);
-    await pg.exec(`
-      DELETE FROM scheduled_query_runs;
-      DELETE FROM favourites;
-      DELETE FROM notebook_indexes;
-      DELETE FROM notebook_folders;
-      DELETE FROM entity_versions;
-      DELETE FROM saved_consoles;
-      DELETE FROM console_folders;
-      DELETE FROM workspaces;
-      DELETE FROM users;
-      DELETE FROM migration_domain_state;
-      DELETE FROM migration_backfill_jobs;
-      DELETE FROM migration_tombstones;
-      DELETE FROM migration_quarantine;
-    `);
-  }
-
   beforeEach(async () => {
-    setPgTestDb(db);
-    await cleanAllStores();
+    await harness.reset();
     await seedBaseFixtures();
   });
 
-  afterEach(() => {
-    resetPgTestDb();
-  });
-
   afterAll(async () => {
-    await mongoose.disconnect();
-    await mongo.stop();
-    await pg.close();
+    await harness.close();
   });
 
-  // ── 1. Shared Repository Contract (Mongo AND Postgres) ───────────────────
+  describe("repository contract", () => {
+    it("covers console_folders CRUD, hierarchy, and cycle detection", async () => {
+      const root = await repo.createConsoleFolder({
+        workspaceId: wsId,
+        name: "Analytics",
+        ownerId: userLuciaId,
+        access: "workspace",
+        isPrivate: false,
+      });
+      expect(root.name).toBe("Analytics");
+      expect(root.parentId).toBeUndefined();
+      expect(root.ownerId).toBe(userLuciaUuid);
 
-  const implementations: Array<{
-    name: string;
-    isPg: boolean;
-    create: () => ConsolesChartsRepository;
-  }> = [
-    {
-      name: "MongoConsolesChartsRepository",
-      isPg: false,
-      create: () => new MongoConsolesChartsRepository(),
-    },
-    {
-      name: "PgConsolesChartsRepository",
-      isPg: true,
-      create: () =>
-        new PgConsolesChartsRepository({
-          getDb: () => db,
-          resolveUserUuid,
-        }),
-    },
-  ];
+      const child = await repo.createConsoleFolder({
+        workspaceId: wsId,
+        name: "Revenue",
+        parentId: root.id,
+        ownerId: userV7Id,
+        access: "private",
+        isPrivate: true,
+      });
+      expect(child.parentId).toBe(root.id);
 
-  for (const impl of implementations) {
-    describe(`ConsolesChartsRepository contract: ${impl.name}`, () => {
-      it("covers console_folders CRUD, hierarchy, and cycle detection", async () => {
-        const repo = impl.create();
+      const fetched = await repo.findConsoleFolderById(wsId, child.id);
+      expect(fetched?.name).toBe("Revenue");
 
-        const root = await repo.createConsoleFolder({
-          workspaceId: wsId,
-          name: "Analytics",
-          ownerId: userLuciaId,
-          access: "workspace",
-          isPrivate: false,
-        });
-        expect(root.name).toBe("Analytics");
-        expect(root.parentId).toBeUndefined();
-        expect(root.ownerId).toBe(impl.isPg ? userLuciaUuid : userLuciaId);
+      const byIds = await repo.findConsoleFoldersByIds(wsId, [
+        root.id,
+        child.id,
+      ]);
+      expect(byIds).toHaveLength(2);
 
-        const child = await repo.createConsoleFolder({
-          workspaceId: wsId,
-          name: "Revenue",
-          parentId: root.id,
-          ownerId: userV7Id,
-          access: "private",
-          isPrivate: true,
-        });
-        expect(child.parentId).toBe(root.id);
+      const byName = await repo.findConsoleFolderByNameAndParent(
+        wsId,
+        "Revenue",
+        root.id,
+      );
+      expect(byName?.id).toBe(child.id);
 
-        const fetched = await repo.findConsoleFolderById(wsId, child.id);
-        expect(fetched?.name).toBe("Revenue");
+      const children = await repo.listChildConsoleFolders(wsId, root.id);
+      expect(children.map(c => c.id)).toEqual([child.id]);
 
-        const byIds = await repo.findConsoleFoldersByIds(wsId, [
-          root.id,
-          child.id,
-        ]);
-        expect(byIds).toHaveLength(2);
+      expect(
+        await repo.wouldCreateConsoleFolderCycle(wsId, root.id, child.id),
+      ).toBe(true);
+      expect(
+        await repo.wouldCreateConsoleFolderCycle(wsId, root.id, root.id),
+      ).toBe(true);
+      expect(
+        await repo.wouldCreateConsoleFolderCycle(wsId, child.id, root.id),
+      ).toBe(false);
 
-        const byName = await repo.findConsoleFolderByNameAndParent(
-          wsId,
-          "Revenue",
-          root.id,
-        );
-        expect(byName?.id).toBe(child.id);
+      const renamed = await repo.updateConsoleFolder(wsId, child.id, {
+        name: "MRR",
+        parentId: null,
+      });
+      expect(renamed?.name).toBe("MRR");
+      expect(renamed?.parentId).toBeUndefined();
 
-        const children = await repo.listChildConsoleFolders(wsId, root.id);
-        expect(children.map(c => c.id)).toEqual([child.id]);
+      expect(await repo.deleteConsoleFolder(wsId, child.id)).toBe(true);
+      expect(await repo.findConsoleFolderById(wsId, child.id)).toBeNull();
+    });
 
-        expect(
-          await repo.wouldCreateConsoleFolderCycle(wsId, root.id, child.id),
-        ).toBe(true);
-        expect(
-          await repo.wouldCreateConsoleFolderCycle(wsId, root.id, root.id),
-        ).toBe(true);
-        expect(
-          await repo.wouldCreateConsoleFolderCycle(wsId, child.id, root.id),
-        ).toBe(false);
-
-        const renamed = await repo.updateConsoleFolder(wsId, child.id, {
-          name: "MRR",
-          parentId: null,
-        });
-        expect(renamed?.name).toBe("MRR");
-        expect(renamed?.parentId).toBeUndefined();
-
-        expect(await repo.deleteConsoleFolder(wsId, child.id)).toBe(true);
-        expect(await repo.findConsoleFolderById(wsId, child.id)).toBeNull();
+    it("covers saved_consoles CRUD, chartSpec, optimistic concurrency, schedules, and sentinels", async () => {
+      const folder = await repo.createConsoleFolder({
+        workspaceId: wsId,
+        name: "Reports",
+        ownerId: userV7Id,
       });
 
-      it("covers saved_consoles CRUD, chartSpec, optimistic concurrency, schedules, and sentinels", async () => {
-        const repo = impl.create();
-        const folder = await repo.createConsoleFolder({
-          workspaceId: wsId,
-          name: "Reports",
-          ownerId: userV7Id,
-        });
+      const connId = generateObjectIdHex();
+      const chartSpec = {
+        type: "bar",
+        xAxis: "month",
+        yAxis: ["revenue"],
+      };
+      const created = await repo.createConsole({
+        workspaceId: wsId,
+        folderId: folder.id,
+        connectionId: connId,
+        databaseName: "analytics",
+        name: "Monthly Revenue",
+        description: "Monthly revenue rollup by region",
+        code: "SELECT month, SUM(revenue) FROM invoices GROUP BY 1",
+        language: "sql",
+        chartSpec,
+        resultsViewMode: "chart",
+        createdBy: userLuciaId,
+        owner_id: userV4Id,
+        access: "workspace",
+        isPrivate: false,
+        isSaved: true,
+        workspaceRole: "editor",
+        sharedWith: [
+          {
+            userId: userV7Id,
+            role: "viewer",
+            addedAt: new Date("2026-11-02T00:00:00.000Z"),
+            addedBy: userLuciaId,
+          },
+        ],
+        path: "consoles/Reports/Monthly Revenue.sql",
+        sourceBlobSha: "sha-001",
+      });
 
-        const connId = new Types.ObjectId().toString();
-        const chartSpec = {
-          type: "bar",
-          xAxis: "month",
-          yAxis: ["revenue"],
-        };
-        const created = await repo.createConsole({
-          workspaceId: wsId,
-          folderId: folder.id,
-          connectionId: connId,
-          databaseName: "analytics",
-          name: "Monthly Revenue",
-          description: "Monthly revenue rollup by region",
-          code: "SELECT month, SUM(revenue) FROM invoices GROUP BY 1",
-          language: "sql",
-          chartSpec,
-          resultsViewMode: "chart",
-          createdBy: userLuciaId,
-          owner_id: userV4Id,
-          access: "workspace",
-          isPrivate: false,
-          isSaved: true,
-          workspaceRole: "editor",
-          sharedWith: [
-            {
-              userId: userV7Id,
-              role: "viewer",
-              addedAt: new Date("2026-11-02T00:00:00.000Z"),
-              addedBy: userLuciaId,
-            },
-          ],
-          path: "consoles/Reports/Monthly Revenue.sql",
-          sourceBlobSha: "sha-001",
-        });
+      expect(created.chartSpec).toEqual(chartSpec);
+      expect(created.resultsViewMode).toBe("chart");
+      expect(created.connectionId).toBe(connId);
+      expect(created.createdBy).toBe(userLuciaUuid);
+      expect(created.owner_id).toBe(userV4Uuid);
+      expect(created.sharedWith[0].userId).toBe(userV7Id);
+      expect(created.sharedWith[0].addedBy).toBe(userLuciaUuid);
 
-        expect(created.chartSpec).toEqual(chartSpec);
-        expect(created.resultsViewMode).toBe("chart");
-        expect(created.connectionId).toBe(connId);
-        expect(created.createdBy).toBe(impl.isPg ? userLuciaUuid : userLuciaId);
-        expect(created.owner_id).toBe(impl.isPg ? userV4Uuid : userV4Id);
-        expect(created.sharedWith[0].userId).toBe(userV7Id);
-        expect(created.sharedWith[0].addedBy).toBe(
-          impl.isPg ? userLuciaUuid : userLuciaId,
-        );
+      // Non-user sentinels ("git", "system", "agent") persist cleanly without FK errors.
+      const sentinelConsole = await repo.createConsole({
+        workspaceId: wsId,
+        name: "Git Synced",
+        code: "SELECT 1",
+        language: "sql",
+        createdBy: "git",
+        owner_id: "unowned:ghost",
+        isSaved: true,
+      });
+      expect(sentinelConsole.createdBy).toBe("");
+      expect(sentinelConsole.owner_id).toBeUndefined();
 
-        // Non-user sentinels ("git", "system", "agent") persist cleanly without FK errors.
-        const sentinelConsole = await repo.createConsole({
-          workspaceId: wsId,
-          name: "Git Synced",
-          code: "SELECT 1",
-          language: "sql",
-          createdBy: "git",
-          owner_id: "unowned:ghost",
-          isSaved: true,
-        });
-        expect(sentinelConsole.createdBy).toBe(impl.isPg ? "" : "git");
-        expect(sentinelConsole.owner_id).toBe(
-          impl.isPg ? undefined : "unowned:ghost",
-        );
+      // Lookup helpers
+      expect((await repo.findConsoleByIdGlobal(created.id))?.id).toBe(
+        created.id,
+      );
+      expect(
+        (
+          await repo.findConsoleByPath(
+            wsId,
+            "consoles/Reports/Monthly Revenue.sql",
+            { isSavedOnly: true },
+          )
+        )?.id,
+      ).toBe(created.id);
+      expect(
+        (
+          await repo.findConsoleByNameAndFolder(
+            wsId,
+            "Monthly Revenue",
+            folder.id,
+            { isSavedOnly: true },
+          )
+        )?.id,
+      ).toBe(created.id);
 
-        // Lookup helpers
-        expect((await repo.findConsoleByIdGlobal(created.id))?.id).toBe(
+      // Optimistic concurrency via guardedSaveConsole
+      const savedOk = await repo.guardedSaveConsole({
+        workspaceId: wsId,
+        consoleId: created.id,
+        expectedVersion: 1,
+        expectedDraftRevision: 1,
+        upsert: false,
+        set: { code: "SELECT 42", updatedAt: new Date() },
+        incVersion: 1,
+        incDraftRevision: 1,
+      });
+      expect(savedOk?.version).toBe(2);
+      expect(savedOk?.draftRevision).toBe(2);
+
+      // Stale version fails atomically (returns null)
+      const conflict = await repo.guardedSaveConsole({
+        workspaceId: wsId,
+        consoleId: created.id,
+        expectedVersion: 1,
+        expectedDraftRevision: 2,
+        upsert: false,
+        set: { code: "SELECT 999" },
+        incVersion: 1,
+        incDraftRevision: 1,
+      });
+      expect(conflict).toBeNull();
+
+      // Upsert on brand-new consoleId when no guard is active
+      const draftId = generateObjectIdHex();
+      const upserted = await repo.guardedSaveConsole({
+        workspaceId: wsId,
+        consoleId: draftId,
+        upsert: true,
+        set: { code: "SELECT 'draft'", lastDraftOrigin: "user" },
+        incDraftRevision: 1,
+        setOnInsert: {
+          name: "Untitled",
+          createdBy: userV7Id,
+          owner_id: userV7Id,
+          isSaved: false,
+        },
+      });
+      expect(upserted?.id).toBe(draftId);
+      expect(upserted?.isSaved).toBe(false);
+
+      // Execution + external use telemetry
+      const execAt = new Date("2026-11-03T12:00:00.000Z");
+      expect(
+        await repo.recordConsoleExecution(wsId, created.id, {
+          lastExecutedAt: execAt,
+          bumpDraftRevision: true,
+          lastRun: {
+            at: execAt,
+            status: "success",
+            rowCount: 10,
+            durationMs: 42,
+            runBy: userLuciaId,
+            source: "agent",
+            executionId: "exec-1",
+          },
+        }),
+      ).toBe(true);
+      const afterExec = await repo.findConsoleById(wsId, created.id);
+      expect(afterExec?.executionCount).toBe(1);
+      expect(afterExec?.draftRevision).toBe(3);
+      expect(afterExec?.lastRun?.runBy).toBe(userLuciaUuid);
+
+      const t1 = new Date("2026-11-03T12:01:00.000Z");
+      expect(
+        await repo.recordConsoleExternalUse(
+          wsId,
           created.id,
-        );
-        expect(
-          (
-            await repo.findConsoleByPath(
-              wsId,
-              "consoles/Reports/Monthly Revenue.sql",
-              { isSavedOnly: true },
-            )
-          )?.id,
-        ).toBe(created.id);
-        expect(
-          (
-            await repo.findConsoleByNameAndFolder(
-              wsId,
-              "Monthly Revenue",
-              folder.id,
-              { isSavedOnly: true },
-            )
-          )?.id,
-        ).toBe(created.id);
+          "mcp",
+          "access",
+          t1,
+        ),
+      ).toBe(true);
+      // Second access within 60s is throttled (no write)
+      expect(
+        await repo.recordConsoleExternalUse(
+          wsId,
+          created.id,
+          "mcp",
+          "access",
+          new Date(t1.getTime() + 10_000),
+        ),
+      ).toBe(false);
+      expect(
+        await repo.recordConsoleExternalUse(
+          wsId,
+          created.id,
+          "api",
+          "execute",
+          new Date(t1.getTime() + 20_000),
+        ),
+      ).toBe(true);
+      expect(
+        (await repo.findConsoleById(wsId, created.id))?.externalUseCount,
+      ).toBe(1);
 
-        // Optimistic concurrency via guardedSaveConsole
-        const savedOk = await repo.guardedSaveConsole({
-          workspaceId: wsId,
-          consoleId: created.id,
-          expectedVersion: 1,
-          expectedDraftRevision: 1,
-          upsert: false,
-          set: { code: "SELECT 42", updatedAt: new Date() },
-          incVersion: 1,
-          incDraftRevision: 1,
-        });
-        expect(savedOk?.version).toBe(2);
-        expect(savedOk?.draftRevision).toBe(2);
-
-        // Stale version fails atomically (returns null)
-        const conflict = await repo.guardedSaveConsole({
-          workspaceId: wsId,
-          consoleId: created.id,
-          expectedVersion: 1,
-          expectedDraftRevision: 2,
-          upsert: false,
-          set: { code: "SELECT 999" },
-          incVersion: 1,
-          incDraftRevision: 1,
-        });
-        expect(conflict).toBeNull();
-
-        // Upsert on brand-new consoleId when no guard is active
-        const draftId = new Types.ObjectId().toString();
-        const upserted = await repo.guardedSaveConsole({
-          workspaceId: wsId,
-          consoleId: draftId,
-          upsert: true,
-          set: { code: "SELECT 'draft'", lastDraftOrigin: "user" },
-          incDraftRevision: 1,
-          setOnInsert: {
-            name: "Untitled",
-            createdBy: userV7Id,
-            owner_id: userV7Id,
-            isSaved: false,
+      // Guarded description update
+      expect(
+        await repo.guardedUpdateConsoleDescription(
+          wsId,
+          created.id,
+          "wrong-sha",
+          { description: "nope" },
+        ),
+      ).toBe(false);
+      expect(
+        await repo.guardedUpdateConsoleDescription(
+          wsId,
+          created.id,
+          "sha-001",
+          {
+            description: "Derived summary",
+            descriptionSource: "generated",
+            descriptionSourceSha: "sha-001",
           },
-        });
-        expect(upserted?.id).toBe(draftId);
-        expect(upserted?.isSaved).toBe(false);
+        ),
+      ).toBe(true);
 
-        // Execution + external use telemetry
-        const execAt = new Date("2026-11-03T12:00:00.000Z");
-        expect(
-          await repo.recordConsoleExecution(wsId, created.id, {
-            lastExecutedAt: execAt,
-            bumpDraftRevision: true,
-            lastRun: {
-              at: execAt,
-              status: "success",
-              rowCount: 10,
-              durationMs: 42,
-              runBy: userLuciaId,
-              source: "agent",
-              executionId: "exec-1",
-            },
-          }),
-        ).toBe(true);
-        const afterExec = await repo.findConsoleById(wsId, created.id);
-        expect(afterExec?.executionCount).toBe(1);
-        expect(afterExec?.draftRevision).toBe(3);
-        expect(afterExec?.lastRun?.runBy).toBe(
-          impl.isPg ? userLuciaUuid : userLuciaId,
-        );
+      // Schedule due + claim CAS + outcome + clear
+      const pastDue = new Date("2026-11-01T00:00:00.000Z");
+      const nextSlot = new Date("2026-11-02T00:00:00.000Z");
+      await repo.updateConsole(wsId, created.id, {
+        schedule: { cron: "0 0 * * *", timezone: "UTC" },
+        scheduledRun: {
+          nextAt: pastDue,
+          runCount: 0,
+          consecutiveFailures: 0,
+        },
+      });
+      const due = await repo.findDueScheduledConsoles(
+        new Date("2026-11-01T01:00:00.000Z"),
+      );
+      expect(due.map(d => d.id)).toContain(created.id);
+      const claim1 = await repo.claimScheduledConsole(due[0], nextSlot);
+      expect(claim1.modifiedCount).toBe(1);
+      const claim2 = await repo.claimScheduledConsole(due[0], nextSlot);
+      expect(claim2.modifiedCount).toBe(0);
 
-        const t1 = new Date("2026-11-03T12:01:00.000Z");
-        expect(
-          await repo.recordConsoleExternalUse(
-            wsId,
-            created.id,
-            "mcp",
-            "access",
-            t1,
-          ),
-        ).toBe(true);
-        // Second access within 60s is throttled (no write)
-        expect(
-          await repo.recordConsoleExternalUse(
-            wsId,
-            created.id,
-            "mcp",
-            "access",
-            new Date(t1.getTime() + 10_000),
-          ),
-        ).toBe(false);
-        expect(
-          await repo.recordConsoleExternalUse(
-            wsId,
-            created.id,
-            "api",
-            "execute",
-            new Date(t1.getTime() + 20_000),
-          ),
-        ).toBe(true);
-        expect(
-          (await repo.findConsoleById(wsId, created.id))?.externalUseCount,
-        ).toBe(1);
+      await repo.updateConsoleScheduleOutcome({
+        workspaceId: wsId,
+        consoleId: created.id,
+        isError: true,
+        lastAt: new Date("2026-11-01T01:05:00.000Z"),
+        lastError: "permission denied",
+        permanentFailures: 3,
+        pausedAt: new Date("2026-11-01T01:05:00.000Z"),
+        pausedReason: "Paused after 3 failures",
+        clearNextAt: true,
+      });
+      const paused = await repo.findConsoleById(wsId, created.id);
+      expect(paused?.scheduledRun?.pausedReason).toBe(
+        "Paused after 3 failures",
+      );
+      expect(paused?.scheduledRun?.nextAt).toBeUndefined();
 
-        // Guarded description update
-        expect(
-          await repo.guardedUpdateConsoleDescription(
-            wsId,
-            created.id,
-            "wrong-sha",
-            { description: "nope" },
-          ),
-        ).toBe(false);
-        expect(
-          await repo.guardedUpdateConsoleDescription(
-            wsId,
-            created.id,
-            "sha-001",
-            {
-              description: "Derived summary",
-              descriptionSource: "generated",
-              descriptionSourceSha: "sha-001",
-            },
-          ),
-        ).toBe(true);
+      await repo.clearConsoleSchedule(wsId, created.id);
+      expect(
+        (await repo.findConsoleById(wsId, created.id))?.schedule,
+      ).toBeUndefined();
 
-        // Schedule due + claim CAS + outcome + clear
-        const pastDue = new Date("2026-11-01T00:00:00.000Z");
-        const nextSlot = new Date("2026-11-02T00:00:00.000Z");
-        await repo.updateConsole(wsId, created.id, {
-          schedule: { cron: "0 0 * * *", timezone: "UTC" },
-          scheduledRun: {
-            nextAt: pastDue,
-            runCount: 0,
-            consecutiveFailures: 0,
-          },
-        });
-        const due = await repo.findDueScheduledConsoles(
-          new Date("2026-11-01T01:00:00.000Z"),
-        );
-        expect(due.map(d => d.id)).toContain(created.id);
-        const claim1 = await repo.claimScheduledConsole(due[0], nextSlot);
-        expect(claim1.modifiedCount).toBe(1);
-        const claim2 = await repo.claimScheduledConsole(due[0], nextSlot);
-        expect(claim2.modifiedCount).toBe(0);
-
-        await repo.updateConsoleScheduleOutcome({
-          workspaceId: wsId,
-          consoleId: created.id,
-          isError: true,
-          lastAt: new Date("2026-11-01T01:05:00.000Z"),
-          lastError: "permission denied",
-          permanentFailures: 3,
-          pausedAt: new Date("2026-11-01T01:05:00.000Z"),
-          pausedReason: "Paused after 3 failures",
-          clearNextAt: true,
-        });
-        const paused = await repo.findConsoleById(wsId, created.id);
-        expect(paused?.scheduledRun?.pausedReason).toBe(
-          "Paused after 3 failures",
-        );
-        expect(paused?.scheduledRun?.nextAt).toBeUndefined();
-
-        await repo.clearConsoleSchedule(wsId, created.id);
-        expect(
-          (await repo.findConsoleById(wsId, created.id))?.schedule,
-        ).toBeUndefined();
-
-        // Soft delete + restore
-        expect(await repo.softDeleteConsole(wsId, created.id)).toBe(true);
-        expect(
+      // Soft delete + restore
+      expect(await repo.softDeleteConsole(wsId, created.id)).toBe(true);
+      expect(
+        await repo.findConsoleById(wsId, created.id, {
+          excludeDeleted: true,
+        }),
+      ).toBeNull();
+      expect(await repo.restoreConsole(wsId, created.id)).toBe(true);
+      expect(
+        (
           await repo.findConsoleById(wsId, created.id, {
             excludeDeleted: true,
-          }),
-        ).toBeNull();
-        expect(await repo.restoreConsole(wsId, created.id)).toBe(true);
-        expect(
-          (
-            await repo.findConsoleById(wsId, created.id, {
-              excludeDeleted: true,
-            })
-          )?.is_deleted,
-        ).toBe(false);
+          })
+        )?.is_deleted,
+      ).toBe(false);
+    });
+
+    it("covers entity_versions, notebook_folders, notebook_indexes, favourites, and scheduled_query_runs", async () => {
+      const consoleRec = await repo.createConsole({
+        workspaceId: wsId,
+        name: "Versioned",
+        code: "SELECT 1",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
       });
 
-      it("covers entity_versions, notebook_folders, notebook_indexes, favourites, and scheduled_query_runs", async () => {
-        const repo = impl.create();
-        const consoleRec = await repo.createConsole({
-          workspaceId: wsId,
-          name: "Versioned",
-          code: "SELECT 1",
-          language: "sql",
-          createdBy: userV7Id,
-          isSaved: true,
-        });
+      // Entity versions
+      const v1 = await repo.createEntityVersion({
+        workspaceId: wsId,
+        entityType: "console",
+        entityId: consoleRec.id,
+        snapshot: { code: "SELECT 1" },
+        savedBy: userLuciaId,
+        savedByName: "Lucia",
+        comment: "Initial",
+      });
+      const v2 = await repo.createEntityVersion({
+        workspaceId: wsId,
+        entityType: "console",
+        entityId: consoleRec.id,
+        snapshot: { code: "SELECT 2" },
+        savedBy: "system",
+        savedByName: "System",
+        comment: "Updated",
+        restoredFrom: 1,
+      });
+      expect(v1.version).toBe(1);
+      expect(v2.version).toBe(2);
+      expect(
+        await repo.getLatestEntityVersionNumber(consoleRec.id, "console", wsId),
+      ).toBe(2);
+      const listedVersions = await repo.listEntityVersions(
+        consoleRec.id,
+        "console",
+        { workspaceId: wsId, limit: 10, offset: 0 },
+      );
+      expect(listedVersions.total).toBe(2);
+      expect(listedVersions.versions.map(v => v.version)).toEqual([2, 1]);
+      expect(
+        (await repo.getEntityVersion(consoleRec.id, "console", 1, wsId))
+          ?.snapshot,
+      ).toEqual({ code: "SELECT 1" });
+      expect(
+        await repo.countEntityVersions(wsId, "console", [consoleRec.id]),
+      ).toBe(2);
 
-        // Entity versions
-        const v1 = await repo.createEntityVersion({
-          workspaceId: wsId,
-          entityType: "console",
-          entityId: consoleRec.id,
-          snapshot: { code: "SELECT 1" },
-          savedBy: userLuciaId,
-          savedByName: "Lucia",
-          comment: "Initial",
-        });
-        const v2 = await repo.createEntityVersion({
-          workspaceId: wsId,
-          entityType: "console",
-          entityId: consoleRec.id,
-          snapshot: { code: "SELECT 2" },
-          savedBy: "system",
-          savedByName: "System",
-          comment: "Updated",
-          restoredFrom: 1,
-        });
-        expect(v1.version).toBe(1);
-        expect(v2.version).toBe(2);
-        expect(
-          await repo.getLatestEntityVersionNumber(
-            consoleRec.id,
-            "console",
-            wsId,
-          ),
-        ).toBe(2);
-        const listedVersions = await repo.listEntityVersions(
-          consoleRec.id,
-          "console",
-          { workspaceId: wsId, limit: 10, offset: 0 },
-        );
-        expect(listedVersions.total).toBe(2);
-        expect(listedVersions.versions.map(v => v.version)).toEqual([2, 1]);
-        expect(
-          (await repo.getEntityVersion(consoleRec.id, "console", 1, wsId))
-            ?.snapshot,
-        ).toEqual({ code: "SELECT 1" });
-        expect(
-          await repo.countEntityVersions(wsId, "console", [consoleRec.id]),
-        ).toBe(2);
+      // Notebook folders + subtree delete unlinks indexes
+      const nbParent = await repo.createNotebookFolder({
+        workspaceId: wsId,
+        name: "Notebooks Root",
+        ownerId: userV7Id,
+        access: "workspace",
+      });
+      const nbChild = await repo.createNotebookFolder({
+        workspaceId: wsId,
+        name: "Sub",
+        parentId: nbParent.id,
+        ownerId: userV7Id,
+      });
+      expect(
+        await repo.wouldCreateNotebookFolderCycle(
+          wsId,
+          nbParent.id,
+          nbChild.id,
+        ),
+      ).toBe(true);
 
-        // Notebook folders + subtree delete unlinks indexes
-        const nbParent = await repo.createNotebookFolder({
-          workspaceId: wsId,
-          name: "Notebooks Root",
-          ownerId: userV7Id,
-          access: "workspace",
-        });
-        const nbChild = await repo.createNotebookFolder({
-          workspaceId: wsId,
-          name: "Sub",
-          parentId: nbParent.id,
-          ownerId: userV7Id,
-        });
-        expect(
-          await repo.wouldCreateNotebookFolderCycle(
-            wsId,
-            nbParent.id,
-            nbChild.id,
-          ),
-        ).toBe(true);
+      const nbIdx = await repo.createNotebookIndex({
+        workspaceId: wsId,
+        notebookId: "nb-001",
+        name: "KPI Deepdive",
+        folderId: nbChild.id,
+        ownerId: userLuciaId,
+        access: "private",
+        path: "users/lucia/kpi.deepnote",
+        sharedWith: [
+          {
+            userId: userV7Id,
+            role: "editor",
+            addedAt: new Date("2026-11-02T00:00:00.000Z"),
+            addedBy: userLuciaId,
+          },
+        ],
+      });
+      expect(nbIdx.folderId).toBe(nbChild.id);
+      expect(
+        (
+          await repo.listNotebookIndexes(wsId, {
+            visibleForUserId: userV7Id,
+          })
+        ).map(n => n.notebookId),
+      ).toEqual(["nb-001"]);
+      expect(
+        await repo.findNotebookIndexByPath(wsId, "users/lucia/kpi.deepnote", {
+          excludeNotebookId: "nb-001",
+        }),
+      ).toBeNull();
 
-        const nbIdx = await repo.createNotebookIndex({
-          workspaceId: wsId,
-          notebookId: "nb-001",
-          name: "KPI Deepdive",
-          folderId: nbChild.id,
-          ownerId: userLuciaId,
-          access: "private",
-          path: "users/lucia/kpi.deepnote",
-          sharedWith: [
-            {
-              userId: userV7Id,
-              role: "editor",
-              addedAt: new Date("2026-11-02T00:00:00.000Z"),
-              addedBy: userLuciaId,
-            },
-          ],
-        });
-        expect(nbIdx.folderId).toBe(nbChild.id);
-        expect(
-          (
-            await repo.listNotebookIndexes(wsId, {
-              visibleForUserId: userV7Id,
-            })
-          ).map(n => n.notebookId),
-        ).toEqual(["nb-001"]);
-        expect(
-          await repo.findNotebookIndexByPath(wsId, "users/lucia/kpi.deepnote", {
-            excludeNotebookId: "nb-001",
-          }),
-        ).toBeNull();
+      // Deleting parent folder deletes child folder AND unlinks nbIdx (sets folderId -> undefined)
+      expect(await repo.deleteNotebookFolderSubtree(wsId, nbParent.id)).toBe(
+        true,
+      );
+      expect(await repo.findNotebookFolderById(wsId, nbChild.id)).toBeNull();
+      expect(
+        (await repo.findNotebookIndex(wsId, "nb-001"))?.folderId,
+      ).toBeUndefined();
 
-        // Deleting parent folder deletes child folder AND unlinks nbIdx (sets folderId -> undefined)
-        expect(await repo.deleteNotebookFolderSubtree(wsId, nbParent.id)).toBe(
-          true,
-        );
-        expect(await repo.findNotebookFolderById(wsId, nbChild.id)).toBeNull();
-        expect(
-          (await repo.findNotebookIndex(wsId, "nb-001"))?.folderId,
-        ).toBeUndefined();
-
-        // Favourites: folder + child item + reorder + recursive subtree delete
-        const favFolder = await repo.createFavourite({
-          workspaceId: wsId,
-          userId: userLuciaId,
-          parentId: null,
-          type: "folder",
-          title: "Pinned",
-          position: 0,
-        });
-        const favItem = await repo.createFavourite({
-          workspaceId: wsId,
-          userId: userLuciaId,
-          parentId: favFolder.id,
-          type: "item",
-          kind: "console",
-          refId: consoleRec.id,
-          position: 0,
-        });
-        const favRoot = await repo.createFavourite({
-          workspaceId: wsId,
-          userId: userLuciaId,
-          parentId: null,
-          type: "item",
-          kind: "notebook",
-          refId: "nb-001",
-          position: 1,
-        });
-        expect(await repo.countFavourites(wsId, userLuciaId)).toBe(3);
-        expect(
-          (
-            await repo.findFavouriteByRef(
-              wsId,
-              userLuciaId,
-              "console",
-              consoleRec.id,
-            )
-          )?.id,
-        ).toBe(favItem.id);
-        expect(
-          await repo.getNextFavouritePosition(wsId, userLuciaId, null),
-        ).toBe(2);
-
-        await repo.reorderFavourites(wsId, userLuciaId, [
-          { id: favRoot.id, position: 0, parentId: null },
-          { id: favFolder.id, position: 1, parentId: null, title: "Top" },
-        ]);
-        expect(
-          (await repo.findFavouriteById(wsId, userLuciaId, favFolder.id))
-            ?.title,
-        ).toBe("Top");
-
-        // Subtree delete removes favFolder AND nested favItem
-        expect(
-          await repo.deleteFavouriteSubtree(wsId, userLuciaId, favFolder.id),
-        ).toBe(2);
-        expect(await repo.countFavourites(wsId, userLuciaId)).toBe(1);
-        expect(
-          await repo.deleteFavouriteByRef(
+      // Favourites: folder + child item + reorder + recursive subtree delete
+      const favFolder = await repo.createFavourite({
+        workspaceId: wsId,
+        userId: userLuciaId,
+        parentId: null,
+        type: "folder",
+        title: "Pinned",
+        position: 0,
+      });
+      const favItem = await repo.createFavourite({
+        workspaceId: wsId,
+        userId: userLuciaId,
+        parentId: favFolder.id,
+        type: "item",
+        kind: "console",
+        refId: consoleRec.id,
+        position: 0,
+      });
+      const favRoot = await repo.createFavourite({
+        workspaceId: wsId,
+        userId: userLuciaId,
+        parentId: null,
+        type: "item",
+        kind: "notebook",
+        refId: "nb-001",
+        position: 1,
+      });
+      expect(await repo.countFavourites(wsId, userLuciaId)).toBe(3);
+      expect(
+        (
+          await repo.findFavouriteByRef(
             wsId,
             userLuciaId,
-            "notebook",
-            "nb-001",
-          ),
-        ).toBe(true);
-        expect(await repo.countFavourites(wsId, userLuciaId)).toBe(0);
+            "console",
+            consoleRec.id,
+          )
+        )?.id,
+      ).toBe(favItem.id);
+      expect(await repo.getNextFavouritePosition(wsId, userLuciaId, null)).toBe(
+        2,
+      );
 
-        // Scheduled query runs
-        const run1 = await repo.createScheduledQueryRun({
-          workspaceId: wsId,
-          consoleId: consoleRec.id,
-          triggeredAt: new Date("2026-11-01T10:00:00.000Z"),
-          status: "queued",
-          triggerType: "schedule",
-          triggeredBy: userLuciaId,
-          inngestRunId: "ing-1",
-        });
-        expect(
-          await repo.updateScheduledQueryRun(wsId, run1.id, {
-            status: "success",
-            startedAt: new Date("2026-11-01T10:00:01.000Z"),
-            completedAt: new Date("2026-11-01T10:00:03.000Z"),
-            durationMs: 2000,
-            rowCount: 15,
-          }),
-        ).toBe(true);
-        const foundRun = await repo.findScheduledQueryRunById(run1.id, wsId);
-        expect(foundRun?.status).toBe("success");
-        expect(foundRun?.rowCount).toBe(15);
-        expect(
-          (await repo.listScheduledQueryRuns(wsId, consoleRec.id, 5)).map(
-            r => r.id,
-          ),
-        ).toEqual([run1.id]);
+      await repo.reorderFavourites(wsId, userLuciaId, [
+        { id: favRoot.id, position: 0, parentId: null },
+        { id: favFolder.id, position: 1, parentId: null, title: "Top" },
+      ]);
+      expect(
+        (await repo.findFavouriteById(wsId, userLuciaId, favFolder.id))?.title,
+      ).toBe("Top");
+
+      // Subtree delete removes favFolder AND nested favItem
+      expect(
+        await repo.deleteFavouriteSubtree(wsId, userLuciaId, favFolder.id),
+      ).toBe(2);
+      expect(await repo.countFavourites(wsId, userLuciaId)).toBe(1);
+      expect(
+        await repo.deleteFavouriteByRef(
+          wsId,
+          userLuciaId,
+          "notebook",
+          "nb-001",
+        ),
+      ).toBe(true);
+      expect(await repo.countFavourites(wsId, userLuciaId)).toBe(0);
+
+      // Scheduled query runs
+      const run1 = await repo.createScheduledQueryRun({
+        workspaceId: wsId,
+        consoleId: consoleRec.id,
+        triggeredAt: new Date("2026-11-01T10:00:00.000Z"),
+        status: "queued",
+        triggerType: "schedule",
+        triggeredBy: userLuciaId,
+        inngestRunId: "ing-1",
       });
+      expect(
+        await repo.updateScheduledQueryRun(wsId, run1.id, {
+          status: "success",
+          startedAt: new Date("2026-11-01T10:00:01.000Z"),
+          completedAt: new Date("2026-11-01T10:00:03.000Z"),
+          durationMs: 2000,
+          rowCount: 15,
+        }),
+      ).toBe(true);
+      const foundRun = await repo.findScheduledQueryRunById(run1.id, wsId);
+      expect(foundRun?.status).toBe("success");
+      expect(foundRun?.rowCount).toBe(15);
+      expect(
+        (await repo.listScheduledQueryRuns(wsId, consoleRec.id, 5)).map(
+          r => r.id,
+        ),
+      ).toEqual([run1.id]);
     });
-  }
-
-  // ── 2. Postgres Search (pgvector + tsvector FTS + trigram ILIKE) ─────────
+  });
 
   describe("Postgres pgvector, tsvector FTS, and trigram name search", () => {
     it("ranks saved consoles by cosine distance, websearch_to_tsquery, and ILIKE while excluding drafts & deleted", async () => {
-      const pgRepo = new PgConsolesChartsRepository({
-        getDb: () => db,
-        resolveUserUuid,
-      });
-
-      expect(await pgRepo.isPgVectorAvailable()).toBe(true);
+      expect(await repo.isPgVectorAvailable()).toBe(true);
 
       const vecSales = makeUnitVector(0, 1);
       const vecChurn = makeUnitVector(10, 11);
 
-      const cSales = await pgRepo.createConsole({
+      const cSales = await repo.createConsole({
         workspaceId: wsId,
         name: "France Sales Leaderboard",
         description: "Ranks French enterprise sales reps by ARR",
@@ -819,7 +684,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         createdBy: userV7Id,
         isSaved: true,
       });
-      const cChurn = await pgRepo.createConsole({
+      const cChurn = await repo.createConsole({
         workspaceId: wsId,
         name: "Monthly Churn Cohort",
         description: "Customer retention and churn cohorts",
@@ -831,7 +696,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         isSaved: true,
       });
       // Draft + soft-deleted rows must NEVER appear in search results
-      await pgRepo.createConsole({
+      await repo.createConsole({
         workspaceId: wsId,
         name: "France Sales Draft",
         description: "France sales draft",
@@ -842,7 +707,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         createdBy: userV7Id,
         isSaved: false,
       });
-      await pgRepo.createConsole({
+      await repo.createConsole({
         workspaceId: wsId,
         name: "France Sales Deleted",
         description: "France sales deleted",
@@ -856,7 +721,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       });
 
       // Vector search
-      const vecHits = await pgRepo.searchConsolesVector(wsId, vecSales, {
+      const vecHits = await repo.searchConsolesVector(wsId, vecSales, {
         limit: 5,
         embeddingModel: "text-embedding-3-small",
       });
@@ -864,7 +729,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       expect(vecHits[0].score).toBeGreaterThan(vecHits[1].score);
 
       // FTS (tsvector generated column)
-      const ftsHits = await pgRepo.searchConsolesText(
+      const ftsHits = await repo.searchConsolesText(
         wsId,
         "french enterprise sales",
         { limit: 5 },
@@ -872,19 +737,14 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       expect(ftsHits.map(h => h.id)).toEqual([cSales.id]);
 
       // Trigram ILIKE fallback
-      const nameHits = await pgRepo.searchConsolesName(wsId, "leaderboard", {
+      const nameHits = await repo.searchConsolesName(wsId, "leaderboard", {
         limit: 5,
       });
       expect(nameHits.map(h => h.id)).toEqual([cSales.id]);
     });
 
     it("escapes _ % and \\ literals cleanly in ILIKE name search (#4717302820)", async () => {
-      const pgRepo = new PgConsolesChartsRepository({
-        getDb: () => db,
-        resolveUserUuid,
-      });
-
-      const target = await pgRepo.createConsole({
+      const target = await repo.createConsole({
         workspaceId: wsId,
         name: "rev_ops_100%",
         code: "SELECT 1",
@@ -892,7 +752,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         createdBy: userV7Id,
         isSaved: true,
       });
-      await pgRepo.createConsole({
+      await repo.createConsole({
         workspaceId: wsId,
         name: "revXopsX10099",
         code: "SELECT 2",
@@ -900,7 +760,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         createdBy: userV7Id,
         isSaved: true,
       });
-      const backslashTarget = await pgRepo.createConsole({
+      const backslashTarget = await repo.createConsole({
         workspaceId: wsId,
         name: "team\\rev_ops",
         code: "SELECT 3",
@@ -909,14 +769,14 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         isSaved: true,
       });
 
-      const exactLikeHits = await pgRepo.searchConsolesName(
+      const exactLikeHits = await repo.searchConsolesName(
         wsId,
         "rev_ops_100%",
         { limit: 5 },
       );
       expect(exactLikeHits.map(h => h.id)).toEqual([target.id]);
 
-      const backslashHits = await pgRepo.searchConsolesName(
+      const backslashHits = await repo.searchConsolesName(
         wsId,
         "team\\rev_ops",
         { limit: 5 },
@@ -925,12 +785,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
     });
 
     it("aligns Postgres FTS with Mongo $text OR-semantics, phrases, negations, and score scale (#4717305431)", async () => {
-      const pgRepo = new PgConsolesChartsRepository({
-        getDb: () => db,
-        resolveUserUuid,
-      });
-
-      const cFull = await pgRepo.createConsole({
+      const cFull = await repo.createConsole({
         workspaceId: wsId,
         name: "Monthly Revenue by Region",
         description: "Monthly revenue rollup by region",
@@ -939,7 +794,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         createdBy: userV7Id,
         isSaved: true,
       });
-      const cPartial = await pgRepo.createConsole({
+      const cPartial = await repo.createConsole({
         workspaceId: wsId,
         name: "Revenue by Region",
         description: "Quarterly breakdown of revenue by region",
@@ -948,7 +803,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         createdBy: userV7Id,
         isSaved: true,
       });
-      const cDraftWord = await pgRepo.createConsole({
+      const cDraftWord = await repo.createConsole({
         workspaceId: wsId,
         name: "Draft Revenue Report",
         description: "Temporary draft revenue scratchpad",
@@ -957,7 +812,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         createdBy: userV7Id,
         isSaved: true,
       });
-      await pgRepo.createConsole({
+      await repo.createConsole({
         workspaceId: wsId,
         name: "Customer Churn",
         description: "Tracks churn rate over time",
@@ -968,7 +823,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       });
 
       // Multi-word OR recall: "monthly revenue by region" must match "Revenue by Region" too
-      const orHits = await pgRepo.searchConsolesText(
+      const orHits = await repo.searchConsolesText(
         wsId,
         "monthly revenue by region",
         { limit: 5 },
@@ -983,7 +838,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       expect(orHits[1].score).toBeGreaterThanOrEqual(0.6);
 
       // Negation still excludes negated term
-      const negHits = await pgRepo.searchConsolesText(wsId, "revenue -draft", {
+      const negHits = await repo.searchConsolesText(wsId, "revenue -draft", {
         limit: 5,
       });
       expect(negHits.map(h => h.id).sort()).toEqual(
@@ -991,7 +846,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       );
 
       // Quoted phrase + OR term parses and matches safely
-      const phraseHits = await pgRepo.searchConsolesText(
+      const phraseHits = await repo.searchConsolesText(
         wsId,
         '"revenue by region" monthly',
         { limit: 5 },
@@ -1001,26 +856,21 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
 
       // Stopword-only and negation-only queries return [] cleanly without SQL errors
       expect(
-        await pgRepo.searchConsolesText(wsId, "the and of", { limit: 5 }),
+        await repo.searchConsolesText(wsId, "the and of", { limit: 5 }),
       ).toEqual([]);
       expect(
-        await pgRepo.searchConsolesText(wsId, "-draft", { limit: 5 }),
+        await repo.searchConsolesText(wsId, "-draft", { limit: 5 }),
       ).toEqual([]);
     });
 
     it("prevents multi-tenant HNSW ef_search starvation for small workspaces (#4717305914)", async () => {
-      const pgRepo = new PgConsolesChartsRepository({
-        getDb: () => db,
-        resolveUserUuid,
-      });
-
       const queryVec = makeUnitVector(20, 21);
       const wsCloserVec = makeUnitVector(20, 22);
       const wsFartherVec = makeUnitVector(25, 26);
 
       // Seed 50 consoles in ws2Id (> default hnsw.ef_search=40) with identical vector to queryVec
       for (let i = 0; i < 50; i++) {
-        await pgRepo.createConsole({
+        await repo.createConsole({
           workspaceId: ws2Id,
           name: `Other Tenant Console ${i}`,
           description: "Distractor in another tenant",
@@ -1033,7 +883,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         });
       }
 
-      const cClose = await pgRepo.createConsole({
+      const cClose = await repo.createConsole({
         workspaceId: wsId,
         name: "Small WS Closer",
         description: "Closer match in small workspace",
@@ -1044,7 +894,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         createdBy: userV7Id,
         isSaved: true,
       });
-      const cFar = await pgRepo.createConsole({
+      const cFar = await repo.createConsole({
         workspaceId: wsId,
         name: "Small WS Farther",
         description: "Farther match in small workspace",
@@ -1059,7 +909,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       await db.execute(sql`ANALYZE saved_consoles`);
       await db.execute(sql`SET enable_seqscan = off`);
       try {
-        const hits = await pgRepo.searchConsolesVector(wsId, queryVec, {
+        const hits = await repo.searchConsolesVector(wsId, queryVec, {
           limit: 5,
           embeddingModel: "text-embedding-3-small",
         });
@@ -1071,29 +921,18 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
     });
   });
 
-  // ── 3. 5-Stage Dual-Run, Hot-Path Safety, Rollback Parity & Sync-Retry ───
-
-  // ── 4. 10-Stage Backfill (2-Pass Self-FK + Quarantine), Verifier & TTL ───
-
-  // ── 5. Post-Backfill Step (`consoles-connection-fk`) ─────────────────────
-
   describe("Post-backfill 0005a_consoles_connection_fk.sql", () => {
     it("nulls dangling connection_ids, attaches validated ON DELETE SET NULL FK, and is idempotent", async () => {
-      const pgRepo = new PgConsolesChartsRepository({
-        getDb: () => db,
-        resolveUserUuid,
-      });
-
-      const validConnId = new Types.ObjectId().toString();
+      const validConnId = generateObjectIdHex();
       const validConnUuid = objectIdToUuid(validConnId);
-      const danglingConnId = new Types.ObjectId().toString();
+      const danglingConnId = generateObjectIdHex();
 
       await db.execute(
         sql`INSERT INTO "database_connections" ("id", "workspace_id", "name", "type", "connection_encrypted", "created_by")
             VALUES (${validConnUuid}::uuid, ${objectIdToUuid(wsId)}::uuid, 'PostBackfill DB', 'postgresql', '{}'::jsonb, ${userV7Id}::uuid)`,
       );
 
-      const cValid = await pgRepo.createConsole({
+      const cValid = await repo.createConsole({
         workspaceId: wsId,
         connectionId: validConnId,
         name: "Valid Conn Console",
@@ -1102,7 +941,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         createdBy: userV7Id,
         isSaved: true,
       });
-      const cDangling = await pgRepo.createConsole({
+      const cDangling = await repo.createConsole({
         workspaceId: wsId,
         connectionId: danglingConnId,
         name: "Dangling Conn Console",
@@ -1121,10 +960,10 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         expect(res2.statements).toBe(3);
 
         expect(
-          (await pgRepo.findConsoleById(wsId, cValid.id))?.connectionId,
+          (await repo.findConsoleById(wsId, cValid.id))?.connectionId,
         ).toBe(validConnId);
         expect(
-          (await pgRepo.findConsoleById(wsId, cDangling.id))?.connectionId,
+          (await repo.findConsoleById(wsId, cDangling.id))?.connectionId,
         ).toBeUndefined();
 
         // Constraint exists and is validated
@@ -1146,13 +985,13 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
           sql`DELETE FROM "database_connections" WHERE "id" = ${validConnUuid}::uuid`,
         );
         expect(
-          (await pgRepo.findConsoleById(wsId, cValid.id))?.connectionId,
+          (await repo.findConsoleById(wsId, cValid.id))?.connectionId,
         ).toBeUndefined();
 
         // After 0005a attaches the FK, live PG writes, dual-writes, sync-retry replay,
         // verifier, and --repair must map dangling connectionIds to NULL cleanly (never 23503) (#4717303833).
-        const deletedConnId = new Types.ObjectId().toString();
-        const createdWithDangling = await pgRepo.createConsole({
+        const deletedConnId = generateObjectIdHex();
+        const createdWithDangling = await repo.createConsole({
           workspaceId: wsId,
           connectionId: deletedConnId,
           name: "Created After FK With Deleted Conn",
@@ -1163,7 +1002,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         });
         expect(createdWithDangling.connectionId).toBeUndefined();
 
-        const updatedWithDangling = await pgRepo.updateConsole(
+        const updatedWithDangling = await repo.updateConsole(
           wsId,
           createdWithDangling.id,
           { connectionId: deletedConnId, code: "SELECT 11" },
@@ -1171,7 +1010,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         expect(updatedWithDangling?.code).toBe("SELECT 11");
         expect(updatedWithDangling?.connectionId).toBeUndefined();
 
-        const guardedWithDangling = await pgRepo.guardedSaveConsole({
+        const guardedWithDangling = await repo.guardedSaveConsole({
           workspaceId: wsId,
           consoleId: createdWithDangling.id,
           expectedVersion: 1,
@@ -1182,8 +1021,8 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         expect(guardedWithDangling?.code).toBe("SELECT 12");
         expect(guardedWithDangling?.connectionId).toBeUndefined();
 
-        const guardedUpsertId = new Types.ObjectId().toString();
-        const guardedUpserted = await pgRepo.guardedSaveConsole({
+        const guardedUpsertId = generateObjectIdHex();
+        const guardedUpserted = await repo.guardedSaveConsole({
           workspaceId: wsId,
           consoleId: guardedUpsertId,
           upsert: true,
@@ -1197,29 +1036,27 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         });
         expect(guardedUpserted?.connectionId).toBeUndefined();
 
-        await pgRepo.upsertConsole({
+        await repo.upsertConsole({
           ...createdWithDangling,
           connectionId: deletedConnId,
           code: "SELECT 14",
           updatedAt: new Date(Date.now() + 5_000),
         });
         expect(
-          (await pgRepo.findConsoleById(wsId, createdWithDangling.id))?.code,
+          (await repo.findConsoleById(wsId, createdWithDangling.id))?.code,
         ).toBe("SELECT 14");
         expect(
-          (await pgRepo.findConsoleById(wsId, createdWithDangling.id))
+          (await repo.findConsoleById(wsId, createdWithDangling.id))
             ?.connectionId,
         ).toBeUndefined();
       } finally {
-        await pg.exec(`
+        await harness.pg.exec(`
           ALTER TABLE "saved_consoles" DROP CONSTRAINT IF EXISTS "saved_consoles_connection_id_fk";
           DELETE FROM "database_connections" WHERE "id" = '${validConnUuid}'::uuid;
         `);
       }
     });
   });
-
-  // ── 6. Console Sharing Adapter Partial-Patch & Deletion Safety ───────────
 
   describe("Console sharing route adapter (#4717303304)", () => {
     it("patches only mutated sharing fields so stale snapshots never resurrect removed collaborators or undo access changes, and fails when concurrently deleted", async () => {

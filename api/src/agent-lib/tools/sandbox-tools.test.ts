@@ -10,6 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { appsMetadataRepo } from "../../repositories/apps-metadata";
 
 const state = vi.hoisted(() => ({
   role: "member" as string | undefined,
@@ -77,11 +78,6 @@ vi.mock("../../apps/app-archive.service", () => ({
       app => !userId || app.scope !== "private" || app.ownerId === userId,
     ),
   ),
-}));
-
-vi.mock("../../database/workspace-schema", () => ({
-  AppProject: { find: vi.fn(async () => []) },
-  AppWorktree: { findOne: vi.fn() },
 }));
 
 vi.mock("../../apps/box", () => ({
@@ -253,7 +249,12 @@ const commandRuns = () =>
       !e.command.startsWith("git rev-parse -q --verify refs/remotes/origin"),
   );
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 beforeEach(() => {
+  vi.spyOn(appsMetadataRepo, "listProjectsByWorkspace").mockResolvedValue([]);
   state.role = "member";
   state.hasSession = true;
   state.exec = [];

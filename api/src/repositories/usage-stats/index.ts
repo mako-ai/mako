@@ -1,22 +1,15 @@
 /**
  * Usage stats domain repository entry point (Neon Postgres `pg_only`).
  */
-import { createPgFirstRepoProxy } from "../resolve-repo";
-import { MongoUsageStatsRepository } from "./mongo.repo";
 import { PgUsageStatsRepository } from "./pg.repo";
 import type { UsageStatsRepository } from "./types";
 
 export * from "./types";
 export * from "./mapper";
-export { MongoUsageStatsRepository } from "./mongo.repo";
 export { PgUsageStatsRepository } from "./pg.repo";
 
 const defaultUsageStatsRepo: UsageStatsRepository =
-  createPgFirstRepoProxy<UsageStatsRepository>(
-    "usage_stats",
-    new PgUsageStatsRepository(),
-    new MongoUsageStatsRepository(),
-  );
+  new PgUsageStatsRepository();
 let activeUsageStatsRepo: UsageStatsRepository = defaultUsageStatsRepo;
 
 export function getUsageStatsRepo(): UsageStatsRepository {

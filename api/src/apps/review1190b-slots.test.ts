@@ -49,8 +49,9 @@ vi.mock("./bindings.service", () => ({
     skipped: [],
   })),
 }));
-vi.mock("../database/workspace-schema", () => ({
-  AppProject: { updateOne: vi.fn(async () => ({ matchedCount: 1 })) },
+vi.mock("./deploy-progress", () => ({
+  markDeployStage: vi.fn(),
+  markBindingProgress: vi.fn(),
 }));
 
 import { ensureDeploymentBindings } from "./deployment.service";
