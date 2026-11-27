@@ -114,6 +114,8 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
   private readonly hasPg: () => boolean;
   private readonly isForceMongoOnly: () => boolean;
   private readonly resolveUserUuidFn?: UserUuidResolver;
+  private lastHasAnyPgReadWorkspace?: boolean;
+  private lastIsGlobalPgOnly?: boolean;
 
   constructor(deps: DualConsolesChartsRepositoryDeps = {}) {
     this.mongo = deps.mongo ?? new MongoConsolesChartsRepository();
@@ -384,40 +386,62 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
    * whether the primary store actually mutated a row. Prevents throttled no-ops,
    * optimistic concurrency conflicts, CAS misses, and unauthorized/wrong-workspace
    * deletes from touching the secondary DB, emitting spurious sync-retry events, or
-   * diverging the secondary store. Passes `pgPrimary === true` to `handlers.mongo`
-   * strictly in Stage 4 (`dual_write_pg_read`).
+   * diverging the secondary store.
+   *
+   * Conversely, when the primary store DID mutate a row (`primaryMutated === true`)
+   * and the secondary store matched 0 rows (`!isMutated(secondaryResult)`) on a
+   * non-delete mutation, throws so `MigrationRouter` records the drift and dispatches
+   * a full-row sync-retry instead of silently leaving guarded/relative writes diverged.
+   * Passes `pgPrimary === true` to `handlers.mongo` strictly in Stage 4 (`dual_write_pg_read`).
    */
   private executeGatedWrite<T>(
     ctx: RouterOperationContext,
     handlers: {
-      mongo: (pgPrimary: boolean) => Promise<T>;
-      pg: () => Promise<T>;
+      mongo: (pgPrimary: boolean, primaryResult?: NoInfer<T>) => Promise<T>;
+      pg: (primaryResult?: NoInfer<T>) => Promise<T>;
     },
     isMutated: (result: T) => boolean,
     noopResult: T,
+    opts?: { allowSecondaryNoop?: boolean },
   ): Promise<T> {
     let primaryRan = false;
     let primaryMutated = false;
+    let primaryResult: T | undefined;
     let pgRan = false;
+    const allowSecondaryNoop = opts?.allowSecondaryNoop ?? false;
     return this.router.executeWrite(ctx, {
       mongo: async () => {
         if (primaryRan) {
           if (!primaryMutated) return noopResult;
-          return handlers.mongo(pgRan);
+          const res = await handlers.mongo(pgRan, primaryResult);
+          if (!allowSecondaryNoop && !isMutated(res)) {
+            throw new Error(
+              `Secondary mongo write matched 0 rows for ${ctx.domain}.${ctx.operation} (primary mutated)`,
+            );
+          }
+          return res;
         }
         const res = await handlers.mongo(false);
         primaryRan = true;
+        primaryResult = res;
         primaryMutated = isMutated(res);
         return res;
       },
       pg: async () => {
         if (primaryRan) {
           if (!primaryMutated) return noopResult;
-          return handlers.pg();
+          const res = await handlers.pg(primaryResult);
+          if (!allowSecondaryNoop && !isMutated(res)) {
+            throw new Error(
+              `Secondary pg write matched 0 rows for ${ctx.domain}.${ctx.operation} (primary mutated)`,
+            );
+          }
+          return res;
         }
         pgRan = true;
         const res = await handlers.pg();
         primaryRan = true;
+        primaryResult = res;
         primaryMutated = isMutated(res);
         return res;
       },
@@ -481,9 +505,21 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
           ),
         )
         .limit(1);
-      return rows.length > 0;
-    } catch {
-      return false;
+      const result = rows.length > 0;
+      this.lastHasAnyPgReadWorkspace = result;
+      return result;
+    } catch (error) {
+      if (this.lastHasAnyPgReadWorkspace !== undefined) {
+        logger.error(
+          "Failed to query migration_domain_state for hasAnyPgReadWorkspace; serving stale cached flag",
+          {
+            staleValue: this.lastHasAnyPgReadWorkspace,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        return this.lastHasAnyPgReadWorkspace;
+      }
+      throw error;
     }
   }
 
@@ -495,7 +531,10 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
   private async isGlobalPgOnly(): Promise<boolean> {
     if (this.isForceMongoOnly() || !this.hasPg()) return false;
     const globalState = await this.router.getState(CONSOLES_CHARTS_DOMAIN);
-    if (globalState.mode !== "pg_only") return false;
+    if (globalState.mode !== "pg_only") {
+      this.lastIsGlobalPgOnly = false;
+      return false;
+    }
     try {
       const mongoOverrides = await this.getDb()
         .select({ mode: migrationDomainState.mode })
@@ -511,9 +550,21 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
           ),
         )
         .limit(1);
-      return mongoOverrides.length === 0;
-    } catch {
-      return false;
+      const result = mongoOverrides.length === 0;
+      this.lastIsGlobalPgOnly = result;
+      return result;
+    } catch (error) {
+      if (this.lastIsGlobalPgOnly !== undefined) {
+        logger.error(
+          "Failed to query migration_domain_state for isGlobalPgOnly; serving stale cached flag",
+          {
+            staleValue: this.lastIsGlobalPgOnly,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        return this.lastIsGlobalPgOnly;
+      }
+      throw error;
     }
   }
 
@@ -730,6 +781,7 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
       },
       res => res,
       false,
+      { allowSecondaryNoop: true },
     );
     if (deleted && deletedIds.length > 0) {
       await this.recordTombstonesIfDualWrite(
@@ -1183,7 +1235,7 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
     consoleId: string,
     updatedAt: Date = new Date(),
   ): Promise<SavedConsoleRecord | null> {
-    return this.executeGatedWrite(
+    return this.executeGatedWrite<SavedConsoleRecord | null>(
       {
         domain: CONSOLES_CHARTS_DOMAIN,
         workspaceId,
@@ -1197,14 +1249,28 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
         },
       },
       {
-        mongo: () =>
-          this.mongo.bumpConsoleDraftRevision(
-            workspaceId,
-            consoleId,
-            updatedAt,
-          ),
-        pg: () =>
-          this.pg.bumpConsoleDraftRevision(workspaceId, consoleId, updatedAt),
+        mongo: (_pgPrimary, primaryResult) =>
+          primaryResult != null
+            ? this.mongo.updateConsole(workspaceId, consoleId, {
+                draftRevision: primaryResult.draftRevision,
+                updatedAt,
+              })
+            : this.mongo.bumpConsoleDraftRevision(
+                workspaceId,
+                consoleId,
+                updatedAt,
+              ),
+        pg: primaryResult =>
+          primaryResult != null
+            ? this.pg.updateConsole(workspaceId, consoleId, {
+                draftRevision: primaryResult.draftRevision,
+                updatedAt,
+              })
+            : this.pg.bumpConsoleDraftRevision(
+                workspaceId,
+                consoleId,
+                updatedAt,
+              ),
       },
       res => res !== null,
       null,
@@ -1453,6 +1519,7 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
       },
       count => count > 0,
       0,
+      { allowSecondaryNoop: true },
     );
     if (removed > 0 && deletedIds.length > 0) {
       await this.recordTombstonesIfDualWrite(
@@ -2084,6 +2151,7 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
       },
       res => res,
       false,
+      { allowSecondaryNoop: true },
     );
     if (deleted && deletedIds.length > 0) {
       await this.recordTombstonesIfDualWrite(
@@ -2323,6 +2391,7 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
       },
       res => res,
       false,
+      { allowSecondaryNoop: true },
     );
     if (deleted && deletedId) {
       await this.recordTombstonesIfDualWrite(workspaceId, "notebook_indexes", [
@@ -2656,6 +2725,7 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
       },
       res => res,
       false,
+      { allowSecondaryNoop: true },
     );
     if (removed && deletedId) {
       await this.recordTombstonesIfDualWrite(workspaceId, "favourites", [
@@ -2707,6 +2777,7 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
       },
       count => count > 0,
       0,
+      { allowSecondaryNoop: true },
     );
     if (removed > 0 && deletedIds.length > 0) {
       await this.recordTombstonesIfDualWrite(

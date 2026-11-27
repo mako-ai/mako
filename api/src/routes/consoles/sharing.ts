@@ -6,7 +6,11 @@
 import { Types } from "mongoose";
 import type { AuthenticatedContext } from "../../middleware/workspace.middleware";
 import { createRouter } from "../../openapi/core";
-import { consolesChartsRepo } from "../../repositories/consoles-charts";
+import {
+  consolesChartsRepo,
+  type UpdateConsolePatch,
+} from "../../repositories/consoles-charts";
+import { ConsoleNotFoundError } from "../../services/consoles/crud";
 import {
   registerCollaboratorRoutes,
   registerSharingSettingsRoutes,
@@ -14,6 +18,8 @@ import {
 } from "../lib/collaborator-routes";
 
 export const consoleSharingRoutes = createRouter();
+
+type SharingField = "access" | "isPrivate" | "workspaceRole" | "sharedWith";
 
 async function loadConsoleById(
   c: AuthenticatedContext,
@@ -24,34 +30,90 @@ async function loadConsoleById(
   const record = await consolesChartsRepo.findConsoleById(workspaceId, id);
   if (!record) return null;
 
+  const dirty = new Set<SharingField>();
+  let access = record.access;
+  let isPrivate = record.isPrivate;
+  let workspaceRole = record.workspaceRole;
+  let sharedWith = record.sharedWith.map(s => ({ ...s }));
+  let snapshotSharedWithJson = JSON.stringify(sharedWith);
+
   const adapter = {
     owner_id: record.owner_id,
     createdBy: record.createdBy,
-    access: record.access,
-    isPrivate: record.isPrivate,
-    workspaceRole: record.workspaceRole,
-    sharedWith: record.sharedWith.map(s => ({ ...s })),
-    markModified(_path: string) {
-      // No-op: full `sharedWith` array is persisted by `save()`.
+    get access() {
+      return access;
+    },
+    set access(value: typeof access) {
+      access = value;
+      dirty.add("access");
+    },
+    get isPrivate() {
+      return isPrivate;
+    },
+    set isPrivate(value: boolean) {
+      isPrivate = value;
+      dirty.add("isPrivate");
+    },
+    get workspaceRole() {
+      return workspaceRole;
+    },
+    set workspaceRole(value: typeof workspaceRole) {
+      workspaceRole = value;
+      dirty.add("workspaceRole");
+    },
+    get sharedWith() {
+      return sharedWith;
+    },
+    set sharedWith(value: typeof sharedWith) {
+      sharedWith = value;
+      dirty.add("sharedWith");
+    },
+    markModified(path: string) {
+      if (
+        path === "access" ||
+        path === "isPrivate" ||
+        path === "workspaceRole" ||
+        path === "sharedWith"
+      ) {
+        dirty.add(path);
+      }
     },
     async save() {
+      const patch: UpdateConsolePatch = {};
+      if (dirty.has("access")) {
+        patch.access = access;
+        patch.isPrivate = access === "private";
+      } else if (dirty.has("isPrivate")) {
+        patch.isPrivate = isPrivate;
+      }
+      if (dirty.has("workspaceRole")) {
+        patch.workspaceRole = workspaceRole;
+      }
+      if (
+        dirty.has("sharedWith") ||
+        JSON.stringify(sharedWith) !== snapshotSharedWithJson
+      ) {
+        patch.sharedWith = sharedWith;
+      }
+      if (Object.keys(patch).length > 0) {
+        patch.updatedAt = new Date();
+      }
+
       const updated = await consolesChartsRepo.updateConsole(
         workspaceId,
         record.id,
-        {
-          access: adapter.access,
-          isPrivate: adapter.access === "private",
-          workspaceRole: adapter.workspaceRole,
-          sharedWith: adapter.sharedWith,
-          updatedAt: new Date(),
-        },
+        patch,
       );
-      if (updated) {
-        adapter.access = updated.access;
-        adapter.isPrivate = updated.isPrivate;
-        adapter.workspaceRole = updated.workspaceRole;
-        adapter.sharedWith = updated.sharedWith.map(s => ({ ...s }));
+      if (!updated) {
+        throw new ConsoleNotFoundError(record.id);
       }
+
+      access = updated.access;
+      isPrivate = updated.isPrivate;
+      workspaceRole = updated.workspaceRole;
+      sharedWith = updated.sharedWith.map(s => ({ ...s }));
+      snapshotSharedWithJson = JSON.stringify(sharedWith);
+      dirty.clear();
       return adapter;
     },
   };

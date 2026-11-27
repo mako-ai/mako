@@ -58,6 +58,11 @@ import {
 import { ConsoleManager, type ConsoleFile } from "../utils/console-manager";
 import { seedTestConnections } from "./seed-test-connections";
 import { getConsoleWithMetadata } from "../services/consoles/tree";
+import { ConsoleNotFoundError } from "../services/consoles/crud";
+import {
+  createConsoleAtPath,
+  saveConsoleByPath,
+} from "../services/consoles/save";
 import { consolesChartsRepo } from "../repositories/consoles-charts";
 import {
   bindTestWorkspaceRepo,
@@ -1113,5 +1118,114 @@ describe("route-side projection", () => {
     expect(await fileAt(projected.path)).toContain("SELECT 1");
     const subjects = (await log(repoDirFor(WS), MAIN, 5)).map(c => c.subject);
     expect(subjects[0]).toBe(`revert: ${projected.path}`);
+  });
+
+  it("fails and removes the orphaned git file when saveConsole races with concurrent deletion (#4717306656)", async () => {
+    const saved = await manager.saveConsole(
+      "race-target",
+      "SELECT 1",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const savedPath = must(saved.path, "saved.path");
+
+    // Simulate hard-delete (e.g. concurrent folder delete) between lookup and updateConsole
+    const origUpdate =
+      consolesChartsRepo.updateConsole.bind(consolesChartsRepo);
+    const updateSpy = vi
+      .spyOn(consolesChartsRepo, "updateConsole")
+      .mockImplementationOnce(async (...args) => {
+        await SavedConsole.deleteOne({ _id: saved._id });
+        return origUpdate(...args);
+      });
+
+    await expect(
+      manager.saveConsole(
+        "race-target",
+        "SELECT 'orphaned'",
+        WS,
+        USER,
+        undefined,
+        undefined,
+        undefined,
+        { id: saved.id, access: "workspace", language: "sql" },
+      ),
+    ).rejects.toThrow(ConsoleNotFoundError);
+    updateSpy.mockRestore();
+
+    // No orphaned git file remains and no DB row exists
+    expect(await SavedConsole.findById(saved._id)).toBeNull();
+    expect(await fileAt(savedPath)).toBeNull();
+
+    // Route-level save helpers map ConsoleNotFoundError to 404
+    const saved2 = await manager.saveConsole(
+      "race-route",
+      "SELECT 10",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const saved2Path = must(saved2.path, "saved2.path");
+    const updateSpy2 = vi
+      .spyOn(consolesChartsRepo, "updateConsole")
+      .mockImplementationOnce(async (...args) => {
+        await SavedConsole.deleteOne({ _id: saved2._id });
+        return origUpdate(...args);
+      });
+
+    const byPath = await saveConsoleByPath({
+      workspaceId: WS,
+      user: { id: USER },
+      path: "race-route",
+      body: { content: "SELECT 20", access: "workspace", language: "sql" },
+    });
+    updateSpy2.mockRestore();
+    expect(byPath).toEqual({
+      ok: false,
+      status: 404,
+      error: "Console not found",
+    });
+    expect(await fileAt(saved2Path)).toBeNull();
+
+    const saved3 = await manager.saveConsole(
+      "race-placeholder",
+      "loading...",
+      WS,
+      USER,
+      undefined,
+      undefined,
+      undefined,
+      { access: "workspace", language: "sql" },
+    );
+    const saved3Path = must(saved3.path, "saved3.path");
+    const updateSpy3 = vi
+      .spyOn(consolesChartsRepo, "updateConsole")
+      .mockImplementationOnce(async (...args) => {
+        await SavedConsole.deleteOne({ _id: saved3._id });
+        return origUpdate(...args);
+      });
+
+    const atPath = await createConsoleAtPath({
+      workspaceId: WS,
+      user: { id: USER },
+      path: "race-placeholder",
+      content: "SELECT 30",
+      access: "workspace",
+      language: "sql",
+    });
+    updateSpy3.mockRestore();
+    expect(atPath).toEqual({
+      ok: false,
+      status: 404,
+      error: "Console not found",
+    });
+    expect(await fileAt(saved3Path)).toBeNull();
   });
 });

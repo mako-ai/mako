@@ -36,6 +36,7 @@ import {
   parseEntityId,
 } from "../../database/pg/id-codec";
 import { users } from "../../database/pg/schema/auth";
+import { databaseConnections } from "../../database/pg/schema/connections";
 import {
   consoleFolders,
   entityVersions,
@@ -47,6 +48,7 @@ import {
 } from "../../database/pg/schema/consoles-charts";
 import { workspaces } from "../../database/pg/schema/workspaces";
 import { registerSyncRetryHandler } from "../../inngest/functions/migration/sync-retry";
+import { hasConsolesConnectionFk } from "../../repositories/consoles-charts/pg.repo";
 import {
   CONSOLES_CHARTS_DOMAIN,
   CONSOLES_CHARTS_SHADOW_OPTIONS,
@@ -410,26 +412,33 @@ async function fetchStageBatch(
     }
 
     case "console_folders_parents": {
-      const docs = await ConsoleFolder.find({
-        ...baseFilter,
-        parentId: { $exists: true, $ne: null },
-      })
-        .select("_id workspaceId parentId")
-        .sort({ _id: 1 })
-        .limit(limit)
-        .lean<
-          Array<{
-            _id: Types.ObjectId;
-            workspaceId: Types.ObjectId;
-            parentId?: Types.ObjectId | null;
-          }>
-        >();
-      return docs.flatMap(d => {
-        if (!d.parentId) return [];
-        const id = d._id.toString();
-        const wsId = d.workspaceId.toString();
-        return [
-          {
+      const wsFilter = workspaceMongoFilter(workspaceId);
+      const out: Array<BackfillItem<CompositeBackfillDoc>> = [];
+      let cursor = afterId;
+      while (out.length < limit) {
+        const batchLimit = limit - out.length;
+        const docs = await ConsoleFolder.find({
+          ...wsFilter,
+          ...oidCursorFilter(cursor),
+          parentId: { $exists: true, $ne: null },
+        })
+          .select("_id workspaceId parentId")
+          .sort({ _id: 1 })
+          .limit(batchLimit)
+          .lean<
+            Array<{
+              _id: Types.ObjectId;
+              workspaceId: Types.ObjectId;
+              parentId?: Types.ObjectId | null;
+            }>
+          >();
+        if (docs.length === 0) break;
+        cursor = docs[docs.length - 1]._id.toString();
+        for (const d of docs) {
+          if (!d.parentId) continue;
+          const id = d._id.toString();
+          const wsId = d.workspaceId.toString();
+          out.push({
             cursor: encodeCursor(meta.stage, id),
             entityId: toPgUuid(id),
             workspaceId: wsId,
@@ -441,9 +450,11 @@ async function fetchStageBatch(
               workspaceId: wsId,
               parentId: d.parentId.toString(),
             },
-          },
-        ];
-      });
+          });
+        }
+        if (docs.length < batchLimit) break;
+      }
+      return out;
     }
 
     case "saved_consoles": {
@@ -515,26 +526,33 @@ async function fetchStageBatch(
     }
 
     case "notebook_folders_parents": {
-      const docs = await NotebookFolder.find({
-        ...baseFilter,
-        parentId: { $exists: true, $ne: null },
-      })
-        .select("_id workspaceId parentId")
-        .sort({ _id: 1 })
-        .limit(limit)
-        .lean<
-          Array<{
-            _id: Types.ObjectId;
-            workspaceId: Types.ObjectId;
-            parentId?: Types.ObjectId | null;
-          }>
-        >();
-      return docs.flatMap(d => {
-        if (!d.parentId) return [];
-        const id = d._id.toString();
-        const wsId = d.workspaceId.toString();
-        return [
-          {
+      const wsFilter = workspaceMongoFilter(workspaceId);
+      const out: Array<BackfillItem<CompositeBackfillDoc>> = [];
+      let cursor = afterId;
+      while (out.length < limit) {
+        const batchLimit = limit - out.length;
+        const docs = await NotebookFolder.find({
+          ...wsFilter,
+          ...oidCursorFilter(cursor),
+          parentId: { $exists: true, $ne: null },
+        })
+          .select("_id workspaceId parentId")
+          .sort({ _id: 1 })
+          .limit(batchLimit)
+          .lean<
+            Array<{
+              _id: Types.ObjectId;
+              workspaceId: Types.ObjectId;
+              parentId?: Types.ObjectId | null;
+            }>
+          >();
+        if (docs.length === 0) break;
+        cursor = docs[docs.length - 1]._id.toString();
+        for (const d of docs) {
+          if (!d.parentId) continue;
+          const id = d._id.toString();
+          const wsId = d.workspaceId.toString();
+          out.push({
             cursor: encodeCursor(meta.stage, id),
             entityId: toPgUuid(id),
             workspaceId: wsId,
@@ -546,9 +564,11 @@ async function fetchStageBatch(
               workspaceId: wsId,
               parentId: d.parentId.toString(),
             },
-          },
-        ];
-      });
+          });
+        }
+        if (docs.length < batchLimit) break;
+      }
+      return out;
     }
 
     case "notebook_indexes": {
@@ -605,30 +625,37 @@ async function fetchStageBatch(
     }
 
     case "favourites_parents": {
-      const docs = (await Favourite.collection
-        .find({
-          ...baseFilter,
-          parentId: { $exists: true, $ne: null },
-        })
-        .project({
-          _id: 1,
-          workspaceId: 1,
-          parentId: 1,
-          updatedAt: 1,
-          createdAt: 1,
-        })
-        .sort({ _id: 1 })
-        .limit(limit)
-        .toArray()) as unknown as Array<{
-        _id: Types.ObjectId;
-        workspaceId: Types.ObjectId;
-        parentId?: string | Types.ObjectId | null;
-        updatedAt?: Date | string | null;
-        createdAt?: Date | string | null;
-      }>;
-      return docs
-        .filter(d => d.parentId != null && String(d.parentId).length > 0)
-        .map(d => {
+      const wsFilter = workspaceMongoFilter(workspaceId);
+      const out: Array<BackfillItem<CompositeBackfillDoc>> = [];
+      let cursor = afterId;
+      while (out.length < limit) {
+        const batchLimit = limit - out.length;
+        const docs = (await Favourite.collection
+          .find({
+            ...wsFilter,
+            ...oidCursorFilter(cursor),
+            parentId: { $exists: true, $nin: [null, ""] },
+          })
+          .project({
+            _id: 1,
+            workspaceId: 1,
+            parentId: 1,
+            updatedAt: 1,
+            createdAt: 1,
+          })
+          .sort({ _id: 1 })
+          .limit(batchLimit)
+          .toArray()) as unknown as Array<{
+          _id: Types.ObjectId;
+          workspaceId: Types.ObjectId;
+          parentId?: string | Types.ObjectId | null;
+          updatedAt?: Date | string | null;
+          createdAt?: Date | string | null;
+        }>;
+        if (docs.length === 0) break;
+        cursor = docs[docs.length - 1]._id.toString();
+        for (const d of docs) {
+          if (d.parentId == null || String(d.parentId).length === 0) continue;
           const id = d._id.toString();
           const wsId = d.workspaceId.toString();
           const updatedAt = d.updatedAt
@@ -636,7 +663,7 @@ async function fetchStageBatch(
             : d.createdAt
               ? new Date(d.createdAt)
               : new Date(0);
-          return {
+          out.push({
             cursor: encodeCursor(meta.stage, id),
             entityId: toPgUuid(id),
             workspaceId: wsId,
@@ -649,8 +676,11 @@ async function fetchStageBatch(
               parentId: String(d.parentId),
               updatedAt,
             },
-          };
-        });
+          });
+        }
+        if (docs.length < batchLimit) break;
+      }
+      return out;
     }
 
     case "scheduled_query_runs": {
@@ -893,14 +923,22 @@ async function upsertCompositeBatch(
     resolveUserUuid: makeBatchResolver(userMap),
   });
 
-  // Pre-fetch existing folder IDs for saved_consoles / notebook_indexes so dangling
-  // deleted folder references null out cleanly instead of failing FK.
+  // Pre-fetch existing folder IDs (and database_connections IDs once 0005a FK is
+  // attached) for saved_consoles / notebook_indexes so dangling deleted references
+  // null out cleanly instead of failing FK 23503.
   const consoleFolderIds = new Set<string>();
+  const consoleConnectionIds = new Set<string>();
   const notebookFolderIds = new Set<string>();
   for (const item of items) {
-    if (item.doc.stage === "saved_consoles" && item.doc.record.folderId) {
-      const fUuid = optionalPgUuid(item.doc.record.folderId);
-      if (fUuid) consoleFolderIds.add(fUuid);
+    if (item.doc.stage === "saved_consoles") {
+      if (item.doc.record.folderId) {
+        const fUuid = optionalPgUuid(item.doc.record.folderId);
+        if (fUuid) consoleFolderIds.add(fUuid);
+      }
+      if (item.doc.record.connectionId) {
+        const cUuid = optionalPgUuid(item.doc.record.connectionId);
+        if (cUuid) consoleConnectionIds.add(cUuid);
+      }
     }
     if (item.doc.stage === "notebook_indexes" && item.doc.record.folderId) {
       const fUuid = optionalPgUuid(item.doc.record.folderId);
@@ -914,6 +952,16 @@ async function upsertCompositeBatch(
       .from(consoleFolders)
       .where(inArray(consoleFolders.id, [...consoleFolderIds]));
     for (const r of rows) existingConsoleFolders.add(r.id.toLowerCase());
+  }
+  const existingConnections = new Set<string>();
+  const validateConnections =
+    consoleConnectionIds.size > 0 && (await hasConsolesConnectionFk(db));
+  if (validateConnections) {
+    const rows = await db
+      .select({ id: databaseConnections.id })
+      .from(databaseConnections)
+      .where(inArray(databaseConnections.id, [...consoleConnectionIds]));
+    for (const r of rows) existingConnections.add(r.id.toLowerCase());
   }
   const existingNotebookFolders = new Set<string>();
   if (notebookFolderIds.size > 0) {
@@ -958,9 +1006,24 @@ async function upsertCompositeBatch(
           folderUuid && existingConsoleFolders.has(folderUuid)
             ? d.record.folderId
             : undefined;
+        let safeConnectionId = d.record.connectionId;
+        if (validateConnections && safeConnectionId) {
+          const connUuid = optionalPgUuid(safeConnectionId);
+          if (!connUuid || !existingConnections.has(connUuid)) {
+            safeConnectionId = undefined;
+          }
+        }
         await pgRepo.upsertConsole(
-          { ...d.record, folderId: safeFolderId },
-          { db, ignoreUpdatedAtGuard: options.ignoreUpdatedAtGuard },
+          {
+            ...d.record,
+            folderId: safeFolderId,
+            connectionId: safeConnectionId,
+          },
+          {
+            db,
+            ignoreUpdatedAtGuard: options.ignoreUpdatedAtGuard,
+            connectionValidated: true,
+          },
         );
         upserted += 1;
         break;
@@ -1207,6 +1270,7 @@ async function fetchExistingPgIds(
   db: MakoPgDb,
   tableRef:
     | typeof consoleFolders
+    | typeof databaseConnections
     | typeof notebookFolders
     | typeof favourites
     | typeof savedConsoles,
@@ -1409,10 +1473,11 @@ async function fetchMongoTableVerifierBatch(
     );
     const resolver = makeBatchResolver(userMap);
 
-    // Pre-fetch PG FK targets so dangling folderId/parentId normalize identically
-    // to backfill & --repair, and orphan scheduled_query_runs.consoleId are skipped.
+    // Pre-fetch PG FK targets so dangling folderId/parentId/connectionId normalize
+    // identically to backfill & --repair, and orphan scheduled_query_runs.consoleId are skipped.
     let validConsoleUuids: Set<string> | null = null;
     let validParentOrFolderUuids: Set<string> | null = null;
+    let validConnectionUuids: Set<string> | null = null;
     if (table === "scheduled_query_runs") {
       validConsoleUuids = await fetchExistingPgIds(
         db,
@@ -1431,6 +1496,13 @@ async function fetchMongoTableVerifierBatch(
         consoleFolders,
         wsScoped.map(r => (r.record as SavedConsoleRecord).folderId),
       );
+      if (await hasConsolesConnectionFk(db)) {
+        validConnectionUuids = await fetchExistingPgIds(
+          db,
+          databaseConnections,
+          wsScoped.map(r => (r.record as SavedConsoleRecord).connectionId),
+        );
+      }
     } else if (table === "notebook_folders") {
       validParentOrFolderUuids = await fetchExistingPgIds(
         db,
@@ -1454,16 +1526,25 @@ async function fetchMongoTableVerifierBatch(
     for (const r of wsScoped) {
       let record = r.record;
       if (table === "saved_consoles") {
-        const rec = record as SavedConsoleRecord;
+        let rec = record as SavedConsoleRecord;
         if (!isValidEmbedding(rec.descriptionEmbedding)) continue;
         if (rec.folderId && validParentOrFolderUuids) {
           const fUuid = optionalPgUuid(rec.folderId);
           if (!fUuid || !validParentOrFolderUuids.has(fUuid)) {
             const copy = { ...rec };
             delete copy.folderId;
-            record = copy;
+            rec = copy;
           }
         }
+        if (rec.connectionId && validConnectionUuids) {
+          const cUuid = optionalPgUuid(rec.connectionId);
+          if (!cUuid || !validConnectionUuids.has(cUuid)) {
+            const copy = { ...rec };
+            delete copy.connectionId;
+            rec = copy;
+          }
+        }
+        record = rec;
       } else if (table === "console_folders") {
         const rec = record as ConsoleFolderRecord;
         if (rec.parentId && validParentOrFolderUuids) {

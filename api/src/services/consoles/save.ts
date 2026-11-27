@@ -28,7 +28,7 @@ import {
   FOREIGN_CONNECTION_ERROR,
   connectionIdAllowed,
 } from "./connection-scope";
-import { getConsoleByPath, saveConsole } from "./crud";
+import { ConsoleNotFoundError, getConsoleByPath, saveConsole } from "./crud";
 import { ensureConsoleFolderPath } from "./folders";
 
 type ConsoleLanguage = "sql" | "javascript" | "mongodb";
@@ -244,27 +244,35 @@ export async function createConsoleAtPath(input: {
     consoleIdToUse = existingConsole._id.toString();
   }
 
-  const savedConsole = await saveAtPath({
-    workspaceId,
-    user: input.user,
-    path,
-    content: input.content,
-    connectionId: targetConnectionId,
-    databaseName: input.databaseName,
-    databaseId: input.databaseId,
-    options: {
-      id: consoleIdToUse,
-      folderId: input.folderId,
-      description: input.description,
-      language: input.language,
-      isPrivate: input.isPrivate,
-      access: input.access,
-    },
-    view: {
-      chartSpec: input.chartSpec,
-      resultsViewMode: input.resultsViewMode,
-    },
-  });
+  let savedConsole: SavedConsoleRecord;
+  try {
+    savedConsole = await saveAtPath({
+      workspaceId,
+      user: input.user,
+      path,
+      content: input.content,
+      connectionId: targetConnectionId,
+      databaseName: input.databaseName,
+      databaseId: input.databaseId,
+      options: {
+        id: consoleIdToUse,
+        folderId: input.folderId,
+        description: input.description,
+        language: input.language,
+        isPrivate: input.isPrivate,
+        access: input.access,
+      },
+      view: {
+        chartSpec: input.chartSpec,
+        resultsViewMode: input.resultsViewMode,
+      },
+    });
+  } catch (error) {
+    if (error instanceof ConsoleNotFoundError) {
+      return { ok: false, status: 404, error: "Console not found" };
+    }
+    throw error;
+  }
 
   return {
     ok: true,
@@ -295,22 +303,30 @@ export async function saveConsoleByPath(input: {
     workspaceId,
     body.connectionId,
   );
-  const savedConsole = await saveAtPath({
-    workspaceId,
-    user: input.user,
-    path: input.path,
-    content: body.content,
-    connectionId: targetConnectionId,
-    databaseName: body.databaseName,
-    databaseId: body.databaseId,
-    options: {
-      folderId: body.folderId,
-      description: body.description,
-      language: body.language,
-      isPrivate: body.isPrivate,
-      access: body.access,
-    },
-  });
+  let savedConsole: SavedConsoleRecord;
+  try {
+    savedConsole = await saveAtPath({
+      workspaceId,
+      user: input.user,
+      path: input.path,
+      content: body.content,
+      connectionId: targetConnectionId,
+      databaseName: body.databaseName,
+      databaseId: body.databaseId,
+      options: {
+        folderId: body.folderId,
+        description: body.description,
+        language: body.language,
+        isPrivate: body.isPrivate,
+        access: body.access,
+      },
+    });
+  } catch (error) {
+    if (error instanceof ConsoleNotFoundError) {
+      return { ok: false, status: 404, error: "Console not found" };
+    }
+    throw error;
+  }
   return {
     ok: true,
     payload: {

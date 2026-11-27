@@ -8,13 +8,22 @@
 -- Idempotent: safe to re-run. Run via:
 --   pnpm --filter api run pg:migrate -- --post-backfill consoles-connection-fk
 
--- 1. Clear dangling connection references (deleted or foreign connections).
-UPDATE "saved_consoles" sc
-   SET "connection_id" = NULL
- WHERE sc."connection_id" IS NOT NULL
-   AND NOT EXISTS (
-     SELECT 1 FROM "database_connections" dc WHERE dc."id" = sc."connection_id"
-   );
+-- 1. Clear dangling connection references (deleted or foreign connections) and log count.
+DO $$
+DECLARE
+  cleared_count integer;
+BEGIN
+  UPDATE "saved_consoles" sc
+     SET "connection_id" = NULL
+   WHERE sc."connection_id" IS NOT NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM "database_connections" dc WHERE dc."id" = sc."connection_id"
+     );
+  GET DIAGNOSTICS cleared_count = ROW_COUNT;
+  IF cleared_count > 0 THEN
+    RAISE NOTICE 'consoles-connection-fk: cleared % dangling saved_consoles.connection_id reference(s)', cleared_count;
+  END IF;
+END $$;
 --> statement-breakpoint
 -- 2. Attach NOT VALID (avoids long ACCESS EXCLUSIVE scan), then validate.
 DO $$

@@ -25,6 +25,7 @@ import {
 } from "drizzle-orm";
 import { extractRows, getPgDb, type MakoPgDb } from "../../database/pg/client";
 import { isUuidString, newDualId, toWireId } from "../../database/pg/id-codec";
+import { databaseConnections } from "../../database/pg/schema/connections";
 import {
   consoleFolders,
   entityVersions,
@@ -171,6 +172,50 @@ function isPgUniqueViolation(error: unknown): boolean {
     (error as { code?: string; cause?: { code?: string } }).code ??
     (error as { cause?: { code?: string } }).cause?.code;
   return code === "23505";
+}
+
+function isConsolesConnectionFkViolation(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const err = error as {
+    code?: string;
+    constraint?: string;
+    message?: string;
+    cause?: { code?: string; constraint?: string; message?: string };
+  };
+  const code = err.code ?? err.cause?.code;
+  if (code !== "23503") return false;
+  const constraint = err.constraint ?? err.cause?.constraint;
+  if (constraint) return constraint === "saved_consoles_connection_id_fk";
+  const msg = `${err.message ?? ""} ${err.cause?.message ?? ""}`;
+  return msg.includes("saved_consoles_connection_id_fk");
+}
+
+/**
+ * True once post-backfill step `0005a_consoles_connection_fk.sql` has attached
+ * `saved_consoles_connection_id_fk` referencing `database_connections(id)`.
+ */
+export async function hasConsolesConnectionFk(db: MakoPgDb): Promise<boolean> {
+  const raw = await db.execute(sql`
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'saved_consoles_connection_id_fk'
+    LIMIT 1
+  `);
+  return extractRows(raw).length > 0;
+}
+
+async function resolveConnectionIdForFk(
+  db: MakoPgDb,
+  connectionUuid: string | null,
+): Promise<string | null> {
+  if (!connectionUuid) return null;
+  if (!(await hasConsolesConnectionFk(db))) return connectionUuid;
+  const existing = await db
+    .select({ id: databaseConnections.id })
+    .from(databaseConnections)
+    .where(eq(databaseConnections.id, connectionUuid))
+    .limit(1);
+  return existing.length > 0 ? connectionUuid : null;
 }
 
 function safePgUuid(id: string | null | undefined): string | null {
@@ -908,40 +953,75 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
 
   async createConsole(input: CreateConsoleInput): Promise<SavedConsoleRecord> {
     const values = await this.buildInsertConsoleRow(input);
-    const [row] = await this.getDb()
-      .insert(savedConsoles)
-      .values(values)
-      .returning(SAVED_CONSOLE_WITH_EMBEDDING_COLUMNS);
-    return pgSavedConsoleToRecord(row as Omit<SavedConsoleRow, "searchTsv">);
+    const db = this.getDb();
+    try {
+      const [row] = await db
+        .insert(savedConsoles)
+        .values(values)
+        .returning(SAVED_CONSOLE_WITH_EMBEDDING_COLUMNS);
+      return pgSavedConsoleToRecord(row as Omit<SavedConsoleRow, "searchTsv">);
+    } catch (error) {
+      if (values.connectionId && isConsolesConnectionFkViolation(error)) {
+        const [row] = await db
+          .insert(savedConsoles)
+          .values({ ...values, connectionId: null })
+          .returning(SAVED_CONSOLE_WITH_EMBEDDING_COLUMNS);
+        return pgSavedConsoleToRecord(
+          row as Omit<SavedConsoleRow, "searchTsv">,
+        );
+      }
+      throw error;
+    }
   }
 
   async upsertConsole(
     record: SavedConsoleRecord,
-    options: { db?: MakoPgDb; ignoreUpdatedAtGuard?: boolean } = {},
+    options: {
+      db?: MakoPgDb;
+      ignoreUpdatedAtGuard?: boolean;
+      connectionValidated?: boolean;
+    } = {},
   ): Promise<void> {
     const db = options.db ?? this.getDb();
     const values = await this.buildInsertConsoleRow({
       ...record,
       id: record.id,
     });
-    const {
-      id: _id,
-      workspaceId: _ws,
-      createdAt: _createdAt,
-      ...updateSet
-    } = values;
-    await db
-      .insert(savedConsoles)
-      .values(values)
-      .onConflictDoUpdate({
-        target: savedConsoles.id,
-        set: updateSet,
-        ...(options.ignoreUpdatedAtGuard
-          ? {}
-          : {
-              setWhere: sql`${savedConsoles.updatedAt} IS NULL OR EXCLUDED.updated_at >= ${savedConsoles.updatedAt}`,
-            }),
-      });
+    if (values.connectionId && !options.connectionValidated) {
+      values.connectionId = await resolveConnectionIdForFk(
+        db,
+        values.connectionId,
+      );
+    }
+    const runUpsert = async (rowValues: NewSavedConsoleRow): Promise<void> => {
+      const {
+        id: _id,
+        workspaceId: _ws,
+        createdAt: _createdAt,
+        ...updateSet
+      } = rowValues;
+      await db
+        .insert(savedConsoles)
+        .values(rowValues)
+        .onConflictDoUpdate({
+          target: savedConsoles.id,
+          set: updateSet,
+          ...(options.ignoreUpdatedAtGuard
+            ? {}
+            : {
+                setWhere: sql`${savedConsoles.updatedAt} IS NULL OR EXCLUDED.updated_at >= ${savedConsoles.updatedAt}`,
+              }),
+        });
+    };
+    try {
+      await runUpsert(values);
+    } catch (error) {
+      if (values.connectionId && isConsolesConnectionFkViolation(error)) {
+        await runUpsert({ ...values, connectionId: null });
+        return;
+      }
+      throw error;
+    }
   }
 
   async updateConsole(
@@ -956,19 +1036,34 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
     if (Object.keys(set).length === 0) {
       return this.findConsoleById(workspaceId, consoleId);
     }
-    const rows = await this.getDb()
-      .update(savedConsoles)
-      .set(set)
-      .where(
-        and(
-          eq(savedConsoles.id, idUuid),
-          eq(savedConsoles.workspaceId, wsUuid),
-        ),
-      )
-      .returning(SAVED_CONSOLE_BASE_COLUMNS);
-    return rows[0]
-      ? pgSavedConsoleToRecord(rows[0] as Omit<SavedConsoleRow, "searchTsv">)
-      : null;
+    const db = this.getDb();
+    const runUpdate = (setValues: Record<string, unknown>) =>
+      db
+        .update(savedConsoles)
+        .set(setValues)
+        .where(
+          and(
+            eq(savedConsoles.id, idUuid),
+            eq(savedConsoles.workspaceId, wsUuid),
+          ),
+        )
+        .returning(SAVED_CONSOLE_BASE_COLUMNS);
+    try {
+      const rows = await runUpdate(set);
+      return rows[0]
+        ? pgSavedConsoleToRecord(rows[0] as Omit<SavedConsoleRow, "searchTsv">)
+        : null;
+    } catch (error) {
+      if (set.connectionId && isConsolesConnectionFkViolation(error)) {
+        const rows = await runUpdate({ ...set, connectionId: null });
+        return rows[0]
+          ? pgSavedConsoleToRecord(
+              rows[0] as Omit<SavedConsoleRow, "searchTsv">,
+            )
+          : null;
+      }
+      throw error;
+    }
   }
 
   async updateConsolesInFolder(
@@ -1041,18 +1136,42 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
           1,
       };
       const insertValues = await this.buildInsertConsoleRow(mergedCreate);
-      const [row] = await this.getDb()
-        .insert(savedConsoles)
-        .values(insertValues)
-        .onConflictDoUpdate({
-          target: savedConsoles.id,
-          set: setValues,
-          setWhere: eq(savedConsoles.workspaceId, wsUuid),
-        })
-        .returning(SAVED_CONSOLE_BASE_COLUMNS);
-      return row
-        ? pgSavedConsoleToRecord(row as Omit<SavedConsoleRow, "searchTsv">)
-        : null;
+      const db = this.getDb();
+      const runUpsert = (
+        rowValues: NewSavedConsoleRow,
+        updateSet: Record<string, unknown>,
+      ) =>
+        db
+          .insert(savedConsoles)
+          .values(rowValues)
+          .onConflictDoUpdate({
+            target: savedConsoles.id,
+            set: updateSet,
+            setWhere: eq(savedConsoles.workspaceId, wsUuid),
+          })
+          .returning(SAVED_CONSOLE_BASE_COLUMNS);
+      try {
+        const [row] = await runUpsert(insertValues, setValues);
+        return row
+          ? pgSavedConsoleToRecord(row as Omit<SavedConsoleRow, "searchTsv">)
+          : null;
+      } catch (error) {
+        if (
+          (insertValues.connectionId || setValues.connectionId) &&
+          isConsolesConnectionFkViolation(error)
+        ) {
+          const [row] = await runUpsert(
+            { ...insertValues, connectionId: null },
+            setValues.connectionId !== undefined
+              ? { ...setValues, connectionId: null }
+              : setValues,
+          );
+          return row
+            ? pgSavedConsoleToRecord(row as Omit<SavedConsoleRow, "searchTsv">)
+            : null;
+        }
+        throw error;
+      }
     }
 
     const conds = [
@@ -1066,14 +1185,32 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
       conds.push(eq(savedConsoles.draftRevision, input.expectedDraftRevision));
     }
 
-    const rows = await this.getDb()
-      .update(savedConsoles)
-      .set(setValues)
-      .where(and(...conds))
-      .returning(SAVED_CONSOLE_BASE_COLUMNS);
-    return rows[0]
-      ? pgSavedConsoleToRecord(rows[0] as Omit<SavedConsoleRow, "searchTsv">)
-      : null;
+    const db = this.getDb();
+    const runGuardedUpdate = (updateSet: Record<string, unknown>) =>
+      db
+        .update(savedConsoles)
+        .set(updateSet)
+        .where(and(...conds))
+        .returning(SAVED_CONSOLE_BASE_COLUMNS);
+    try {
+      const rows = await runGuardedUpdate(setValues);
+      return rows[0]
+        ? pgSavedConsoleToRecord(rows[0] as Omit<SavedConsoleRow, "searchTsv">)
+        : null;
+    } catch (error) {
+      if (setValues.connectionId && isConsolesConnectionFkViolation(error)) {
+        const rows = await runGuardedUpdate({
+          ...setValues,
+          connectionId: null,
+        });
+        return rows[0]
+          ? pgSavedConsoleToRecord(
+              rows[0] as Omit<SavedConsoleRow, "searchTsv">,
+            )
+          : null;
+      }
+      throw error;
+    }
   }
 
   async bumpConsoleDraftRevision(
@@ -1474,7 +1611,29 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
     const modelFilter = opts.embeddingModel
       ? sql`AND (embedding_model IS NULL OR embedding_model = ${opts.embeddingModel})`
       : sql``;
+    // Scope to the workspace in a MATERIALIZED CTE first (using `idx_saved_consoles_ws_saved`)
+    // before ordering by exact cosine distance so small workspaces are never starved by
+    // global multi-tenant HNSW `ef_search` candidate limits (matches Mongo `$vectorSearch` pre-filter).
     const raw = await this.getDb().execute(sql`
+      WITH ws_consoles AS MATERIALIZED (
+        SELECT
+          id,
+          name,
+          description,
+          connection_id,
+          database_name,
+          language,
+          is_saved,
+          embedding_model,
+          updated_at,
+          description_embedding
+        FROM saved_consoles
+        WHERE workspace_id = ${wsUuid}::uuid
+          AND is_saved = true
+          AND is_deleted = false
+          AND description_embedding IS NOT NULL
+          ${modelFilter}
+      )
       SELECT
         id,
         name,
@@ -1486,12 +1645,7 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
         embedding_model,
         updated_at,
         (1.0 - (description_embedding <=> ${vecLiteral}::vector))::double precision AS score
-      FROM saved_consoles
-      WHERE workspace_id = ${wsUuid}::uuid
-        AND is_saved = true
-        AND is_deleted = false
-        AND description_embedding IS NOT NULL
-        ${modelFilter}
+      FROM ws_consoles
       ORDER BY description_embedding <=> ${vecLiteral}::vector ASC
       LIMIT ${opts.limit * 2}
     `);
@@ -1529,23 +1683,55 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
   ): Promise<ConsoleSearchCandidate[]> {
     const wsUuid = safePgUuid(workspaceId);
     if (!wsUuid || !query.trim()) return [];
+    // Align with Mongo `$text` OR-semantics across positive terms while preserving
+    // phrases (`<->`/`<N>`), negations (`-term`), and safe websearch parsing, and use
+    // cover-density ranking (`ts_rank_cd` with weights `{0.1, 0.2, 0.6, 1.0}`) so scores
+    // land in the same ~0.6–3.0 range Mongo `$meta: "textScore"` feeds into `computeCompositeScore`.
     const raw = await this.getDb().execute(sql`
+      WITH parsed AS (
+        SELECT websearch_to_tsquery('english', ${query})::text AS raw
+      ),
+      parts AS (
+        SELECT unnest(string_to_array(raw, ' & ')) AS part
+        FROM parsed
+        WHERE raw <> ''
+      ),
+      grouped AS (
+        SELECT
+          string_agg('(' || part || ')', ' | ') FILTER (
+            WHERE NOT (left(part, 1) = '!' AND position(' | ' in part) = 0)
+          ) AS pos,
+          string_agg('(' || part || ')', ' & ') FILTER (
+            WHERE left(part, 1) = '!' AND position(' | ' in part) = 0
+          ) AS neg
+        FROM parts
+      ),
+      q AS (
+        SELECT CASE
+          WHEN pos IS NOT NULL AND neg IS NOT NULL THEN ('(' || pos || ') & ' || neg)::tsquery
+          WHEN pos IS NOT NULL THEN pos::tsquery
+          ELSE ''::tsquery
+        END AS tsq
+        FROM grouped
+      )
       SELECT
-        id,
-        name,
-        description,
-        connection_id,
-        database_name,
-        language,
-        is_saved,
-        updated_at,
-        ts_rank(search_tsv, websearch_to_tsquery('english', ${query}))::double precision AS score
-      FROM saved_consoles
-      WHERE workspace_id = ${wsUuid}::uuid
-        AND is_saved = true
-        AND is_deleted = false
-        AND search_tsv @@ websearch_to_tsquery('english', ${query})
-      ORDER BY score DESC, updated_at DESC
+        sc.id,
+        sc.name,
+        sc.description,
+        sc.connection_id,
+        sc.database_name,
+        sc.language,
+        sc.is_saved,
+        sc.updated_at,
+        ts_rank_cd('{0.1, 0.2, 0.6, 1.0}', sc.search_tsv, q.tsq)::double precision AS score
+      FROM saved_consoles sc
+      CROSS JOIN q
+      WHERE sc.workspace_id = ${wsUuid}::uuid
+        AND sc.is_saved = true
+        AND sc.is_deleted = false
+        AND q.tsq <> ''::tsquery
+        AND sc.search_tsv @@ q.tsq
+      ORDER BY score DESC, sc.updated_at DESC
       LIMIT ${opts.limit * 2}
     `);
     const rows = extractRows<{
@@ -1595,7 +1781,7 @@ export class PgConsolesChartsRepository implements ConsolesChartsRepository {
       WHERE workspace_id = ${wsUuid}::uuid
         AND is_saved = true
         AND is_deleted = false
-        AND name ILIKE ${pattern} ESCAPE '\'
+        AND name ILIKE ${pattern} ESCAPE '\\'
       ORDER BY updated_at DESC
       LIMIT ${opts.limit * 2}
     `);

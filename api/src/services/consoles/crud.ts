@@ -22,6 +22,15 @@ import { ensureConsoleFolderPath, findFolderByPath } from "./folders";
 
 const logger = getLogger(["api", "consoles"]);
 
+export class ConsoleNotFoundError extends Error {
+  readonly status = 404;
+
+  constructor(consoleId?: string) {
+    super(consoleId ? `Console not found: ${consoleId}` : "Console not found");
+    this.name = "ConsoleNotFoundError";
+  }
+}
+
 /**
  * Save console content to database
  */
@@ -155,13 +164,30 @@ export async function saveConsole(
         savedConsole.id,
         patch,
       );
-      return (
-        updated ?? {
-          ...desired,
-          path: committed.path,
-          sourceBlobSha: committed.sourceBlobSha,
+      if (!updated) {
+        try {
+          await commitConsoleRemoval({
+            workspaceId,
+            path: committed.path,
+            actorUserId: userId,
+            message: `revert: ${committed.path}`,
+          });
+        } catch (revertError) {
+          logger.error(
+            "Could not revert console commit after concurrent deletion",
+            {
+              path: committed.path,
+              consoleId: savedConsole.id,
+              error:
+                revertError instanceof Error
+                  ? revertError.message
+                  : String(revertError),
+            },
+          );
         }
-      );
+        throw new ConsoleNotFoundError(savedConsole.id);
+      }
+      return updated;
     }
 
     // Create new console (explicitly saved)
@@ -216,7 +242,12 @@ export async function saveConsole(
       sourceBlobSha: committed.sourceBlobSha,
     });
   } catch (error) {
-    if (error instanceof RepoRequiredError) throw error;
+    if (
+      error instanceof RepoRequiredError ||
+      error instanceof ConsoleNotFoundError
+    ) {
+      throw error;
+    }
     logger.error("Error saving console to database", { error });
     throw error;
   }

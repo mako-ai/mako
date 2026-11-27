@@ -46,7 +46,10 @@ import {
   SavedConsole,
   ScheduledQueryRun,
   Workspace,
+  WorkspaceMember,
 } from "../../database/workspace-schema";
+import { createRouter } from "../../openapi/core";
+import { consoleSharingRoutes } from "../../routes/consoles/sharing";
 import {
   clearBackfillRegistryForTests,
   listBackfillDomains,
@@ -86,6 +89,7 @@ import {
   DualConsolesChartsRepository,
   MongoConsolesChartsRepository,
   PgConsolesChartsRepository,
+  consolesChartsRepo,
   type ConsolesChartsRepository,
 } from "./index";
 
@@ -210,6 +214,7 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
     await Promise.all([
       User.deleteMany({}),
       Workspace.deleteMany({}),
+      WorkspaceMember.deleteMany({}),
       ConsoleFolder.deleteMany({}),
       SavedConsole.deleteMany({}),
       EntityVersion.deleteMany({}),
@@ -911,6 +916,198 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       });
       expect(nameHits.map(h => h.id)).toEqual([cSales.id]);
     });
+
+    it("escapes _ % and \\ literals cleanly in ILIKE name search (#4717302820)", async () => {
+      const pgRepo = new PgConsolesChartsRepository({
+        getDb: () => db,
+        resolveUserUuid,
+      });
+
+      const target = await pgRepo.createConsole({
+        workspaceId: wsId,
+        name: "rev_ops_100%",
+        code: "SELECT 1",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      await pgRepo.createConsole({
+        workspaceId: wsId,
+        name: "revXopsX10099",
+        code: "SELECT 2",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      const backslashTarget = await pgRepo.createConsole({
+        workspaceId: wsId,
+        name: "team\\rev_ops",
+        code: "SELECT 3",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+
+      const exactLikeHits = await pgRepo.searchConsolesName(
+        wsId,
+        "rev_ops_100%",
+        { limit: 5 },
+      );
+      expect(exactLikeHits.map(h => h.id)).toEqual([target.id]);
+
+      const backslashHits = await pgRepo.searchConsolesName(
+        wsId,
+        "team\\rev_ops",
+        { limit: 5 },
+      );
+      expect(backslashHits.map(h => h.id)).toEqual([backslashTarget.id]);
+    });
+
+    it("aligns Postgres FTS with Mongo $text OR-semantics, phrases, negations, and score scale (#4717305431)", async () => {
+      const pgRepo = new PgConsolesChartsRepository({
+        getDb: () => db,
+        resolveUserUuid,
+      });
+
+      const cFull = await pgRepo.createConsole({
+        workspaceId: wsId,
+        name: "Monthly Revenue by Region",
+        description: "Monthly revenue rollup by region",
+        code: "SELECT 1",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      const cPartial = await pgRepo.createConsole({
+        workspaceId: wsId,
+        name: "Revenue by Region",
+        description: "Quarterly breakdown of revenue by region",
+        code: "SELECT 2",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      const cDraftWord = await pgRepo.createConsole({
+        workspaceId: wsId,
+        name: "Draft Revenue Report",
+        description: "Temporary draft revenue scratchpad",
+        code: "SELECT 3",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      await pgRepo.createConsole({
+        workspaceId: wsId,
+        name: "Customer Churn",
+        description: "Tracks churn rate over time",
+        code: "SELECT 4",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+
+      // Multi-word OR recall: "monthly revenue by region" must match "Revenue by Region" too
+      const orHits = await pgRepo.searchConsolesText(
+        wsId,
+        "monthly revenue by region",
+        { limit: 5 },
+      );
+      expect(orHits.map(h => h.id)).toEqual([
+        cFull.id,
+        cPartial.id,
+        cDraftWord.id,
+      ]);
+      expect(orHits[0].score).toBeGreaterThan(orHits[1].score);
+      // Score sits in Mongo textScore range (above 0.5 ILIKE name fallback)
+      expect(orHits[1].score).toBeGreaterThanOrEqual(0.6);
+
+      // Negation still excludes negated term
+      const negHits = await pgRepo.searchConsolesText(wsId, "revenue -draft", {
+        limit: 5,
+      });
+      expect(negHits.map(h => h.id).sort()).toEqual(
+        [cFull.id, cPartial.id].sort(),
+      );
+
+      // Quoted phrase + OR term parses and matches safely
+      const phraseHits = await pgRepo.searchConsolesText(
+        wsId,
+        '"revenue by region" monthly',
+        { limit: 5 },
+      );
+      expect(phraseHits.map(h => h.id)).toContain(cFull.id);
+      expect(phraseHits.map(h => h.id)).toContain(cPartial.id);
+
+      // Stopword-only and negation-only queries return [] cleanly without SQL errors
+      expect(
+        await pgRepo.searchConsolesText(wsId, "the and of", { limit: 5 }),
+      ).toEqual([]);
+      expect(
+        await pgRepo.searchConsolesText(wsId, "-draft", { limit: 5 }),
+      ).toEqual([]);
+    });
+
+    it("prevents multi-tenant HNSW ef_search starvation for small workspaces (#4717305914)", async () => {
+      const pgRepo = new PgConsolesChartsRepository({
+        getDb: () => db,
+        resolveUserUuid,
+      });
+
+      const queryVec = makeUnitVector(20, 21);
+      const wsCloserVec = makeUnitVector(20, 22);
+      const wsFartherVec = makeUnitVector(25, 26);
+
+      // Seed 50 consoles in ws2Id (> default hnsw.ef_search=40) with identical vector to queryVec
+      for (let i = 0; i < 50; i++) {
+        await pgRepo.createConsole({
+          workspaceId: ws2Id,
+          name: `Other Tenant Console ${i}`,
+          description: "Distractor in another tenant",
+          descriptionEmbedding: queryVec,
+          embeddingModel: "text-embedding-3-small",
+          code: "SELECT 1",
+          language: "sql",
+          createdBy: userV7Id,
+          isSaved: true,
+        });
+      }
+
+      const cClose = await pgRepo.createConsole({
+        workspaceId: wsId,
+        name: "Small WS Closer",
+        description: "Closer match in small workspace",
+        descriptionEmbedding: wsCloserVec,
+        embeddingModel: "text-embedding-3-small",
+        code: "SELECT 1",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      const cFar = await pgRepo.createConsole({
+        workspaceId: wsId,
+        name: "Small WS Farther",
+        description: "Farther match in small workspace",
+        descriptionEmbedding: wsFartherVec,
+        embeddingModel: "text-embedding-3-small",
+        code: "SELECT 2",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+
+      await db.execute(sql`ANALYZE saved_consoles`);
+      await db.execute(sql`SET enable_seqscan = off`);
+      try {
+        const hits = await pgRepo.searchConsolesVector(wsId, queryVec, {
+          limit: 5,
+          embeddingModel: "text-embedding-3-small",
+        });
+        expect(hits.map(h => h.id)).toEqual([cClose.id, cFar.id]);
+        expect(hits[0].score).toBeGreaterThan(hits[1].score);
+      } finally {
+        await db.execute(sql`SET enable_seqscan = on`);
+      }
+    });
   });
 
   // ── 3. 5-Stage Dual-Run, Hot-Path Safety, Rollback Parity & Sync-Retry ───
@@ -1362,6 +1559,275 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       expect((await harness.dual.findConsoleByIdGlobal(cPg.id))?.name).toBe(
         "PG Due",
       );
+    });
+
+    it("triggers sync-retry when guarded or relative secondary writes match 0 rows after primary succeeds (#4717304970)", async () => {
+      const failures: SecondaryWriteFailureContext[] = [];
+      const harness = await makeDualHarness("dual_write_mongo_read", {
+        onSecondaryFailure: ctx => failures.push(ctx),
+      });
+
+      const dueAt = new Date("2026-11-01T00:00:00.000Z");
+      const nextSlot = new Date("2026-11-02T00:00:00.000Z");
+      const created = await harness.dual.createConsole({
+        workspaceId: wsId,
+        name: "Guarded Drift Console",
+        code: "SELECT 1",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+        schedule: { cron: "0 0 * * *", timezone: "UTC" },
+        scheduledRun: { nextAt: dueAt, runCount: 0, consecutiveFailures: 0 },
+      });
+
+      // 1. Simulate PG draftRevision ahead by +1 (e.g. late commit after timeout):
+      // guardedSaveConsole succeeds in Mongo (expectedDraftRevision: 1 -> 2), misses 0 rows in PG ->
+      // MUST emit secondary failure instead of returning silently, and replaySyncToPg heals PG!
+      await db
+        .update(pgSchema.savedConsoles)
+        .set({ draftRevision: 2 })
+        .where(eq(pgSchema.savedConsoles.id, objectIdToUuid(created.id)));
+
+      const saved = await harness.dual.guardedSaveConsole({
+        workspaceId: wsId,
+        consoleId: created.id,
+        expectedDraftRevision: 1,
+        upsert: false,
+        set: { code: "SELECT 'updated'", updatedAt: new Date() },
+        incDraftRevision: 1,
+      });
+      expect(saved?.draftRevision).toBe(2);
+      expect(saved?.code).toBe("SELECT 'updated'");
+      expect(failures).toHaveLength(1);
+      expect(failures[0].target).toBe("pg");
+      expect(failures[0].operation).toBe("guardedSaveConsole");
+
+      await replaySyncToPg(
+        {
+          domain: CONSOLES_CHARTS_DOMAIN,
+          target: "pg",
+          operation: failures[0].operation,
+          entityId: failures[0].entityId ?? created.id,
+          workspaceId: wsId,
+          payload: failures[0].payload,
+          errorMessage: "secondary matched 0 rows",
+          failedAt: new Date().toISOString(),
+        },
+        db,
+      );
+      const healed = await harness.pgRepo.findConsoleById(wsId, created.id);
+      expect(healed?.code).toBe("SELECT 'updated'");
+      expect(healed?.draftRevision).toBe(2);
+
+      // 2. When primary itself fails the guard (409 conflict), NO secondary failure is recorded.
+      failures.length = 0;
+      const conflict = await harness.dual.guardedSaveConsole({
+        workspaceId: wsId,
+        consoleId: created.id,
+        expectedDraftRevision: 1,
+        upsert: false,
+        set: { code: "SELECT 'stale'" },
+        incDraftRevision: 1,
+      });
+      expect(conflict).toBeNull();
+      expect(failures).toHaveLength(0);
+
+      // 3. bumpConsoleDraftRevision writes primary's exact draftRevision (heals +1 drift inline!)
+      await db
+        .update(pgSchema.savedConsoles)
+        .set({ draftRevision: 9 })
+        .where(eq(pgSchema.savedConsoles.id, objectIdToUuid(created.id)));
+      const bumped = await harness.dual.bumpConsoleDraftRevision(
+        wsId,
+        created.id,
+      );
+      expect(bumped?.draftRevision).toBe(3);
+      expect(
+        (await harness.pgRepo.findConsoleById(wsId, created.id))?.draftRevision,
+      ).toBe(3);
+      expect(failures).toHaveLength(0);
+
+      // 4. claimScheduledConsole when PG nextAt drifted (0 rows matched in PG) -> emits secondary failure
+      await db
+        .update(pgSchema.savedConsoles)
+        .set({ scheduledRunNextAt: new Date("2026-10-01T00:00:00.000Z") })
+        .where(eq(pgSchema.savedConsoles.id, objectIdToUuid(created.id)));
+      const claimed = await harness.dual.claimScheduledConsole(
+        {
+          id: created.id,
+          workspaceId: wsId,
+          nextAt: dueAt,
+          schedule: { cron: "0 0 * * *", timezone: "UTC" },
+        },
+        nextSlot,
+      );
+      expect(claimed.modifiedCount).toBe(1);
+      expect(failures).toHaveLength(1);
+      expect(failures[0].operation).toBe("claimScheduledConsole");
+
+      // 5. Missing row in PG: bumpConsoleDraftRevision & recordConsoleExecution both emit secondary failure
+      failures.length = 0;
+      await db
+        .delete(pgSchema.savedConsoles)
+        .where(eq(pgSchema.savedConsoles.id, objectIdToUuid(created.id)));
+
+      expect(
+        (await harness.dual.bumpConsoleDraftRevision(wsId, created.id))
+          ?.draftRevision,
+      ).toBe(4);
+      expect(
+        await harness.dual.recordConsoleExecution(wsId, created.id, {
+          lastExecutedAt: new Date(),
+          bumpDraftRevision: true,
+        }),
+      ).toBe(true);
+      expect(failures.map(f => f.operation)).toEqual([
+        "bumpConsoleDraftRevision",
+        "recordConsoleExecution",
+      ]);
+
+      // 6. Stage 4 symmetry: PG primary succeeds, Mongo secondary matches 0 rows -> emits mongo retry
+      failures.length = 0;
+      await harness.setMode("dual_write_pg_read");
+      const pgOnlyRow = await harness.pgRepo.createConsole({
+        workspaceId: wsId,
+        name: "Stage4 Missing In Mongo",
+        code: "SELECT 'pg'",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      expect(
+        await harness.dual.recordConsoleExecution(wsId, pgOnlyRow.id, {
+          lastExecutedAt: new Date(),
+        }),
+      ).toBe(true);
+      expect(failures).toHaveLength(1);
+      expect(failures[0].target).toBe("mongo");
+      expect(failures[0].operation).toBe("recordConsoleExecution");
+    });
+
+    it("preserves stale-cached routing flags on transient PG error and propagates when cold (#4717306376)", async () => {
+      const harness = await makeDualHarness("mongo_only", {
+        workspaceModes: {
+          [ws2Id]: "pg_only",
+        },
+      });
+
+      const pgConsole = await harness.pgRepo.createConsole({
+        workspaceId: ws2Id,
+        name: "Fresh PG Console",
+        code: "SELECT 'fresh'",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+      await harness.mongoRepo.createConsole({
+        id: pgConsole.id,
+        workspaceId: ws2Id,
+        name: "Frozen Stale Mongo Console",
+        code: "SELECT 'stale'",
+        language: "sql",
+        createdBy: userV7Id,
+        isSaved: true,
+      });
+
+      // Warm cache: hasAnyPgReadWorkspace = true
+      expect(
+        (await harness.dual.findConsoleByIdGlobal(pgConsole.id))?.name,
+      ).toBe("Fresh PG Console");
+
+      // Inject transient PG error on migration_domain_state query for warm Dual repo:
+      // must keep stale-cached `true` and still serve Fresh PG Console (never frozen Mongo!).
+      let failDomainStateQuery = true;
+      const flakyDb = new Proxy(db, {
+        get(target, prop, receiver) {
+          if (prop === "select" && failDomainStateQuery) {
+            return (...args: unknown[]) => {
+              const chain = (
+                target.select as (...a: unknown[]) => {
+                  from: (t: unknown) => unknown;
+                }
+              )(...args);
+              return new Proxy(chain, {
+                get(cTarget, cProp, cReceiver) {
+                  if (cProp === "from") {
+                    return (table: unknown) => {
+                      if (table === pgSchema.migrationDomainState) {
+                        throw new Error("transient pg blip");
+                      }
+                      return cTarget.from(table);
+                    };
+                  }
+                  return Reflect.get(cTarget, cProp, cReceiver);
+                },
+              });
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      }) as MakoPgDb;
+
+      // Warm a Dual repo backed by flakyDb while healthy, then flip failure on
+      failDomainStateQuery = false;
+      const warmDual = new DualConsolesChartsRepository({
+        mongo: harness.mongoRepo,
+        pg: harness.pgRepo,
+        router: harness.router,
+        getDb: () => flakyDb,
+        resolveUserUuid,
+      });
+      expect((await warmDual.findConsoleByIdGlobal(pgConsole.id))?.name).toBe(
+        "Fresh PG Console",
+      );
+
+      failDomainStateQuery = true;
+      expect((await warmDual.findConsoleByIdGlobal(pgConsole.id))?.name).toBe(
+        "Fresh PG Console",
+      );
+
+      // Cold Dual repo (unknown flag): MUST propagate error instead of returning false -> frozen Mongo!
+      const coldDual = new DualConsolesChartsRepository({
+        mongo: harness.mongoRepo,
+        pg: harness.pgRepo,
+        router: harness.router,
+        getDb: () => flakyDb,
+        resolveUserUuid,
+      });
+      await expect(
+        coldDual.findConsoleByIdGlobal(pgConsole.id),
+      ).rejects.toThrow("transient pg blip");
+
+      // Global Stage 5 (pg_only): warm cache preserves isGlobalPgOnly = true on transient error
+      // and never touches Mongo; cold instance propagates the error.
+      failDomainStateQuery = false;
+      await db.delete(pgSchema.migrationDomainState);
+      await harness.setMode("pg_only");
+      const mongoGlobalSpy = vi.spyOn(
+        harness.mongoRepo,
+        "findConsoleByIdGlobal",
+      );
+      expect((await warmDual.findConsoleByIdGlobal(pgConsole.id))?.name).toBe(
+        "Fresh PG Console",
+      );
+      failDomainStateQuery = true;
+      expect((await warmDual.findConsoleByIdGlobal(pgConsole.id))?.name).toBe(
+        "Fresh PG Console",
+      );
+      expect(mongoGlobalSpy).not.toHaveBeenCalled();
+
+      const coldGlobalDual = new DualConsolesChartsRepository({
+        mongo: harness.mongoRepo,
+        pg: harness.pgRepo,
+        router: harness.router,
+        getDb: () => flakyDb,
+        resolveUserUuid,
+      });
+      await expect(
+        coldGlobalDual.findConsoleByIdGlobal(pgConsole.id),
+      ).rejects.toThrow("transient pg blip");
+      expect(mongoGlobalSpy).not.toHaveBeenCalled();
+      mongoGlobalSpy.mockRestore();
     });
   });
 
@@ -3821,6 +4287,81 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
       mGet.mockRestore();
       mWs.mockRestore();
     });
+
+    it("does not truncate favourites_parents backfill when pages contain empty-string parentId (#4717304375)", async () => {
+      const wsOid = new Types.ObjectId(wsId);
+      const favFolderOid = new Types.ObjectId(
+        makeOrderedOid(1_710_000_500, "f000"),
+      );
+      await Favourite.create({
+        _id: favFolderOid,
+        workspaceId: wsOid,
+        userId: userV7Id,
+        parentId: null,
+        type: "folder",
+        title: "Pinned Folder",
+        position: 0,
+      });
+
+      // Seed 3 favourites with parentId: "" (early ObjectIds) BEFORE 3 nested favourites
+      for (let i = 1; i <= 3; i++) {
+        await Favourite.collection.insertOne({
+          _id: new Types.ObjectId(makeOrderedOid(1_710_000_000 + i, `e00${i}`)),
+          workspaceId: wsOid,
+          userId: userV7Id,
+          parentId: "",
+          type: "item",
+          kind: "notebook",
+          refId: `nb-empty-parent-${i}`,
+          position: i,
+          createdAt: new Date("2026-11-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-11-01T00:00:00.000Z"),
+        });
+      }
+
+      const nestedIds: string[] = [];
+      for (let i = 1; i <= 3; i++) {
+        const oid = new Types.ObjectId(
+          makeOrderedOid(1_710_000_100 + i, `c00${i}`),
+        );
+        nestedIds.push(oid.toString());
+        await Favourite.create({
+          _id: oid,
+          workspaceId: wsOid,
+          userId: userV7Id,
+          parentId: favFolderOid.toString(),
+          type: "item",
+          kind: "notebook",
+          refId: `nb-nested-${i}`,
+          position: i,
+        });
+      }
+
+      // batchSize=2 forces multi-page pagination through stage 9 (`favourites_parents`)
+      const bf = await runBackfill({
+        domain: CONSOLES_CHARTS_DOMAIN,
+        batchSize: 2,
+        db,
+      });
+      expect(bf.status).toBe("completed");
+
+      const pgRepo = new PgConsolesChartsRepository({
+        getDb: () => db,
+        resolveUserUuid,
+      });
+      for (const nestedId of nestedIds) {
+        const row = await pgRepo.findFavouriteById(wsId, userV7Id, nestedId);
+        expect(row?.parentId).toBe(favFolderOid.toString());
+      }
+
+      const verification = await runParityVerification({
+        domain: CONSOLES_CHARTS_DOMAIN,
+        batchSize: 2,
+        db,
+      });
+      expect(verification.ok).toBe(true);
+      expect(verification.mismatched).toBe(0);
+    });
   });
 
   // ── 5. Post-Backfill Step (`consoles-connection-fk`) ─────────────────────
@@ -3896,12 +4437,361 @@ describe("Phase 2A-2 ConsolesChartsRepository contract & migration lifecycle", (
         expect(
           (await pgRepo.findConsoleById(wsId, cValid.id))?.connectionId,
         ).toBeUndefined();
+
+        // After 0005a attaches the FK, live PG writes, dual-writes, sync-retry replay,
+        // verifier, and --repair must map dangling connectionIds to NULL cleanly (never 23503) (#4717303833).
+        const deletedConnId = new Types.ObjectId().toString();
+        const createdWithDangling = await pgRepo.createConsole({
+          workspaceId: wsId,
+          connectionId: deletedConnId,
+          name: "Created After FK With Deleted Conn",
+          code: "SELECT 10",
+          language: "sql",
+          createdBy: userV7Id,
+          isSaved: true,
+        });
+        expect(createdWithDangling.connectionId).toBeUndefined();
+
+        const updatedWithDangling = await pgRepo.updateConsole(
+          wsId,
+          createdWithDangling.id,
+          { connectionId: deletedConnId, code: "SELECT 11" },
+        );
+        expect(updatedWithDangling?.code).toBe("SELECT 11");
+        expect(updatedWithDangling?.connectionId).toBeUndefined();
+
+        const guardedWithDangling = await pgRepo.guardedSaveConsole({
+          workspaceId: wsId,
+          consoleId: createdWithDangling.id,
+          expectedVersion: 1,
+          upsert: false,
+          set: { connectionId: deletedConnId, code: "SELECT 12" },
+          incVersion: 1,
+        });
+        expect(guardedWithDangling?.code).toBe("SELECT 12");
+        expect(guardedWithDangling?.connectionId).toBeUndefined();
+
+        const guardedUpsertId = new Types.ObjectId().toString();
+        const guardedUpserted = await pgRepo.guardedSaveConsole({
+          workspaceId: wsId,
+          consoleId: guardedUpsertId,
+          upsert: true,
+          set: {
+            name: "Guarded Upsert Dangling",
+            connectionId: deletedConnId,
+            code: "SELECT 13",
+            language: "sql",
+          },
+          setOnInsert: { createdBy: userV7Id, isSaved: true },
+        });
+        expect(guardedUpserted?.connectionId).toBeUndefined();
+
+        await pgRepo.upsertConsole({
+          ...createdWithDangling,
+          connectionId: deletedConnId,
+          code: "SELECT 14",
+          updatedAt: new Date(Date.now() + 5_000),
+        });
+        expect(
+          (await pgRepo.findConsoleById(wsId, createdWithDangling.id))?.code,
+        ).toBe("SELECT 14");
+        expect(
+          (await pgRepo.findConsoleById(wsId, createdWithDangling.id))
+            ?.connectionId,
+        ).toBeUndefined();
+
+        // Dual-write + replay + verifier + --repair with Mongo holding dangling connectionId
+        const mongoRepo = new MongoConsolesChartsRepository();
+        const failures: SecondaryWriteFailureContext[] = [];
+        const router = new MigrationRouter({
+          getDb: () => db,
+          hasPg: () => true,
+          enablePubSub: false,
+          onSecondaryFailure: async ctx => {
+            failures.push(ctx);
+          },
+        });
+        await router.setDomainState({
+          domain: CONSOLES_CHARTS_DOMAIN,
+          mode: "dual_write_mongo_read",
+        });
+        const dual = new DualConsolesChartsRepository({
+          mongo: mongoRepo,
+          pg: pgRepo,
+          router,
+          getDb: () => db,
+          resolveUserUuid,
+        });
+
+        // Clean unrelated PG consoles so verifier focuses on the dual-written console
+        await db.delete(pgSchema.savedConsoles);
+        const dualConsole = await dual.createConsole({
+          workspaceId: wsId,
+          connectionId: deletedConnId,
+          name: "Dual Dangling Conn Console",
+          code: "SELECT 20",
+          language: "sql",
+          createdBy: userV7Id,
+          isSaved: true,
+        });
+        expect(failures).toHaveLength(0);
+        expect(
+          (await pgRepo.findConsoleById(wsId, dualConsole.id))?.connectionId,
+        ).toBeUndefined();
+
+        await dual.updateConsole(wsId, dualConsole.id, {
+          connectionId: deletedConnId,
+          code: "SELECT 21",
+        });
+        expect(failures).toHaveLength(0);
+        expect((await pgRepo.findConsoleById(wsId, dualConsole.id))?.code).toBe(
+          "SELECT 21",
+        );
+
+        // Verifier reports 0 drift when Mongo has dangling connectionId and PG has NULL
+        clearVerifierRegistryForTests();
+        registerMigrationDomains({ force: true });
+        const verifyOk = await runParityVerification({
+          domain: `${CONSOLES_CHARTS_DOMAIN}:saved_consoles`,
+          workspaceId: wsId,
+          batchSize: 10,
+          db,
+        });
+        expect(verifyOk.ok).toBe(true);
+        expect(verifyOk.mismatched).toBe(0);
+
+        // Induce drift in PG and verify both --repair and replaySyncToPg succeed without 23503
+        await db
+          .update(pgSchema.savedConsoles)
+          .set({ code: "SELECT 'drifted'" })
+          .where(eq(pgSchema.savedConsoles.id, objectIdToUuid(dualConsole.id)));
+
+        const repairRes = await runParityVerification({
+          domain: `${CONSOLES_CHARTS_DOMAIN}:saved_consoles`,
+          workspaceId: wsId,
+          batchSize: 10,
+          repair: true,
+          db,
+        });
+        expect(repairRes.repaired).toBe(1);
+        expect((await pgRepo.findConsoleById(wsId, dualConsole.id))?.code).toBe(
+          "SELECT 21",
+        );
+
+        await db
+          .delete(pgSchema.savedConsoles)
+          .where(eq(pgSchema.savedConsoles.id, objectIdToUuid(dualConsole.id)));
+        await replaySyncToPg(
+          {
+            domain: CONSOLES_CHARTS_DOMAIN,
+            target: "pg",
+            operation: "updateConsole",
+            entityId: dualConsole.id,
+            workspaceId: wsId,
+            payload: {
+              table: "saved_consoles",
+              action: "upsert",
+              id: dualConsole.id,
+              workspaceId: wsId,
+            },
+            errorMessage: "replay dangling conn",
+            failedAt: new Date().toISOString(),
+          },
+          db,
+        );
+        expect((await pgRepo.findConsoleById(wsId, dualConsole.id))?.code).toBe(
+          "SELECT 21",
+        );
+        expect(
+          (await pgRepo.findConsoleById(wsId, dualConsole.id))?.connectionId,
+        ).toBeUndefined();
       } finally {
         await pg.exec(`
           ALTER TABLE "saved_consoles" DROP CONSTRAINT IF EXISTS "saved_consoles_connection_id_fk";
           DELETE FROM "database_connections" WHERE "id" = '${validConnUuid}'::uuid;
         `);
       }
+    });
+  });
+
+  // ── 6. Console Sharing Adapter Partial-Patch & Deletion Safety ───────────
+
+  describe("Console sharing route adapter (#4717303304)", () => {
+    it("patches only mutated sharing fields so stale snapshots never resurrect removed collaborators or undo access changes, and fails when concurrently deleted", async () => {
+      const wsOid = new Types.ObjectId(wsId);
+      const ownerId = "share-owner-1";
+      const adminId = "share-admin-1";
+      const collabA = "share-collab-a";
+      const collabB = "share-collab-b";
+
+      await User.create([
+        { _id: ownerId, email: "owner@example.com" },
+        { _id: adminId, email: "admin@example.com" },
+        { _id: collabA, email: "collaba@example.com" },
+        { _id: collabB, email: "collabb@example.com" },
+      ]);
+      await WorkspaceMember.deleteMany({});
+      await WorkspaceMember.create([
+        { workspaceId: wsOid, userId: ownerId, role: "owner" },
+        { workspaceId: wsOid, userId: adminId, role: "admin" },
+        { workspaceId: wsOid, userId: collabA, role: "member" },
+        { workspaceId: wsOid, userId: collabB, role: "member" },
+      ]);
+
+      let actor = { id: adminId, role: "admin" as "owner" | "admin" };
+      const sharingApp = createRouter();
+      sharingApp.use(
+        "/api/workspaces/:workspaceId/consoles/*",
+        async (c, next) => {
+          c.set("user", { id: actor.id, email: `${actor.id}@example.com` });
+          c.set("memberRole", actor.role);
+          await next();
+        },
+      );
+      sharingApp.route(
+        "/api/workspaces/:workspaceId/consoles",
+        consoleSharingRoutes,
+      );
+
+      const consoleDoc = await consolesChartsRepo.createConsole({
+        workspaceId: wsId,
+        name: "Shared Console",
+        code: "SELECT 1",
+        language: "sql",
+        createdBy: ownerId,
+        owner_id: ownerId,
+        access: "workspace",
+        isPrivate: false,
+        workspaceRole: "viewer",
+        isSaved: true,
+        sharedWith: [
+          {
+            userId: collabA,
+            role: "viewer",
+            addedAt: new Date("2026-11-01T00:00:00.000Z"),
+            addedBy: ownerId,
+          },
+        ],
+      });
+
+      // Scenario 1: Admin A loads console to PATCH /sharing, owner concurrently removes collabA ->
+      // A's save must patch ONLY workspaceRole, never resurrecting collabA!
+      const origFind =
+        consolesChartsRepo.findConsoleById.bind(consolesChartsRepo);
+      const findSpy = vi
+        .spyOn(consolesChartsRepo, "findConsoleById")
+        .mockImplementationOnce(async (...args) => {
+          const loaded = await origFind(...args);
+          // Simulate owner removing collabA while Admin A's request is in flight
+          await consolesChartsRepo.updateConsole(wsId, consoleDoc.id, {
+            sharedWith: [],
+          });
+          return loaded;
+        });
+
+      actor = { id: adminId, role: "admin" };
+      const patchRes = await sharingApp.request(
+        `/api/workspaces/${wsId}/consoles/${consoleDoc.id}/sharing`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceRole: "editor" }),
+        },
+      );
+      findSpy.mockRestore();
+      expect(patchRes.status).toBe(200);
+      const afterPatch = await consolesChartsRepo.findConsoleById(
+        wsId,
+        consoleDoc.id,
+      );
+      expect(afterPatch?.workspaceRole).toBe("editor");
+      expect(afterPatch?.sharedWith).toEqual([]);
+
+      // Scenario 2: Owner loads console to add collabB while Admin concurrently flips access to private ->
+      // Owner's save must patch ONLY sharedWith, never reverting access/isPrivate!
+      const findSpy2 = vi
+        .spyOn(consolesChartsRepo, "findConsoleById")
+        .mockImplementationOnce(async (...args) => {
+          const loaded = await origFind(...args);
+          await consolesChartsRepo.updateConsole(wsId, consoleDoc.id, {
+            access: "private",
+            isPrivate: true,
+          });
+          return loaded;
+        });
+
+      actor = { id: ownerId, role: "owner" };
+      const addRes = await sharingApp.request(
+        `/api/workspaces/${wsId}/consoles/${consoleDoc.id}/collaborators`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: collabB, role: "viewer" }),
+        },
+      );
+      findSpy2.mockRestore();
+      expect(addRes.status).toBe(200);
+      const afterAdd = await consolesChartsRepo.findConsoleById(
+        wsId,
+        consoleDoc.id,
+      );
+      expect(afterAdd?.access).toBe("private");
+      expect(afterAdd?.isPrivate).toBe(true);
+      expect(afterAdd?.sharedWith.map(s => s.userId)).toEqual([collabB]);
+
+      // Scenario 3: In-place role update (PATCH /collaborators/:userId via markModified)
+      // must patch ONLY sharedWith, preserving concurrent workspaceRole change!
+      const findSpy3 = vi
+        .spyOn(consolesChartsRepo, "findConsoleById")
+        .mockImplementationOnce(async (...args) => {
+          const loaded = await origFind(...args);
+          await consolesChartsRepo.updateConsole(wsId, consoleDoc.id, {
+            workspaceRole: "viewer",
+          });
+          return loaded;
+        });
+
+      const roleRes = await sharingApp.request(
+        `/api/workspaces/${wsId}/consoles/${consoleDoc.id}/collaborators/${collabB}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: "editor" }),
+        },
+      );
+      findSpy3.mockRestore();
+      expect(roleRes.status).toBe(200);
+      const afterRole = await consolesChartsRepo.findConsoleById(
+        wsId,
+        consoleDoc.id,
+      );
+      expect(afterRole?.workspaceRole).toBe("viewer");
+      expect(afterRole?.sharedWith[0]?.role).toBe("editor");
+
+      // Scenario 4: Console hard-deleted between load and save -> must fail (not return 200 success)
+      const findSpy4 = vi
+        .spyOn(consolesChartsRepo, "findConsoleById")
+        .mockImplementationOnce(async (...args) => {
+          const loaded = await origFind(...args);
+          await SavedConsole.deleteOne({
+            _id: new Types.ObjectId(consoleDoc.id),
+          });
+          return loaded;
+        });
+
+      const deletedRes = await sharingApp.request(
+        `/api/workspaces/${wsId}/consoles/${consoleDoc.id}/sharing`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ access: "workspace" }),
+        },
+      );
+      findSpy4.mockRestore();
+      expect(deletedRes.status).toBeGreaterThanOrEqual(400);
+      expect(((await deletedRes.json()) as { success: boolean }).success).toBe(
+        false,
+      );
     });
   });
 });
