@@ -9,8 +9,7 @@
  * run, say). Run by a super admin (routes/admin.routes.ts) or
  * scripts/backfill-workflow-ai-costs.ts.
  */
-import { Types } from "mongoose";
-import { LlmUsage } from "../database/schema";
+import { usageStatsRepo } from "../repositories/usage-stats";
 import { workspaceRepo } from "../repositories/workspaces";
 import { tenantJson, tenantOfToken, type WorkspaceTenant } from "./hatchet";
 
@@ -105,48 +104,24 @@ export async function readUnattributedCalls(
   workspaceId: string,
   since: Date,
 ): Promise<Array<RecordedCall & { costUsd: number }>> {
-  const rows = await LlmUsage.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    invocationType: "workflow",
-    workflowRun: { $exists: false },
-    createdAt: { $gte: since },
-  })
-    .select("_id createdAt durationMs costUsd")
-    .lean();
-  return rows.map(row => ({
-    id: String(row._id),
-    endedAt: new Date(row.createdAt).getTime(),
-    durationMs: row.durationMs,
-    costUsd: row.costUsd ?? 0,
-  }));
+  return usageStatsRepo.listUnattributedWorkflowCalls(workspaceId, since);
 }
 
 /** Save the matches, marked as matched afterwards. */
 export async function saveMatches(
+  workspaceId: string,
   matches: Array<{ call: RecordedCall; step: StepWindow }>,
 ): Promise<number> {
   if (matches.length === 0) return 0;
-  const result = await LlmUsage.bulkWrite(
+  return usageStatsRepo.attachWorkflowRunToCalls(
+    workspaceId,
     matches.map(({ call, step }) => ({
-      updateOne: {
-        filter: {
-          _id: new Types.ObjectId(call.id),
-          workflowRun: { $exists: false },
-        },
-        update: {
-          $set: {
-            workflowRun: {
-              workflowId: step.workflowId,
-              runId: step.runId,
-              step: step.step,
-              backfilled: true,
-            },
-          },
-        },
-      },
+      id: call.id,
+      workflowId: step.workflowId,
+      runId: step.runId,
+      step: step.step,
     })),
   );
-  return result.modifiedCount;
 }
 
 const round = (usd: number) => Math.round(usd * 1e6) / 1e6;
@@ -211,7 +186,7 @@ export async function backfillWorkflowCosts(options: {
     report.matched = total(matched.map(m => m.call.id));
     report.ambiguous = total(ambiguous.map(c => c.id));
     report.unmatched = total(unmatched.map(c => c.id));
-    if (!options.dryRun) report.saved = await saveMatches(matched);
+    if (!options.dryRun) report.saved = await saveMatches(workspaceId, matched);
   }
   return reports;
 }

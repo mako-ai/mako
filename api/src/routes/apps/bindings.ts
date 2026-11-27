@@ -487,8 +487,14 @@ async function loadBindingJob(
     loaded.project.workspaceId?.toString(),
   );
   // Another member's job is as good as missing: a draft job's result is
-  // their uncommitted SQL.
-  if (!job || job.actorId !== actorOf(loaded)) {
+  // their uncommitted SQL. Match actorId verbatim (or userId across an
+  // in-flight auth cutover where the caller's session switched to UUIDv7).
+  const callerActor = actorOf(loaded);
+  const ownedByCaller =
+    job !== null &&
+    (job.actorId === callerActor ||
+      (loaded.userId !== undefined && job.userId === loaded.userId));
+  if (!ownedByCaller) {
     return {
       errorResponse: fail(c, 404, "No such binding job"),
     };

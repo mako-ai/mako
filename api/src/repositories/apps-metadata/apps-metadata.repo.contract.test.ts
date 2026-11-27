@@ -69,6 +69,7 @@ import {
   runParityVerification,
 } from "../../migration/verifier";
 import { APPS_METADATA_DOMAIN, DualAppsMetadataRepository } from "./dual.repo";
+import { buildProjectSharingPatch, toAppProjectCompat } from "./mapper";
 import {
   MongoAppsMetadataRepository,
   getMongoAppBindingDraftModel,
@@ -1106,7 +1107,7 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
     expect(pgWts.find(w => w.actorId === user1Uuid)?.userId).toBe(user1Uuid);
 
     const pgJobs = await db.select().from(pgSchema.appBindingJobs);
-    expect(pgJobs[0].actorId).toBe(user1Uuid);
+    expect(pgJobs[0].actorId).toBe("luciaapps000001");
     expect(pgJobs[0].userId).toBe(user1Uuid);
 
     // Stale backfill guard: a newer live PG update must NOT be overwritten by a re-run backfill of an older Mongo row!
@@ -2241,5 +2242,378 @@ describe("Phase 2B AppsMetadataRepository contract & migration lifecycle", () =>
       await db.select().from(pgSchema.migrationTombstones)
     ).filter(t => t.tableName === "app_binding_jobs");
     expect(jobTombstones.map(t => t.entityId)).toEqual([objectIdToUuid(j1.id)]);
+  });
+
+  // ── 11. PR #1557 review hardening regressions ──────────────────────────────
+
+  it("blocks cross-workspace app_index overwrite with 23505 (PR #1557 #4717230459)", async () => {
+    const pgRepo = new PgAppsMetadataRepository({ getDb: () => db });
+    const sharedAppId = newDualId().oid;
+
+    await pgRepo.replaceWorkspaceIndexEntries(
+      wsId,
+      [],
+      [
+        {
+          appId: sharedAppId,
+          path: "apps/ws1-owned",
+          slug: "ws1-owned",
+          scope: "workspace",
+          ownerId: user1Uuid,
+          treeOid: "tree-ws1",
+          title: "WS1 Owned App",
+          hasManifestId: true,
+          schedules: [],
+          indexedSha: "1".repeat(40),
+        },
+      ],
+    );
+
+    let thrown: (Error & { code?: string }) | null = null;
+    try {
+      await pgRepo.replaceWorkspaceIndexEntries(
+        ws2Id,
+        [],
+        [
+          {
+            appId: sharedAppId,
+            path: "apps/ws2-hijack",
+            slug: "ws2-hijack",
+            scope: "workspace",
+            ownerId: user2Uuid,
+            treeOid: "tree-ws2",
+            title: "Hijacked Title",
+            hasManifestId: true,
+            schedules: [],
+            indexedSha: "2".repeat(40),
+          },
+        ],
+      );
+    } catch (err) {
+      thrown = err as Error & { code?: string };
+    }
+
+    expect(thrown).not.toBeNull();
+    expect(thrown?.code).toBe("23505");
+
+    const ws1Row = await pgRepo.findIndexEntryByAppId(sharedAppId);
+    expect(ws1Row?.workspaceId).toBe(wsId);
+    expect(ws1Row?.title).toBe("WS1 Owned App");
+    expect(ws1Row?.path).toBe("apps/ws1-owned");
+    expect(ws1Row?.indexedSha).toBe("1".repeat(40));
+  });
+
+  it("refreshes updated_at on ensureWorktreeRow conflict so warm-boot sees active sandboxes (PR #1557 #4717231215)", async () => {
+    const pgRepo = new PgAppsMetadataRepository({ getDb: () => db });
+    const initial = await pgRepo.ensureWorktreeRow(wsId, user1Uuid, "main");
+    const staleAt = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    await db
+      .update(pgSchema.appWorktrees)
+      .set({ updatedAt: staleAt })
+      .where(eq(pgSchema.appWorktrees.id, objectIdToUuid(initial.id)));
+
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    expect(await pgRepo.listHotWorktreeWorkspacesSince(cutoff)).toEqual([]);
+
+    const touched = await pgRepo.ensureWorktreeRow(
+      wsId,
+      user1Uuid,
+      "ignored-branch",
+    );
+    expect(touched.branch).toBe("main");
+    expect(touched.updatedAt.getTime()).toBeGreaterThan(staleAt.getTime());
+    const hot = await pgRepo.listHotWorktreeWorkspacesSince(cutoff);
+    expect(hot.map(h => h.workspaceId)).toEqual([wsId]);
+  });
+
+  it("applies targeted sharing patches on compat save() so concurrent edits never clobber (PR #1557 #4717291676)", async () => {
+    const pgRepo = new PgAppsMetadataRepository({ getDb: () => db });
+    const now = new Date("2026-11-26T10:00:00.000Z");
+    const created = await pgRepo.createProject({
+      workspaceId: wsId,
+      title: "Concurrent Sharing App",
+      slug: "concurrent-sharing",
+      path: "apps/concurrent-sharing",
+      access: "workspace",
+      workspaceRole: "viewer",
+      owner_id: user1Uuid,
+      createdBy: user1Uuid,
+      chatEnabled: false,
+      publicShare: {
+        enabled: true,
+        token: "active-public-link",
+        createdAt: now,
+        createdBy: user1Uuid,
+        allowLiveQueries: false,
+      },
+    });
+
+    const wrap = (rec: typeof created) =>
+      toAppProjectCompat(rec, async (doc, modifiedPaths) => {
+        const patch = buildProjectSharingPatch(doc, modifiedPaths);
+        if (Object.keys(patch).length === 0) return;
+        await pgRepo.updateProjectSharing(
+          doc.workspaceId.toString(),
+          doc._id.toString(),
+          patch,
+        );
+      });
+
+    // Load two concurrent snapshots of the same row at request start
+    const snapshotA = wrap(created);
+    const snapshotB = wrap(created);
+
+    // Request A revokes public share
+    snapshotA.publicShare = undefined;
+    snapshotA.markModified("publicShare");
+    await snapshotA.save();
+
+    // Request B (with stale publicShare still enabled in memory) toggles chat
+    snapshotB.chatEnabled = true;
+    await snapshotB.save();
+
+    const afterChat = await pgRepo.findProjectById(created.id, wsId);
+    expect(afterChat?.chatEnabled).toBe(true);
+    expect(afterChat?.publicShare?.enabled).not.toBe(true);
+    expect(afterChat?.publicShare?.token).toBeUndefined();
+
+    // Concurrent access = private (C) vs add collaborator (D)
+    const fresh = await pgRepo.findProjectById(created.id, wsId);
+    if (!fresh) throw new Error("Expected project after chat toggle");
+    const snapshotC = wrap(fresh);
+    const snapshotD = wrap(fresh);
+
+    snapshotC.access = "private";
+    await snapshotC.save();
+
+    snapshotD.sharedWith = [
+      {
+        userId: user2Uuid,
+        role: "editor",
+        addedAt: now,
+        addedBy: user1Uuid,
+      },
+    ];
+    await snapshotD.save();
+
+    const afterCollab = await pgRepo.findProjectById(created.id, wsId);
+    expect(afterCollab?.access).toBe("private");
+    expect(afterCollab?.sharedWith?.map(s => s.userId)).toEqual([user2Uuid]);
+  });
+
+  it("preserves raw legacy actor_id on app_binding_jobs while storing PG user_id FK (PR #1557 #4717293835)", async () => {
+    clearBackfillRegistryForTests();
+    clearVerifierRegistryForTests();
+    registerMigrationDomains({ force: true });
+
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      getDb: () => db,
+    });
+    const dual = new DualAppsMetadataRepository({ router, getDb: () => db });
+    await router.setDomainState({
+      domain: APPS_METADATA_DOMAIN,
+      workspaceId: wsId,
+      mode: "dual_write_pg_read",
+    });
+
+    const projId = newDualId().oid;
+    const job = await dual.createBindingJob({
+      workspaceId: wsId,
+      projectId: projId,
+      name: "orders",
+      kind: "materialize",
+      actorId: "luciaapps000001",
+      userId: "luciaapps000001",
+      canWrite: true,
+      request: {},
+      expiresAt: new Date(Date.now() + 600_000),
+    });
+
+    // Polling with legacy session ID matches job.actorId verbatim (no 404!)
+    const polled = await dual.findBindingJobById(job.id, projId, wsId);
+    expect(polled?.actorId).toBe("luciaapps000001");
+    expect(polled?.userId).toBe(user1Uuid);
+
+    // Backfill + parity verifier on Mongo-originating binding job passes with 0 mismatches
+    await getMongoAppBindingJobModel().deleteMany({});
+    await pg.exec(`DELETE FROM app_binding_jobs;`);
+    await getMongoAppBindingJobModel().create({
+      workspaceId: wsId,
+      projectId: projId,
+      name: "backfilled-job",
+      kind: "dev-build",
+      actorId: "luciaapps000001",
+      userId: "luciaapps000001",
+      canWrite: true,
+      request: {},
+      status: "queued",
+      expiresAt: new Date(Date.now() + 600_000),
+    });
+    await runBackfill({
+      domain: `${APPS_METADATA_DOMAIN}:app_binding_jobs`,
+      workspaceId: wsId,
+      db,
+    });
+    const verified = await runParityVerification({
+      domain: `${APPS_METADATA_DOMAIN}:app_binding_jobs`,
+      workspaceId: wsId,
+      db,
+    });
+    expect(verified.missingInPg).toBe(0);
+    expect(verified.mismatched).toBe(0);
+  });
+
+  it("rejects unresolved non-sentinel owners instead of silently storing NULL (PR #1557 #4717294515)", async () => {
+    const pgRepo = new PgAppsMetadataRepository({ getDb: () => db });
+    const missingUser = "luciaunbackfill";
+
+    // Live runtime writes must throw when owner/createdBy is absent from PG users
+    await expect(
+      pgRepo.createProject({
+        workspaceId: wsId,
+        title: "Missing Owner App",
+        slug: "missing-owner",
+        path: "apps/missing-owner",
+        access: "workspace",
+        owner_id: missingUser,
+        createdBy: missingUser,
+      }),
+    ).rejects.toThrow(/Unresolved Postgres user/);
+
+    // System sentinels still cleanly resolve to NULL
+    const ownerless = await pgRepo.createProject({
+      workspaceId: wsId,
+      title: "Publish App",
+      slug: "publish-app",
+      path: "apps/publish-app",
+      access: "workspace",
+      createdBy: "publish",
+    });
+    expect(ownerless.owner_id).toBeUndefined();
+    expect(ownerless.createdBy).toBe("");
+
+    await expect(
+      pgRepo.claimOwnerlessProjectRow(wsId, ownerless.id, missingUser),
+    ).rejects.toThrow(/Unresolved Postgres user/);
+
+    await expect(
+      pgRepo.updateProjectLocation(wsId, ownerless.id, {
+        ownerId: missingUser,
+      }),
+    ).rejects.toThrow(/Unresolved Postgres user/);
+
+    await expect(
+      pgRepo.syncMovedProjects(wsId, [
+        {
+          appId: ownerless.id,
+          path: "users/ghost/apps/publish-app",
+          slug: "publish-app",
+          title: "Publish App",
+          ownerId: missingUser,
+        },
+      ]),
+    ).rejects.toThrow(/Unresolved Postgres user/);
+
+    await expect(
+      pgRepo.replaceWorkspaceIndexEntries(
+        wsId,
+        [],
+        [
+          {
+            appId: ownerless.id,
+            path: "users/ghost/apps/publish-app",
+            slug: "publish-app",
+            scope: "private",
+            ownerId: missingUser,
+            treeOid: "t-missing",
+            title: "Private Missing Owner",
+            hasManifestId: true,
+            schedules: [],
+            indexedSha: "3".repeat(40),
+          },
+        ],
+      ),
+    ).rejects.toThrow(/Unresolved Postgres user/);
+
+    // Sync-retry replay also fails while user is absent, then succeeds once user lands in PG
+    const mongoProj = await AppProject.create({
+      workspaceId: new Types.ObjectId(wsId),
+      title: "Retry Owner App",
+      slug: "retry-owner",
+      path: "apps/retry-owner",
+      access: "workspace",
+      owner_id: missingUser,
+      createdBy: missingUser,
+    });
+    const retryEvent = {
+      target: "pg" as const,
+      domain: APPS_METADATA_DOMAIN,
+      operation: "createProject",
+      workspaceId: wsId,
+      entityId: mongoProj._id.toString(),
+      payload: {
+        table: "app_projects",
+        id: mongoProj._id.toString(),
+        workspaceId: wsId,
+      },
+      failedAt: new Date().toISOString(),
+      errorMessage: "simulated user lag",
+    };
+    await expect(replayAppsMetadataWriteToPg(retryEvent, db)).rejects.toThrow(
+      /Unresolved Postgres user/,
+    );
+    expect(
+      await pgRepo.findProjectById(mongoProj._id.toString(), wsId),
+    ).toBeNull();
+
+    // Once user lands in PG users, replay succeeds with the real owner_id UUID
+    const newlyBackfilledUserUuid = generateUuidv7();
+    await db.insert(pgSchema.users).values({
+      id: newlyBackfilledUserUuid,
+      legacyId: missingUser,
+      email: "late@example.com",
+      emailVerified: true,
+    });
+    await replayAppsMetadataWriteToPg(retryEvent, db);
+    const replayed = await pgRepo.findProjectById(
+      mongoProj._id.toString(),
+      wsId,
+    );
+    expect(replayed?.owner_id).toBe(newlyBackfilledUserUuid);
+    expect(replayed?.createdBy).toBe(newlyBackfilledUserUuid);
+  });
+
+  it("fails closed on transient PG error querying migration_domain_state instead of falling back to Mongo (PR #1557 #4717295467)", async () => {
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      getDb: () => db,
+    });
+    await router.setDomainState({
+      domain: APPS_METADATA_DOMAIN,
+      workspaceId: null,
+      mode: "dual_write_mongo_read",
+    });
+
+    const failingGetDb = () => {
+      throw new Error("simulated transient PG connection blip");
+    };
+    const dual = new DualAppsMetadataRepository({
+      router,
+      getDb: failingGetDb,
+    });
+
+    await expect(dual.findProjectById(newDualId().oid)).rejects.toThrow(
+      /simulated transient PG connection blip/,
+    );
+    await expect(
+      dual.findProjectByShareToken("some-share-token"),
+    ).rejects.toThrow(/simulated transient PG connection blip/);
+    await expect(dual.isShareTokenTaken("some-share-token")).rejects.toThrow(
+      /simulated transient PG connection blip/,
+    );
+    await expect(
+      dual.listExistingProjectIds([newDualId().oid]),
+    ).rejects.toThrow(/simulated transient PG connection blip/);
   });
 });

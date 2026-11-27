@@ -44,8 +44,11 @@ import {
   QueryExecution,
   SkillUsageDaily,
 } from "../../database/workspace-schema";
+import { getCurrentPeriodUsage } from "../../billing/billing.service";
+import { usageReportingFunction } from "../../inngest/functions/usage-reporting";
 import {
   clearBackfillRegistryForTests,
+  currentUtcDay,
   listBackfillDomains,
   runBackfill,
 } from "../../migration/backfill";
@@ -71,7 +74,22 @@ import {
   clearVerifierRegistryForTests,
   runParityVerification,
 } from "../../migration/verifier";
+import {
+  resetWorkspaceRepoForTests,
+  setWorkspaceRepoForTests,
+  type WorkspaceRepository,
+} from "../workspaces";
+import { readRunCosts } from "../../workflows/costs";
+import {
+  readUnattributedCalls,
+  saveMatches,
+} from "../../workflows/cost-backfill";
 import { DualUsageStatsRepository, USAGE_STATS_DOMAIN } from "./dual.repo";
+import {
+  resetUsageStatsRepoForTests,
+  setUsageStatsRepoForTests,
+  usageStatsRepo,
+} from "./index";
 import { MongoUsageStatsRepository } from "./mongo.repo";
 import { PgUsageStatsRepository } from "./pg.repo";
 import type { UsageStatsRepository } from "./types";
@@ -87,6 +105,8 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
   let user2Uuid: string;
   let apiKeyId: string;
   let apiKeyUuid: string;
+  let seededConnId: string;
+  let seededConnUuid: string;
 
   beforeAll(async () => {
     mongo = await MongoMemoryServer.create();
@@ -115,6 +135,9 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
     const key = newDualId();
     apiKeyId = key.oid;
     apiKeyUuid = key.uuid;
+    const conn = newDualId();
+    seededConnId = conn.oid;
+    seededConnUuid = conn.uuid;
 
     await db.insert(pgSchema.users).values([
       {
@@ -146,6 +169,15 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
       prefix: "mako_ci",
       createdBy: user1Uuid,
     });
+
+    await db.insert(pgSchema.databaseConnections).values({
+      id: seededConnUuid,
+      workspaceId: wsUuid,
+      name: "Seeded DB",
+      type: "postgresql",
+      connectionEncrypted: {},
+      createdBy: user1Uuid,
+    });
   }
 
   async function cleanAllStores(): Promise<void> {
@@ -166,6 +198,7 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
       DELETE FROM llm_usage;
       DELETE FROM query_executions;
       DELETE FROM connection_verifications;
+      DELETE FROM database_connections;
       DELETE FROM workspace_api_keys;
       DELETE FROM workspaces;
       DELETE FROM users;
@@ -612,10 +645,9 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
 
       it("records connection_verifications with optional workspace/connection/errorClass", async () => {
         const repo = impl.create();
-        const connId = newDualId().oid;
         const rec = await repo.createConnectionVerification({
           workspaceId: wsId,
-          connectionId: connId,
+          connectionId: seededConnId,
           userId: user1Uuid,
           databaseType: "postgresql",
           trigger: "saved_test",
@@ -625,7 +657,7 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
           errorMessage: "password authentication failed",
         });
         expect(rec.workspaceId).toBe(wsId);
-        expect(rec.connectionId).toBe(connId);
+        expect(rec.connectionId).toBe(seededConnId);
         expect(rec.errorClass).toBe("auth_failed");
       });
     });
@@ -1927,5 +1959,540 @@ describe("Phase 2B UsageStatsRepository contract & migration lifecycle", () => {
     });
     expect(verifiedCv.missingInPg).toBe(0);
     expect(verifiedCv.mismatched).toBe(0);
+  });
+
+  // ── 11. PR #1557 review hardening regressions ──────────────────────────────
+
+  it("routes billing getCurrentPeriodUsage and workflow cost-backfill through usageStatsRepo under pg_only (PR #1557 #4717291106 & #4717292781)", async () => {
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      getDb: () => db,
+    });
+    const dual = new DualUsageStatsRepository({ router, getDb: () => db });
+    await router.setDomainState({
+      domain: USAGE_STATS_DOMAIN,
+      workspaceId: wsId,
+      mode: "pg_only",
+    });
+
+    setUsageStatsRepoForTests(dual);
+    try {
+      const periodStart = new Date("2026-11-01T00:00:00.000Z");
+      const callTime = new Date("2026-11-26T12:00:00.000Z");
+
+      // Record LLM usage under pg_only (lands ONLY in PG; Mongo stays empty)
+      await usageStatsRepo.createLlmUsage({
+        workspaceId: wsId,
+        userId: user1Uuid,
+        invocationType: "chat",
+        modelId: "claude-sonnet-4",
+        inputTokens: 1000,
+        outputTokens: 500,
+        totalTokens: 1500,
+        costUsd: 12.25,
+        createdAt: callTime,
+      });
+      const wfCall = await usageStatsRepo.createLlmUsage({
+        workspaceId: wsId,
+        userId: null,
+        invocationType: "workflow",
+        modelId: "claude-sonnet-4",
+        inputTokens: 400,
+        outputTokens: 100,
+        totalTokens: 500,
+        costUsd: 3.75,
+        durationMs: 2_000,
+        createdAt: callTime,
+      });
+
+      expect(await LlmUsage.countDocuments({})).toBe(0);
+
+      // Billing getCurrentPeriodUsage reads exact PG totals under pg_only
+      const periodUsage = await getCurrentPeriodUsage(wsId, periodStart);
+      expect(periodUsage.totalCostUsd).toBeCloseTo(16.0, 6);
+      expect(periodUsage.invocationCount).toBe(2);
+      expect(periodUsage.totalTokens).toBe(2000);
+
+      // Inngest usage-reporting computes exact PG overage cents under pg_only
+      const prevBillingEnabled = process.env.BILLING_ENABLED;
+      process.env.BILLING_ENABLED = "true";
+      const claimedOverages: Array<{
+        workspaceId: string;
+        targetCents: number;
+      }> = [];
+      setWorkspaceRepoForTests({
+        listPaidActiveBilling: async () => [
+          {
+            id: wsId,
+            billing: {
+              plan: "pro",
+              stripeCustomerId: "cus_pg_only",
+              stripeSubscriptionId: "sub_pg_only",
+              currentPeriodStart: periodStart,
+              usageQuotaUsd: 10,
+              lastReportedOverageCents: 0,
+              pendingReportedOverageCents: null,
+              pendingMeterEventIdempotencyKey: null,
+            },
+          },
+        ],
+        claimPendingOverage: async (
+          claimedWsId: string,
+          _expectedLast: number,
+          targetCents: number,
+        ) => {
+          claimedOverages.push({ workspaceId: claimedWsId, targetCents });
+          // Return false so test stops before hitting live Stripe API
+          return false;
+        },
+      } as unknown as WorkspaceRepository);
+      try {
+        await (
+          usageReportingFunction as unknown as {
+            fn: (ctx: {
+              step: {
+                run: <T>(name: string, f: () => Promise<T>) => Promise<T>;
+              };
+            }) => Promise<unknown>;
+          }
+        ).fn({
+          step: { run: async (_name, f) => f() },
+        });
+      } finally {
+        resetWorkspaceRepoForTests();
+        if (prevBillingEnabled === undefined) {
+          delete process.env.BILLING_ENABLED;
+        } else {
+          process.env.BILLING_ENABLED = prevBillingEnabled;
+        }
+      }
+      // $16.00 PG spend - $10.00 included quota = $6.00 overage = 600 cents!
+      expect(claimedOverages).toEqual([
+        { workspaceId: wsId, targetCents: 600 },
+      ]);
+
+      // Workflow cost-backfill reads & attributes PG calls under pg_only
+      const unattributed = await readUnattributedCalls(wsId, periodStart);
+      expect(unattributed.map(c => c.id)).toEqual([wfCall.id]);
+
+      const saved = await saveMatches(wsId, [
+        {
+          call: unattributed[0],
+          step: {
+            workflowId: "wf-billing",
+            runId: "run-pg-only-1",
+            step: "summarize",
+            start: callTime.getTime() - 5_000,
+            end: callTime.getTime() + 5_000,
+          },
+        },
+      ]);
+      expect(saved).toBe(1);
+      expect(await readUnattributedCalls(wsId, periodStart)).toEqual([]);
+
+      const runCosts = await readRunCosts(wsId, ["run-pg-only-1"]);
+      expect(runCosts["run-pg-only-1"]?.costUsd).toBeCloseTo(3.75, 6);
+      expect(runCosts["run-pg-only-1"]?.backfilled).toBe(true);
+    } finally {
+      resetUsageStatsRepoForTests();
+    }
+  });
+
+  it("retains llm_usage billing ledger rows when a workspace is deleted and backfills deleted-workspace rows cleanly (PR #1557 #4717293269)", async () => {
+    clearBackfillRegistryForTests();
+    clearVerifierRegistryForTests();
+    registerMigrationDomains({ force: true });
+
+    const pgRepo = new PgUsageStatsRepository({ getDb: () => db });
+    const ephemeralWs = newDualId();
+    await db.insert(pgSchema.workspaces).values({
+      id: ephemeralWs.uuid,
+      name: "Ephemeral Billing WS",
+      slug: `eph-${ephemeralWs.oid.slice(-6)}`,
+      createdBy: user1Uuid,
+    });
+
+    const recorded = await pgRepo.createLlmUsage({
+      workspaceId: ephemeralWs.oid,
+      userId: user1Uuid,
+      invocationType: "chat",
+      modelId: "claude-sonnet-4",
+      inputTokens: 200,
+      outputTokens: 100,
+      totalTokens: 300,
+      costUsd: 4.5,
+      createdAt: new Date("2026-11-26T10:00:00.000Z"),
+    });
+
+    // Deleting the workspace must NOT cascade-delete its llm_usage billing ledger
+    await db
+      .delete(pgSchema.workspaces)
+      .where(eq(pgSchema.workspaces.id, ephemeralWs.uuid));
+
+    const remaining = await db
+      .select()
+      .from(pgSchema.llmUsage)
+      .where(eq(pgSchema.llmUsage.id, objectIdToUuid(recorded.id)));
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].workspaceId).toBe(ephemeralWs.uuid);
+
+    // Backfill + parity verify also succeed for Mongo llm_usage rows of a deleted workspace
+    const deletedWs = newDualId();
+    await LlmUsage.create({
+      workspaceId: new Types.ObjectId(deletedWs.oid),
+      userId: "luciauser000001",
+      invocationType: "chat",
+      modelId: "claude-sonnet-4",
+      inputTokens: 100,
+      outputTokens: 50,
+      totalTokens: 150,
+      costUsd: 1.25,
+      createdAt: new Date("2026-11-25T10:00:00.000Z"),
+    });
+
+    await runBackfill({
+      domain: `${USAGE_STATS_DOMAIN}:llm_usage`,
+      workspaceId: deletedWs.oid,
+      db,
+    });
+    const verified = await runParityVerification({
+      domain: `${USAGE_STATS_DOMAIN}:llm_usage`,
+      workspaceId: deletedWs.oid,
+      db,
+    });
+    expect(verified.missingInPg).toBe(0);
+    expect(verified.mismatched).toBe(0);
+  });
+
+  it("handles deleted connection_id cleanly in backfill, verifier, and --repair after 0006a FK is attached (PR #1557 #4717295078)", async () => {
+    clearBackfillRegistryForTests();
+    clearVerifierRegistryForTests();
+    registerMigrationDomains({ force: true });
+
+    const isoPg = createTestPglite();
+    await runPgliteMigrations(isoPg);
+    const isoDb = drizzle(isoPg, { schema: pgSchema }) as unknown as MakoPgDb;
+
+    try {
+      // Apply deferred 0006a FK constraint BEFORE backfill & repair!
+      for (const stmt of readPostBackfillStatements(
+        "conn-verif-connection-fk",
+      )) {
+        await isoPg.exec(stmt);
+      }
+
+      const isoWs = newDualId();
+      const validConn = newDualId();
+      const deletedConn = newDualId();
+      const at = new Date("2026-11-25T12:00:00.000Z");
+
+      await isoDb.insert(pgSchema.users).values({
+        id: user1Uuid,
+        legacyId: "luciauser000001",
+        email: "alice@example.com",
+        emailVerified: true,
+      });
+      await isoDb.insert(pgSchema.workspaces).values({
+        id: isoWs.uuid,
+        name: "Post-0006a WS",
+        slug: `post0006a-${isoWs.oid.slice(-6)}`,
+        createdBy: user1Uuid,
+      });
+      await isoDb.insert(pgSchema.databaseConnections).values({
+        id: validConn.uuid,
+        workspaceId: isoWs.uuid,
+        name: "Live DB",
+        type: "postgresql",
+        connectionEncrypted: {},
+        createdBy: user1Uuid,
+      });
+
+      const validCvDoc = await ConnectionVerification.create({
+        verifiedAt: at,
+        userId: "luciauser000001",
+        workspaceId: new Types.ObjectId(isoWs.oid),
+        connectionId: new Types.ObjectId(validConn.oid),
+        databaseType: "postgresql",
+        trigger: "saved_test",
+        success: true,
+        durationMs: 10,
+      });
+      const deletedCvDoc = await ConnectionVerification.create({
+        verifiedAt: at,
+        userId: "luciauser000001",
+        workspaceId: new Types.ObjectId(isoWs.oid),
+        connectionId: new Types.ObjectId(deletedConn.oid),
+        databaseType: "postgresql",
+        trigger: "saved_test",
+        success: false,
+        durationMs: 35,
+        errorClass: "network",
+      });
+
+      // Backfill with 0006a FK active succeeds (NO 23503!)
+      await runBackfill({
+        domain: `${USAGE_STATS_DOMAIN}:connection_verifications`,
+        workspaceId: isoWs.oid,
+        db: isoDb,
+      });
+
+      const pgRows = await isoDb
+        .select()
+        .from(pgSchema.connectionVerifications);
+      expect(
+        pgRows.find(r => r.id === objectIdToUuid(validCvDoc._id.toString()))
+          ?.connectionId,
+      ).toBe(validConn.uuid);
+      expect(
+        pgRows.find(r => r.id === objectIdToUuid(deletedCvDoc._id.toString()))
+          ?.connectionId,
+      ).toBeNull();
+
+      // Verifier reports 0 mismatches for both valid & deleted connections
+      const verified = await runParityVerification({
+        domain: `${USAGE_STATS_DOMAIN}:connection_verifications`,
+        workspaceId: isoWs.oid,
+        db: isoDb,
+      });
+      expect(verified.missingInPg).toBe(0);
+      expect(verified.mismatched).toBe(0);
+
+      // Delete the PG row for deletedConn and run --repair -> NO 23503, heals cleanly!
+      await isoDb
+        .delete(pgSchema.connectionVerifications)
+        .where(
+          eq(
+            pgSchema.connectionVerifications.id,
+            objectIdToUuid(deletedCvDoc._id.toString()),
+          ),
+        );
+      const repaired = await runParityVerification({
+        domain: `${USAGE_STATS_DOMAIN}:connection_verifications`,
+        workspaceId: isoWs.oid,
+        repair: true,
+        db: isoDb,
+      });
+      expect(repaired.repaired).toBe(1);
+
+      const verifiedAfterRepair = await runParityVerification({
+        domain: `${USAGE_STATS_DOMAIN}:connection_verifications`,
+        workspaceId: isoWs.oid,
+        db: isoDb,
+      });
+      expect(verifiedAfterRepair.missingInPg).toBe(0);
+      expect(verifiedAfterRepair.mismatched).toBe(0);
+    } finally {
+      await isoPg.close();
+    }
+  });
+
+  it("replays open-day dead-letter daily usage increments without overwriting live PG or Mongo bumps (PR #1557 #4717295799)", async () => {
+    const pgRepo = new PgUsageStatsRepository({ getDb: () => db });
+    const appId = newDualId().oid;
+    const now = new Date("2026-11-27T14:00:00.000Z");
+    const openDay = currentUtcDay(now);
+
+    // Scenario A (app_usage_daily PG replay on open day):
+    // Initial write landed in Mongo (opens = 5), missed PG (opens = 4), then a live
+    // bump landed in both stores (Mongo = 6, PG = 5). Replaying the failed open delta
+    // must increment PG to 6 instead of overwriting PG with a stale Mongo snapshot!
+    await AppUsageDaily.create({
+      workspaceId: new Types.ObjectId(wsId),
+      appId,
+      userId: "luciauser000001",
+      day: openDay,
+      opens: 5,
+      activeSeconds: 60,
+      sources: { app: 5 },
+      firstAt: new Date("2026-11-27T10:00:00.000Z"),
+      lastAt: new Date("2026-11-27T13:00:00.000Z"),
+    });
+    for (let i = 0; i < 5; i++) {
+      await pgRepo.bumpAppUsageDaily({
+        workspaceId: wsId,
+        appId,
+        userId: user1Uuid,
+        day: openDay,
+        kind: "open",
+        source: "app",
+        at: new Date("2026-11-27T13:30:00.000Z"),
+      });
+    }
+
+    await replayUsageStatsWriteToPg(
+      {
+        target: "pg",
+        domain: USAGE_STATS_DOMAIN,
+        operation: "bumpAppUsageDaily",
+        workspaceId: wsId,
+        entityId: `${wsId}:${appId}:${openDay}`,
+        payload: {
+          table: "app_usage_daily",
+          workspaceId: wsId,
+          appId,
+          userId: "luciauser000001",
+          anonId: null,
+          day: openDay,
+          kind: "open",
+          source: "app",
+          at: new Date("2026-11-27T13:00:00.000Z").toISOString(),
+        },
+        failedAt: now.toISOString(),
+        errorMessage: "simulated pg blip",
+      },
+      db,
+      now,
+    );
+    const pgDailyAfterDelta = await db
+      .select()
+      .from(pgSchema.appUsageDaily)
+      .where(
+        and(
+          eq(pgSchema.appUsageDaily.appId, objectIdToUuid(appId)),
+          eq(pgSchema.appUsageDaily.day, openDay),
+        ),
+      );
+    expect(pgDailyAfterDelta[0].opens).toBe(6);
+
+    // Legacy open-day payload WITHOUT delta fields uses GREATEST(...) and NEVER regresses PG (6 -> 5)!
+    await replayUsageStatsWriteToPg(
+      {
+        target: "pg",
+        domain: USAGE_STATS_DOMAIN,
+        operation: "bumpAppUsageDaily",
+        workspaceId: wsId,
+        entityId: `${wsId}:${appId}:${openDay}`,
+        payload: {
+          table: "app_usage_daily",
+          workspaceId: wsId,
+          appId,
+          userId: "luciauser000001",
+          day: openDay,
+        },
+        failedAt: now.toISOString(),
+        errorMessage: "simulated legacy payload",
+      },
+      db,
+      now,
+    );
+    const pgDailyAfterLegacy = await db
+      .select()
+      .from(pgSchema.appUsageDaily)
+      .where(
+        and(
+          eq(pgSchema.appUsageDaily.appId, objectIdToUuid(appId)),
+          eq(pgSchema.appUsageDaily.day, openDay),
+        ),
+      );
+    expect(pgDailyAfterLegacy[0].opens).toBe(6);
+
+    // Scenario B (skill_usage_daily PG replay on open day):
+    await SkillUsageDaily.create({
+      workspaceId: new Types.ObjectId(wsId),
+      scope: "workspace",
+      skill: "open-day-skill",
+      source: "agent",
+      day: openDay,
+      loads: 3,
+      resourceReads: 0,
+      relevantHits: 0,
+      firstAt: new Date("2026-11-27T10:00:00.000Z"),
+      lastAt: new Date("2026-11-27T13:00:00.000Z"),
+    });
+    for (let i = 0; i < 3; i++) {
+      await pgRepo.bumpSkillUsageDaily(
+        wsId,
+        [{ scope: "workspace", skill: "open-day-skill" }],
+        "load",
+        "agent",
+        new Date("2026-11-27T13:30:00.000Z"),
+      );
+    }
+
+    await replayUsageStatsWriteToPg(
+      {
+        target: "pg",
+        domain: USAGE_STATS_DOMAIN,
+        operation: "bumpSkillUsageDaily",
+        workspaceId: wsId,
+        entityId: `${wsId}:${openDay}`,
+        payload: {
+          table: "skill_usage_daily",
+          workspaceId: wsId,
+          day: openDay,
+          kind: "load",
+          source: "agent",
+          at: new Date("2026-11-27T13:00:00.000Z").toISOString(),
+          targets: [{ scope: "workspace", skill: "open-day-skill" }],
+        },
+        failedAt: now.toISOString(),
+        errorMessage: "simulated pg blip",
+      },
+      db,
+      now,
+    );
+    const pgSkillAfterDelta = await db
+      .select()
+      .from(pgSchema.skillUsageDaily)
+      .where(
+        and(
+          eq(pgSchema.skillUsageDaily.skill, "open-day-skill"),
+          eq(pgSchema.skillUsageDaily.day, openDay),
+        ),
+      );
+    expect(pgSkillAfterDelta[0].loads).toBe(4);
+
+    // Scenario C (Mongo reverse-replay on open day with delta preserves live increments):
+    await replayUsageStatsWriteToMongo(
+      {
+        target: "mongo",
+        domain: USAGE_STATS_DOMAIN,
+        operation: "bumpAppUsageDaily",
+        workspaceId: wsId,
+        entityId: `${wsId}:${appId}:${openDay}`,
+        payload: {
+          table: "app_usage_daily",
+          workspaceId: wsId,
+          appId,
+          userId: user1Uuid,
+          anonId: null,
+          day: openDay,
+          kind: "open",
+          source: "app",
+          at: new Date("2026-11-27T13:45:00.000Z").toISOString(),
+        },
+        failedAt: now.toISOString(),
+        errorMessage: "simulated mongo blip",
+      },
+      db,
+      now,
+    );
+    const mongoDailyAfterDelta = await AppUsageDaily.findOne({
+      workspaceId: new Types.ObjectId(wsId),
+      appId,
+      userId: "luciauser000001",
+      day: openDay,
+    }).lean();
+    expect(mongoDailyAfterDelta?.opens).toBe(6);
+
+    // Also verify DualUsageStatsRepository fails closed on transient PG override query error
+    const router = new MigrationRouter({
+      enablePubSub: false,
+      getDb: () => db,
+    });
+    await router.setDomainState({
+      domain: USAGE_STATS_DOMAIN,
+      workspaceId: null,
+      mode: "dual_write_mongo_read",
+    });
+    const failingDual = new DualUsageStatsRepository({
+      router,
+      getDb: () => {
+        throw new Error("simulated usage_stats PG blip");
+      },
+    });
+    await expect(failingDual.getHotWorkspaceUsageSince(now)).rejects.toThrow(
+      /simulated usage_stats PG blip/,
+    );
   });
 });

@@ -7,6 +7,7 @@ import { parseEntityId } from "../../database/pg/id-codec";
 import { type IAppProject } from "../../database/workspace-schema";
 import {
   appsMetadataRepo,
+  buildProjectSharingPatch,
   toAppProjectCompat,
   type AppProjectRecord,
 } from "../../repositories/apps-metadata";
@@ -98,17 +99,13 @@ export function rowOwnerActor(actorId: string): string | undefined {
  * unpublished (found on prod with repo-imported apps, §13.22).
  */
 function wrapProjectRecord(rec: AppProjectRecord): IAppProject {
-  return toAppProjectCompat(rec, async doc => {
+  return toAppProjectCompat(rec, async (doc, modifiedPaths) => {
+    const patch = buildProjectSharingPatch(doc, modifiedPaths);
+    if (Object.keys(patch).length === 0) return;
     await appsMetadataRepo.updateProjectSharing(
       doc.workspaceId.toString(),
       doc._id.toString(),
-      {
-        access: doc.access,
-        workspaceRole: doc.workspaceRole,
-        sharedWith: doc.sharedWith,
-        publicShare: doc.publicShare ?? null,
-        chatEnabled: doc.chatEnabled,
-      },
+      patch,
     );
   });
 }

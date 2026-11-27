@@ -25,7 +25,6 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { isPersonActorId } from "../../apps/actor-id";
 import { extractRows, getPgDb, type MakoPgDb } from "../../database/pg/client";
 import {
   isUuidString,
@@ -146,6 +145,31 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
   }
 
   /**
+   * Resolve an ownership/creator user ID (`owner_id`, `created_by`, `app_index.owner_id`)
+   * strictly on live runtime writes: returns `null` ONLY for empty/null/undefined or
+   * known system sentinels. For any non-sentinel user ID missing from PG `users` (e.g.
+   * `auth` dual-write lag), throws so `MigrationRouter` records a secondary failure and
+   * enqueues `migration/pg-sync-retry` instead of silently storing `NULL` (which would
+   * make the app ownerless/claimable or hide a private app from its owner).
+   */
+  async resolveStrictOwnerUserUuid(
+    rawUserId: string | null | undefined,
+    fieldName: string,
+    db: MakoPgDb = this.getDb(),
+  ): Promise<string | null> {
+    if (!rawUserId) return null;
+    const trimmed = rawUserId.trim();
+    if (!trimmed || SYSTEM_ACTORS.has(trimmed)) return null;
+    const resolved = await this.resolveNullableUserUuid(trimmed, db);
+    if (!resolved) {
+      throw new Error(
+        `Unresolved Postgres user for ${fieldName}: ${JSON.stringify(trimmed)} not found in users table`,
+      );
+    }
+    return resolved;
+  }
+
+  /**
    * Resolve a worktree actor into `(actorId, userId)` for `app_worktrees`:
    *   - Real user present in `users` -> `{ actorId: uuid, userId: uuid }` (cascades on user delete)
    *   - System actor (`"publish"`, `"api-key"`) or unresolvable legacy id -> `{ actorId: raw, userId: null }`
@@ -159,19 +183,6 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
       return { actorId: resolved, userId: resolved };
     }
     return { actorId: rawActorId, userId: null };
-  }
-
-  /**
-   * Resolve `app_binding_jobs.actor_id` (keeps system sentinels verbatim, rewrites
-   * person IDs to canonical UUIDv7 via the Postgres `users` table only — never touches Mongo).
-   */
-  async resolveBindingJobActorId(
-    rawActorId: string,
-    db: MakoPgDb = this.getDb(),
-  ): Promise<string> {
-    if (!rawActorId || !isPersonActorId(rawActorId)) return rawActorId;
-    const pgUuid = await this.resolveNullableUserUuid(rawActorId, db);
-    return pgUuid ?? rawActorId;
   }
 
   /**
@@ -512,8 +523,16 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     const wsUuid = entityIdToPgUuid(input.workspaceId);
     const [ownerUuid, createdByUuid, shareCreatedByUuid, sharedWithJson] =
       await Promise.all([
-        this.resolveNullableUserUuid(input.owner_id, db),
-        this.resolveNullableUserUuid(input.createdBy, db),
+        this.resolveStrictOwnerUserUuid(
+          input.owner_id,
+          "app_projects.owner_id",
+          db,
+        ),
+        this.resolveStrictOwnerUserUuid(
+          input.createdBy,
+          "app_projects.created_by",
+          db,
+        ),
         this.resolveNullableUserUuid(input.publicShare?.createdBy, db),
         this.rewriteSharedWith(input.sharedWith, db),
       ]);
@@ -632,7 +651,11 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     ownerId: string,
     db: MakoPgDb = this.getDb(),
   ): Promise<boolean> {
-    const ownerUuid = await this.resolveNullableUserUuid(ownerId, db);
+    const ownerUuid = await this.resolveStrictOwnerUserUuid(
+      ownerId,
+      "app_projects.owner_id",
+      db,
+    );
     if (!ownerUuid) return false;
     const rows = await db
       .update(appProjects)
@@ -734,7 +757,11 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
       set.ownerId =
         patch.ownerId === null
           ? null
-          : await this.resolveNullableUserUuid(patch.ownerId, db);
+          : await this.resolveStrictOwnerUserUuid(
+              patch.ownerId,
+              "app_projects.owner_id",
+              db,
+            );
     }
     const conditions = [
       eq(appProjects.id, entityIdToPgUuid(id)),
@@ -788,7 +815,11 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
         set.ownerId =
           u.ownerId === null
             ? null
-            : await this.resolveNullableUserUuid(u.ownerId, db);
+            : await this.resolveStrictOwnerUserUuid(
+                u.ownerId,
+                "app_projects.owner_id",
+                db,
+              );
       }
       await db
         .update(appProjects)
@@ -1250,7 +1281,11 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     for (const row of entries) {
       const idUuid = row.id ? entityIdToPgUuid(row.id) : newDualId().uuid;
       const appUuid = entityIdToPgUuid(row.appId);
-      const ownerUuid = await this.resolveNullableUserUuid(row.ownerId, db);
+      const ownerUuid = await this.resolveStrictOwnerUserUuid(
+        row.ownerId,
+        "app_index.owner_id",
+        db,
+      );
       const dupUuid = optionalEntityIdToPgUuid(row.duplicateOf);
       const setValues = {
         path: row.path,
@@ -1273,7 +1308,7 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
         indexedSha: row.indexedSha,
         updatedAt: now,
       };
-      await db
+      const upserted = await db
         .insert(appIndex)
         .values({
           id: idUuid,
@@ -1285,7 +1320,17 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
         .onConflictDoUpdate({
           target: appIndex.appId,
           set: setValues,
-        });
+          // Never overwrite another workspace's app_index row on app_id collision.
+          setWhere: eq(appIndex.workspaceId, wsUuid),
+        })
+        .returning({ id: appIndex.id });
+      if (upserted.length === 0) {
+        const err = new Error(
+          `duplicate key value violates unique constraint "uq_app_index_app_id" (app_id=${appUuid} belongs to another workspace)`,
+        ) as Error & { code?: string };
+        err.code = "23505";
+        throw err;
+      }
     }
   }
 
@@ -1330,7 +1375,7 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
       .onConflictDoUpdate({
         target: appIndex.appId,
         set: values,
-        setWhere: sql`${appIndex.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${appIndex.updatedAt}`,
+        setWhere: sql`${appIndex.workspaceId} = ${wsUuid}::uuid AND (${appIndex.updatedAt} IS NULL OR EXCLUDED."updated_at" >= ${appIndex.updatedAt})`,
       })
       .returning({ id: appIndex.id });
     return rows.length > 0;
@@ -1857,8 +1902,8 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
       })
       .onConflictDoUpdate({
         target: [appWorktrees.workspaceId, appWorktrees.actorId],
-        // No-op touch returning existing row atomically (mirrors $setOnInsert upsert).
-        set: { branch: sql`${appWorktrees.branch}` },
+        // Touch updated_at like Mongoose timestamps do on every upsert (warm-boot reads it).
+        set: { updatedAt: now },
       })
       .returning();
     return pgAppWorktreeToRecord(rows[0]);
@@ -2399,10 +2444,10 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
     db: MakoPgDb = this.getDb(),
   ): Promise<AppBindingJobRecord> {
     const idUuid = input.id ? entityIdToPgUuid(input.id) : newDualId().uuid;
-    const [resolvedActorId, resolvedUserUuid] = await Promise.all([
-      this.resolveBindingJobActorId(input.actorId, db),
-      this.resolveNullableUserUuid(input.userId, db),
-    ]);
+    const resolvedUserUuid = await this.resolveNullableUserUuid(
+      input.userId,
+      db,
+    );
     const now = new Date();
     const rows = await db
       .insert(appBindingJobs)
@@ -2412,7 +2457,7 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
         projectId: entityIdToPgUuid(input.projectId),
         name: input.name,
         kind: input.kind ?? null,
-        actorId: resolvedActorId,
+        actorId: input.actorId,
         userId: resolvedUserUuid,
         canWrite: input.canWrite,
         unregistered: input.unregistered ?? null,

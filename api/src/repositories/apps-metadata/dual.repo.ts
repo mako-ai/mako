@@ -267,9 +267,7 @@ function canonicalizeBindingJobForShadow(
   const userId = resolveFkUserForShadow(rest.userId, userMap);
   const out: Record<string, unknown> = {
     ...rest,
-    actorId: isPersonActorId(rest.actorId)
-      ? rewriteTextUserForShadow(rest.actorId, userMap)
-      : rest.actorId,
+    actorId: rest.actorId,
   };
   if (userId) {
     out.userId = userId;
@@ -321,30 +319,23 @@ export class DualAppsMetadataRepository implements AppsMetadataRepository {
     ) {
       return null;
     }
-    try {
-      const db = this.getDb();
-      const rows = await db
-        .select({ workspaceId: migrationDomainState.workspaceId })
-        .from(migrationDomainState)
-        .where(
-          and(
-            eq(migrationDomainState.domain, APPS_METADATA_DOMAIN),
-            ne(migrationDomainState.scopeKey, GLOBAL_SCOPE_KEY),
-            inArray(migrationDomainState.mode, [
-              "dual_write_pg_read",
-              "pg_only",
-            ]),
-          ),
-        );
-      if (rows.length === 0) return null;
-      const out = new Set<string>();
-      for (const r of rows) {
-        if (r.workspaceId) out.add(toWireId(r.workspaceId));
-      }
-      return out.size > 0 ? out : null;
-    } catch {
-      return null;
+    const db = this.getDb();
+    const rows = await db
+      .select({ workspaceId: migrationDomainState.workspaceId })
+      .from(migrationDomainState)
+      .where(
+        and(
+          eq(migrationDomainState.domain, APPS_METADATA_DOMAIN),
+          ne(migrationDomainState.scopeKey, GLOBAL_SCOPE_KEY),
+          inArray(migrationDomainState.mode, ["dual_write_pg_read", "pg_only"]),
+        ),
+      );
+    if (rows.length === 0) return null;
+    const out = new Set<string>();
+    for (const r of rows) {
+      if (r.workspaceId) out.add(toWireId(r.workspaceId));
     }
+    return out.size > 0 ? out : null;
   }
 
   private async resolveCanaryWorkspaceForProject(

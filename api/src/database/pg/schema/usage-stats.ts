@@ -325,9 +325,8 @@ export const llmUsage = pgTable(
   "llm_usage",
   {
     id: uuid("id").primaryKey(),
-    workspaceId: uuid("workspace_id")
-      .notNull()
-      .references(() => workspaces.id, { onDelete: "cascade" }),
+    /** Soft UUID ref (NO FK): permanent billing ledger survives workspace deletion, matching Mongo. */
+    workspaceId: uuid("workspace_id").notNull(),
     /** Nullable UUIDv7 FK (`ON DELETE SET NULL`): billing ledger survives user delete & system calls. */
     userId: uuid("user_id").references(() => users.id, {
       onDelete: "set null",

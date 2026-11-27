@@ -24,7 +24,8 @@
  *       * `app_worktrees` holds `actor_id text NOT NULL` (canonical UUID for persons OR system sentinel
  *         like `"publish"` / `"api-key"`) alongside `user_id uuid REFERENCES users(id) ON DELETE CASCADE`
  *         so user deletion cascades personal sandboxes while system actors work cleanly without UUID errors.
- *       * `app_binding_jobs.actor_id` stays `text NOT NULL` (holds system sentinels alongside user UUIDs).
+ *       * `app_binding_jobs.actor_id` stays `text NOT NULL` (stores raw caller actor ID verbatim —
+ *         system sentinels or session user ID — while `user_id` holds the resolved PG user UUID FK).
  *       * `app_lifecycle.stale_notified_to` holds emails (`text[]`), not user IDs.
  *   - Encrypted fields (`app_projects.env[].valueEncrypted`, `app_projects.public_share_password_encrypted`)
  *     and bcrypt `public_share_password_hash` are copied verbatim and redacted in `shadow-compare`.

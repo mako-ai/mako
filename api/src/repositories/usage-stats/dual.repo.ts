@@ -136,29 +136,22 @@ export class DualUsageStatsRepository implements UsageStatsRepository {
    */
   private async getPgReadWorkspaceOverrides(): Promise<Set<string>> {
     if (!this.hasPgDb()) return new Set();
-    try {
-      const db = this.getDb();
-      const rows = await db
-        .select({ workspaceId: migrationDomainState.workspaceId })
-        .from(migrationDomainState)
-        .where(
-          and(
-            eq(migrationDomainState.domain, USAGE_STATS_DOMAIN),
-            ne(migrationDomainState.scopeKey, GLOBAL_SCOPE_KEY),
-            inArray(migrationDomainState.mode, [
-              "dual_write_pg_read",
-              "pg_only",
-            ]),
-          ),
-        );
-      const out = new Set<string>();
-      for (const r of rows) {
-        if (r.workspaceId) out.add(toWireId(r.workspaceId));
-      }
-      return out;
-    } catch {
-      return new Set();
+    const db = this.getDb();
+    const rows = await db
+      .select({ workspaceId: migrationDomainState.workspaceId })
+      .from(migrationDomainState)
+      .where(
+        and(
+          eq(migrationDomainState.domain, USAGE_STATS_DOMAIN),
+          ne(migrationDomainState.scopeKey, GLOBAL_SCOPE_KEY),
+          inArray(migrationDomainState.mode, ["dual_write_pg_read", "pg_only"]),
+        ),
+      );
+    const out = new Set<string>();
+    for (const r of rows) {
+      if (r.workspaceId) out.add(toWireId(r.workspaceId));
     }
+    return out;
   }
 
   /**
@@ -291,11 +284,18 @@ export class DualUsageStatsRepository implements UsageStatsRepository {
         entityId: `${input.workspaceId}:${input.appId}:${input.day}`,
         retryPayload: {
           table: "app_usage_daily",
+          id,
           workspaceId: input.workspaceId,
           appId: input.appId,
           userId: input.userId,
           anonId: input.anonId ?? null,
           day: input.day,
+          kind: input.kind,
+          source: input.source,
+          ...(input.heartbeatSeconds !== undefined
+            ? { heartbeatSeconds: input.heartbeatSeconds }
+            : {}),
+          at: input.at.toISOString(),
         },
       },
       {
@@ -546,7 +546,10 @@ export class DualUsageStatsRepository implements UsageStatsRepository {
           table: "skill_usage_daily",
           workspaceId,
           day,
+          kind,
           source,
+          at: at.toISOString(),
+          ids,
           targets: targets.map(t => ({ scope: t.scope, skill: t.skill })),
         },
       },

@@ -35,6 +35,7 @@ import {
   parseEntityId,
 } from "../../database/pg/id-codec";
 import { users } from "../../database/pg/schema/auth";
+import { databaseConnections } from "../../database/pg/schema/connections";
 import {
   workspaceApiKeys,
   workspaces,
@@ -73,7 +74,9 @@ import {
   pgQueryExecutionToRecord,
   pgSkillUsageDailyToRecord,
   type AppUsageDailyRecord,
+  type AppUsageEventKind,
   type AppUsageEventRecord,
+  type AppUsageEventSource,
   type ConnectionVerificationRecord,
   type LlmUsageRecord,
   type MongoAppFeedSnapshotLike,
@@ -84,7 +87,10 @@ import {
   type MongoQueryExecutionLike,
   type MongoSkillUsageDailyLike,
   type QueryExecutionRecord,
+  type SkillUsageBumpKind,
   type SkillUsageDailyRecord,
+  type SkillUsageScopePg,
+  type SkillUsageSourcePg,
 } from "../../repositories/usage-stats";
 import {
   currentUtcDay,
@@ -305,6 +311,25 @@ async function resolvePgApiKeySet(
     .select({ id: workspaceApiKeys.id })
     .from(workspaceApiKeys)
     .where(inArray(workspaceApiKeys.id, uuids));
+  return new Set(rows.map(r => r.id.toLowerCase()));
+}
+
+async function resolvePgConnectionSet(
+  db: MakoPgDb,
+  connectionWireIds: readonly (string | undefined)[],
+): Promise<Set<string>> {
+  const uuids = [
+    ...new Set(
+      connectionWireIds
+        .map(id => (id ? parseEntityId(id)?.uuid : undefined))
+        .filter((u): u is string => Boolean(u)),
+    ),
+  ];
+  if (uuids.length === 0) return new Set();
+  const rows = await db
+    .select({ id: databaseConnections.id })
+    .from(databaseConnections)
+    .where(inArray(databaseConnections.id, uuids));
   return new Set(rows.map(r => r.id.toLowerCase()));
 }
 
@@ -595,10 +620,10 @@ async function validateUsageBackfillItem(
     }
 
     case "llm_usage": {
-      if (!(await checkWorkspace(doc.record.workspaceId))) {
+      if (!parseEntityId(doc.record.workspaceId)) {
         return {
           ok: false,
-          reason: "orphaned_workspace_missing",
+          reason: "invalid_workspace_id",
           sanitizedPayload: {
             table: doc.table,
             workspaceId: doc.record.workspaceId,
@@ -1033,6 +1058,7 @@ interface UsageVerifierLookupContext {
   userMap: Map<string, string>;
   validApiKeyUuids: Set<string>;
   validWorkspaceUuids: Set<string>;
+  validConnectionUuids: Set<string>;
 }
 
 async function buildUsageVerifierLookupContext(
@@ -1042,6 +1068,7 @@ async function buildUsageVerifierLookupContext(
   const rawUserIds: string[] = [];
   const apiKeyIds: string[] = [];
   const connVerifWorkspaceIds: string[] = [];
+  const connVerifConnectionIds: string[] = [];
 
   for (const item of items) {
     const { doc } = item;
@@ -1051,17 +1078,29 @@ async function buildUsageVerifierLookupContext(
     if (doc.table === "query_executions" && doc.record.apiKeyId) {
       apiKeyIds.push(doc.record.apiKeyId);
     }
-    if (doc.table === "connection_verifications" && doc.record.workspaceId) {
-      connVerifWorkspaceIds.push(doc.record.workspaceId);
+    if (doc.table === "connection_verifications") {
+      if (doc.record.workspaceId) {
+        connVerifWorkspaceIds.push(doc.record.workspaceId);
+      }
+      if (doc.record.connectionId) {
+        connVerifConnectionIds.push(doc.record.connectionId);
+      }
     }
   }
 
-  const [userMap, validApiKeyUuids, validWorkspaceUuids] = await Promise.all([
-    resolvePgUserMap(db, rawUserIds),
-    resolvePgApiKeySet(db, apiKeyIds),
-    resolvePgWorkspaceSet(db, connVerifWorkspaceIds),
-  ]);
-  return { userMap, validApiKeyUuids, validWorkspaceUuids };
+  const [userMap, validApiKeyUuids, validWorkspaceUuids, validConnectionUuids] =
+    await Promise.all([
+      resolvePgUserMap(db, rawUserIds),
+      resolvePgApiKeySet(db, apiKeyIds),
+      resolvePgWorkspaceSet(db, connVerifWorkspaceIds),
+      resolvePgConnectionSet(db, connVerifConnectionIds),
+    ]);
+  return {
+    userMap,
+    validApiKeyUuids,
+    validWorkspaceUuids,
+    validConnectionUuids,
+  };
 }
 
 function buildVerifierRecord(
@@ -1070,7 +1109,12 @@ function buildVerifierRecord(
   composite: boolean,
 ): VerifierMongoRecord {
   const { doc } = item;
-  const { userMap, validApiKeyUuids, validWorkspaceUuids } = ctx;
+  const {
+    userMap,
+    validApiKeyUuids,
+    validWorkspaceUuids,
+    validConnectionUuids,
+  } = ctx;
   const pgUuid = item.entityId.toLowerCase();
   let comparable: unknown;
 
@@ -1133,6 +1177,9 @@ function buildVerifierRecord(
       const wsUuid = doc.record.workspaceId
         ? parseEntityId(doc.record.workspaceId)?.uuid
         : undefined;
+      const connUuid = doc.record.connectionId
+        ? parseEntityId(doc.record.connectionId)?.uuid
+        : undefined;
       const next: ConnectionVerificationRecord = { ...doc.record };
       if (resolved) {
         next.userId = resolved;
@@ -1141,6 +1188,9 @@ function buildVerifierRecord(
       }
       if (!wsUuid || !validWorkspaceUuids.has(wsUuid)) {
         delete next.workspaceId;
+      }
+      if (!connUuid || !validConnectionUuids.has(connUuid)) {
+        delete next.connectionId;
       }
       comparable = next;
       break;
@@ -1216,7 +1266,7 @@ async function repairUsageEntityInPg(
       const doc = await LlmUsage.findById(oid).lean<MongoLlmUsageLike | null>();
       if (!doc) return false;
       const rec = mongoLlmUsageToRecord(doc);
-      if (!(await workspaceExistsInPg(db, rec.workspaceId))) return false;
+      if (!parseEntityId(rec.workspaceId)) return false;
       await pgRepo.createLlmUsage(rec, db, {
         overwrite: true,
       });
@@ -1376,6 +1426,7 @@ export function createUsageStatsTableVerifierHandler(
 export async function replayUsageStatsWriteToPg(
   data: SyncRetryEventData,
   db: MakoPgDb = getPgDb(),
+  now: Date = new Date(),
 ): Promise<void> {
   const pgRepo = new PgUsageStatsRepository({ getDb: () => db });
   const table = String(data.payload?.table ?? "");
@@ -1395,22 +1446,59 @@ export async function replayUsageStatsWriteToPg(
     const wsId = String(data.payload?.workspaceId ?? data.workspaceId ?? "");
     const rawAppId = String(data.payload?.appId ?? "");
     const day = String(data.payload?.day ?? "");
-    const userId =
-      (data.payload?.userId as string | null | undefined) ??
-      (data.payload?.anonId as string | null | undefined) ??
-      null;
+    const rawUserId =
+      (data.payload?.userId as string | null | undefined) ?? null;
+    const rawAnonId =
+      (data.payload?.anonId as string | null | undefined) ?? null;
     const parsedWs = parseEntityId(wsId);
     const parsedApp = parseEntityId(rawAppId);
     if (!parsedWs?.oid || !parsedApp?.oid || !day) return;
+
+    const closed = isClosedUtcDay(day, now);
+    const kind = data.payload?.kind as AppUsageEventKind | undefined;
+    const source = data.payload?.source as AppUsageEventSource | undefined;
+    const rawAt = data.payload?.at as string | Date | undefined;
+    const at = rawAt ? new Date(rawAt) : null;
+    if (
+      !closed &&
+      (kind === "open" || kind === "heartbeat") &&
+      (source === "app" || source === "share" || source === "embed") &&
+      at &&
+      Number.isFinite(at.getTime())
+    ) {
+      const heartbeatSeconds =
+        typeof data.payload?.heartbeatSeconds === "number"
+          ? data.payload.heartbeatSeconds
+          : undefined;
+      await pgRepo.bumpAppUsageDaily(
+        {
+          id:
+            typeof data.payload?.id === "string" ? data.payload.id : undefined,
+          workspaceId: wsId,
+          appId: rawAppId,
+          userId: rawUserId,
+          anonId: rawAnonId,
+          day,
+          kind,
+          source,
+          ...(heartbeatSeconds !== undefined ? { heartbeatSeconds } : {}),
+          at,
+        },
+        db,
+      );
+      return;
+    }
+
+    const mongoViewerId = rawUserId ?? rawAnonId;
     let doc = await AppUsageDaily.findOne({
       workspaceId: new Types.ObjectId(parsedWs.oid),
       appId: parsedApp.oid,
-      userId,
+      userId: mongoViewerId,
       day,
     }).lean<MongoAppUsageDailyLike | null>();
-    if (!doc && userId && isUuidString(userId)) {
-      const legacyMap = await buildPgUuidToMongoUserIdMap(db, [userId]);
-      const legacyId = legacyMap.get(userId.toLowerCase());
+    if (!doc && mongoViewerId && isUuidString(mongoViewerId)) {
+      const legacyMap = await buildPgUuidToMongoUserIdMap(db, [mongoViewerId]);
+      const legacyId = legacyMap.get(mongoViewerId.toLowerCase());
       if (legacyId) {
         doc = await AppUsageDaily.findOne({
           workspaceId: new Types.ObjectId(parsedWs.oid),
@@ -1427,7 +1515,9 @@ export async function replayUsageStatsWriteToPg(
       db,
     );
     await pgRepo.upsertAppUsageDailyClosedDay(rec, resolvedUserUuid, {
-      overwrite: true,
+      // Only overwrite PG counters once the UTC day is closed; for open-day legacy
+      // payloads without delta fields, use GREATEST(...) so live increments survive.
+      overwrite: closed,
       db,
     });
     return;
@@ -1436,23 +1526,50 @@ export async function replayUsageStatsWriteToPg(
   if (table === "skill_usage_daily") {
     const wsId = String(data.payload?.workspaceId ?? data.workspaceId ?? "");
     const day = String(data.payload?.day ?? "");
-    const source = data.payload?.source as string | undefined;
+    const source = data.payload?.source as SkillUsageSourcePg | undefined;
     const targets = data.payload?.targets as
-      Array<{ scope: string; skill: string }> | undefined;
+      Array<{ scope: SkillUsageScopePg; skill: string }> | undefined;
     const parsedWs = parseEntityId(wsId);
     if (!parsedWs?.oid || !day || !source || !targets?.length) return;
+
+    const closed = isClosedUtcDay(day, now);
+    const kind = data.payload?.kind as SkillUsageBumpKind | undefined;
+    const rawAt = data.payload?.at as string | Date | undefined;
+    const at = rawAt ? new Date(rawAt) : null;
+    if (
+      !closed &&
+      (kind === "load" || kind === "resource" || kind === "relevant") &&
+      (source === "agent" || source === "mcp") &&
+      at &&
+      Number.isFinite(at.getTime())
+    ) {
+      const ids = Array.isArray(data.payload?.ids)
+        ? (data.payload.ids as string[])
+        : undefined;
+      await pgRepo.bumpSkillUsageDaily(
+        wsId,
+        targets,
+        kind,
+        source,
+        at,
+        ids,
+        db,
+      );
+      return;
+    }
+
     for (const target of targets) {
       const doc = await SkillUsageDaily.findOne({
         workspaceId: new Types.ObjectId(parsedWs.oid),
-        scope: target.scope as "workspace" | "system",
+        scope: target.scope,
         skill: target.skill,
-        source: source as "agent" | "mcp",
+        source,
         day,
       }).lean<MongoSkillUsageDailyLike | null>();
       if (!doc) continue;
       await pgRepo.upsertSkillUsageDailyClosedDay(
         mongoSkillUsageDailyToRecord(doc),
-        { overwrite: true, db },
+        { overwrite: closed, db },
       );
     }
     return;
@@ -1478,6 +1595,7 @@ export async function replayUsageStatsWriteToPg(
 export async function replayUsageStatsWriteToMongo(
   data: SyncRetryEventData,
   db: MakoPgDb = getPgDb(),
+  now: Date = new Date(),
 ): Promise<void> {
   const mongoRepo = new MongoUsageStatsRepository();
   const pgRepo = new PgUsageStatsRepository({ getDb: () => db });
@@ -1524,6 +1642,39 @@ export async function replayUsageStatsWriteToMongo(
     const parsedApp = parseEntityId(appId);
     if (!day || !parsedWs || !parsedApp) return;
 
+    const closed = isClosedUtcDay(day, now);
+    const kind = data.payload?.kind as AppUsageEventKind | undefined;
+    const source = data.payload?.source as AppUsageEventSource | undefined;
+    const rawAt = data.payload?.at as string | Date | undefined;
+    const at = rawAt ? new Date(rawAt) : null;
+    if (
+      !closed &&
+      (kind === "open" || kind === "heartbeat") &&
+      (source === "app" || source === "share" || source === "embed") &&
+      at &&
+      Number.isFinite(at.getTime())
+    ) {
+      const userMap = await buildPgUuidToMongoUserIdMap(db, [rawUserId]);
+      const mongoUserId = toMongoUserId(rawUserId, userMap);
+      const heartbeatSeconds =
+        typeof data.payload?.heartbeatSeconds === "number"
+          ? data.payload.heartbeatSeconds
+          : undefined;
+      await mongoRepo.bumpAppUsageDaily({
+        id: typeof data.payload?.id === "string" ? data.payload.id : undefined,
+        workspaceId: wsId,
+        appId,
+        userId: mongoUserId,
+        anonId: rawAnonId,
+        day,
+        kind,
+        source,
+        ...(heartbeatSeconds !== undefined ? { heartbeatSeconds } : {}),
+        at,
+      });
+      return;
+    }
+
     const resolvedUserUuid = await pgRepo.resolveNullableUserUuid(
       rawUserId,
       db,
@@ -1551,18 +1702,39 @@ export async function replayUsageStatsWriteToMongo(
     const userMap = await buildPgUuidToMongoUserIdMap(db, [row.userId]);
     const mongoUserId = toMongoUserId(row.userId, userMap);
     const rowOid = toMongoObjectId(row.id);
-    const byId = await AppUsageDaily.updateOne(
-      { _id: rowOid },
-      {
-        $set: {
-          opens: row.opens,
-          activeSeconds: row.activeSeconds,
-          sources: row.sources,
-          firstAt: row.firstAt,
-          lastAt: row.lastAt,
-        },
-      },
-    );
+
+    const buildOpenDayUpdate = () => {
+      const $max: Record<string, unknown> = {
+        opens: row.opens,
+        activeSeconds: row.activeSeconds,
+        lastAt: row.lastAt,
+      };
+      if (row.sources.app !== undefined) $max["sources.app"] = row.sources.app;
+      if (row.sources.share !== undefined) {
+        $max["sources.share"] = row.sources.share;
+      }
+      if (row.sources.embed !== undefined) {
+        $max["sources.embed"] = row.sources.embed;
+      }
+      return {
+        $max,
+        $min: { firstAt: row.firstAt },
+      };
+    };
+
+    const updateDoc = closed
+      ? {
+          $set: {
+            opens: row.opens,
+            activeSeconds: row.activeSeconds,
+            sources: row.sources,
+            firstAt: row.firstAt,
+            lastAt: row.lastAt,
+          },
+        }
+      : buildOpenDayUpdate();
+
+    const byId = await AppUsageDaily.updateOne({ _id: rowOid }, updateDoc);
     if (byId.matchedCount === 0) {
       await AppUsageDaily.updateOne(
         {
@@ -1572,13 +1744,7 @@ export async function replayUsageStatsWriteToMongo(
           day: row.day,
         },
         {
-          $set: {
-            opens: row.opens,
-            activeSeconds: row.activeSeconds,
-            sources: row.sources,
-            firstAt: row.firstAt,
-            lastAt: row.lastAt,
-          },
+          ...updateDoc,
           $setOnInsert: {
             _id: rowOid,
           },
@@ -1592,11 +1758,29 @@ export async function replayUsageStatsWriteToMongo(
   if (table === "skill_usage_daily") {
     const day = String(data.payload?.day ?? "");
     const wsId = String(data.payload?.workspaceId ?? data.workspaceId ?? "");
-    const source = data.payload?.source as "agent" | "mcp" | undefined;
+    const source = data.payload?.source as SkillUsageSourcePg | undefined;
     const targets = data.payload?.targets as
-      Array<{ scope: "workspace" | "system"; skill: string }> | undefined;
+      Array<{ scope: SkillUsageScopePg; skill: string }> | undefined;
     const parsedWs = parseEntityId(wsId);
     if (!day || !parsedWs || !source || !targets?.length) return;
+
+    const closed = isClosedUtcDay(day, now);
+    const kind = data.payload?.kind as SkillUsageBumpKind | undefined;
+    const rawAt = data.payload?.at as string | Date | undefined;
+    const at = rawAt ? new Date(rawAt) : null;
+    if (
+      !closed &&
+      (kind === "load" || kind === "resource" || kind === "relevant") &&
+      (source === "agent" || source === "mcp") &&
+      at &&
+      Number.isFinite(at.getTime())
+    ) {
+      const ids = Array.isArray(data.payload?.ids)
+        ? (data.payload.ids as string[])
+        : undefined;
+      await mongoRepo.bumpSkillUsageDaily(wsId, targets, kind, source, at, ids);
+      return;
+    }
 
     for (const target of targets) {
       const rows = await db
@@ -1615,18 +1799,26 @@ export async function replayUsageStatsWriteToMongo(
       if (!rows[0]) continue;
       const row = pgSkillUsageDailyToRecord(rows[0]);
       const rowOid = toMongoObjectId(row.id);
-      const byId = await SkillUsageDaily.updateOne(
-        { _id: rowOid },
-        {
-          $set: {
-            loads: row.loads,
-            resourceReads: row.resourceReads,
-            relevantHits: row.relevantHits,
-            firstAt: row.firstAt,
-            lastAt: row.lastAt,
-          },
-        },
-      );
+      const updateDoc = closed
+        ? {
+            $set: {
+              loads: row.loads,
+              resourceReads: row.resourceReads,
+              relevantHits: row.relevantHits,
+              firstAt: row.firstAt,
+              lastAt: row.lastAt,
+            },
+          }
+        : {
+            $max: {
+              loads: row.loads,
+              resourceReads: row.resourceReads,
+              relevantHits: row.relevantHits,
+              lastAt: row.lastAt,
+            },
+            $min: { firstAt: row.firstAt },
+          };
+      const byId = await SkillUsageDaily.updateOne({ _id: rowOid }, updateDoc);
       if (byId.matchedCount === 0) {
         await SkillUsageDaily.updateOne(
           {
@@ -1637,13 +1829,7 @@ export async function replayUsageStatsWriteToMongo(
             day: row.day,
           },
           {
-            $set: {
-              loads: row.loads,
-              resourceReads: row.resourceReads,
-              relevantHits: row.relevantHits,
-              firstAt: row.firstAt,
-              lastAt: row.lastAt,
-            },
+            ...updateDoc,
             $setOnInsert: {
               _id: rowOid,
             },

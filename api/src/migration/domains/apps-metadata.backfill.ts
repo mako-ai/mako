@@ -833,13 +833,25 @@ async function upsertProjectRecordToPg(
   rec: AppProjectRecord,
   db: MakoPgDb,
   pgRepo: PgAppsMetadataRepository,
-  options: { guarded?: boolean } = {},
+  options: { guarded?: boolean; strictOwner?: boolean } = {},
 ): Promise<void> {
   const idUuid = entityIdToPgUuid(rec.id);
   const wsUuid = entityIdToPgUuid(rec.workspaceId);
   const [ownerId, createdBy, publicShareCreatedBy] = await Promise.all([
-    pgRepo.resolveNullableUserUuid(rec.owner_id, db),
-    pgRepo.resolveNullableUserUuid(rec.createdBy, db),
+    options.strictOwner
+      ? pgRepo.resolveStrictOwnerUserUuid(
+          rec.owner_id,
+          "app_projects.owner_id",
+          db,
+        )
+      : pgRepo.resolveNullableUserUuid(rec.owner_id, db),
+    options.strictOwner
+      ? pgRepo.resolveStrictOwnerUserUuid(
+          rec.createdBy,
+          "app_projects.created_by",
+          db,
+        )
+      : pgRepo.resolveNullableUserUuid(rec.createdBy, db),
     pgRepo.resolveNullableUserUuid(rec.publicShare?.createdBy, db),
   ]);
 
@@ -938,12 +950,18 @@ async function upsertIndexEntryRecordToPg(
   rec: AppIndexEntryRecord,
   db: MakoPgDb,
   pgRepo: PgAppsMetadataRepository,
-  options: { guarded?: boolean } = {},
+  options: { guarded?: boolean; strictOwner?: boolean } = {},
 ): Promise<void> {
   const idUuid = entityIdToPgUuid(rec.id);
   const wsUuid = entityIdToPgUuid(rec.workspaceId);
   const appUuid = entityIdToPgUuid(rec.appId);
-  const ownerId = await pgRepo.resolveNullableUserUuid(rec.ownerId, db);
+  const ownerId = options.strictOwner
+    ? await pgRepo.resolveStrictOwnerUserUuid(
+        rec.ownerId,
+        "app_index.owner_id",
+        db,
+      )
+    : await pgRepo.resolveNullableUserUuid(rec.ownerId, db);
   const duplicateOf = optionalEntityIdToPgUuid(rec.duplicateOf);
 
   const values: typeof appIndex.$inferInsert = {
@@ -1476,10 +1494,8 @@ async function upsertBindingJobRecordToPg(
   const idUuid = entityIdToPgUuid(rec.id);
   const wsUuid = entityIdToPgUuid(rec.workspaceId);
   const projUuid = entityIdToPgUuid(rec.projectId);
-  const [actorId, userId] = await Promise.all([
-    pgRepo.resolveBindingJobActorId(rec.actorId, db),
-    pgRepo.resolveNullableUserUuid(rec.userId, db),
-  ]);
+  const actorId = rec.actorId;
+  const userId = await pgRepo.resolveNullableUserUuid(rec.userId, db);
 
   await db
     .insert(appBindingJobs)
@@ -1785,11 +1801,11 @@ function buildVerifierRecord(
     }
 
     case "app_binding_jobs": {
-      const actorId = isPersonActorId(doc.record.actorId)
-        ? (userMap.get(doc.record.actorId) ?? doc.record.actorId)
-        : doc.record.actorId;
       const userId = resolveOpt(doc.record.userId);
-      const next: AppBindingJobRecord = { ...doc.record, actorId };
+      const next: AppBindingJobRecord = {
+        ...doc.record,
+        actorId: doc.record.actorId,
+      };
       if (userId) next.userId = userId;
       else delete next.userId;
       comparable = next;
@@ -2211,7 +2227,12 @@ export async function replayAppsMetadataWriteToPg(
           if (workspaceId) await pgRepo.deleteProject(workspaceId, rawId, db);
           continue;
         }
-        await upsertProjectRecordToPg(mongoAppProjectToRecord(doc), db, pgRepo);
+        await upsertProjectRecordToPg(
+          mongoAppProjectToRecord(doc),
+          db,
+          pgRepo,
+          { strictOwner: true },
+        );
       }
       return;
     }
@@ -2228,7 +2249,9 @@ export async function replayAppsMetadataWriteToPg(
         const rec = mongoAppIndexEntryToRecord(doc);
         if (!parseEntityId(rec.appId)) continue;
         mongoAppUuids.add(entityIdToPgUuid(rec.appId));
-        await upsertIndexEntryRecordToPg(rec, db, pgRepo);
+        await upsertIndexEntryRecordToPg(rec, db, pgRepo, {
+          strictOwner: true,
+        });
       }
       const pgExisting = await db
         .select({ id: appIndex.id, appId: appIndex.appId })

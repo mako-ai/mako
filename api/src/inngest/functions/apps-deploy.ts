@@ -250,7 +250,15 @@ export const appsDeployReconcileFunction = inngest.createFunction(
   },
   async ({ step }) => {
     const published = (await step.run("list-published", async () =>
-      appsMetadataRepo.listPublishedProjects(),
+      (await appsMetadataRepo.listPublishedProjects()).map(p => ({
+        id: p.id,
+        workspaceId: p.workspaceId,
+        slug: p.slug,
+        path: p.path,
+        publishedSha: p.publishedSha,
+        lastDeployError: p.lastDeployError,
+        deployProgress: p.deployProgress,
+      })),
     )) as unknown as Array<
       Pick<
         AppProjectRecord,

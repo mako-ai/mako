@@ -58,6 +58,7 @@ import type {
   AppLifecycleRecord,
   AppProjectRecord,
   AppWorktreeRecord,
+  UpdateAppProjectSharingPatch,
 } from "./types";
 
 export function toDate(value: Date | string): Date {
@@ -1186,25 +1187,74 @@ function toCompatId(id: string): Types.ObjectId | string {
   return parseEntityId(id) ? toMongoObjectId(id) : id;
 }
 
+export function buildProjectSharingPatch(
+  doc: IAppProject,
+  modifiedPaths: ReadonlySet<string>,
+): UpdateAppProjectSharingPatch {
+  const patch: UpdateAppProjectSharingPatch = {};
+  if (modifiedPaths.has("access")) {
+    patch.access = doc.access;
+  }
+  if (modifiedPaths.has("workspaceRole")) {
+    patch.workspaceRole = doc.workspaceRole;
+  }
+  if (modifiedPaths.has("sharedWith")) {
+    patch.sharedWith = doc.sharedWith ?? [];
+  }
+  if (modifiedPaths.has("publicShare")) {
+    patch.publicShare = doc.publicShare ?? null;
+  }
+  if (modifiedPaths.has("chatEnabled")) {
+    patch.chatEnabled = doc.chatEnabled;
+  }
+  return patch;
+}
+
 export function toAppProjectCompat(
   record: AppProjectRecord,
-  onSave?: (doc: IAppProject) => Promise<void>,
+  onSave?: (
+    doc: IAppProject,
+    modifiedPaths: ReadonlySet<string>,
+  ) => Promise<void>,
 ): IAppProject {
+  const modifiedPaths = new Set<string>();
   const obj = {
     ...record,
     _id: toCompatId(record.id),
     ...(record.workspaceId
       ? { workspaceId: toCompatId(record.workspaceId) }
       : {}),
-    markModified: () => undefined,
+    markModified: (path?: string) => {
+      if (typeof path === "string" && path.length > 0) {
+        modifiedPaths.add(path.split(".")[0]);
+      }
+    },
     save: async function saveCompat(this: IAppProject) {
       if (onSave) {
-        await onSave(this);
+        const snapshot = new Set(modifiedPaths);
+        await onSave(this, snapshot);
+        for (const path of snapshot) {
+          modifiedPaths.delete(path);
+        }
       }
       return this;
     },
   };
-  return obj as unknown as IAppProject;
+  const proxy = new Proxy(obj, {
+    set(target, prop, value, receiver) {
+      if (typeof prop === "string") {
+        modifiedPaths.add(prop);
+      }
+      return Reflect.set(target, prop, value, receiver);
+    },
+    deleteProperty(target, prop) {
+      if (typeof prop === "string") {
+        modifiedPaths.add(prop);
+      }
+      return Reflect.deleteProperty(target, prop);
+    },
+  });
+  return proxy as unknown as IAppProject;
 }
 
 /**

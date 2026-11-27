@@ -7,6 +7,7 @@ import { type IAppProject } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import {
   appsMetadataRepo,
+  buildProjectSharingPatch,
   toAppProjectCompat,
 } from "../../repositories/apps-metadata";
 import { appsSessionsRoot } from "../config";
@@ -276,17 +277,13 @@ export async function createProject(input: {
     createdBy: input.userId ?? "",
     defaultBranch: DEFAULT_BRANCH,
   });
-  const project = toAppProjectCompat(createdRec, async doc => {
+  const project = toAppProjectCompat(createdRec, async (doc, modifiedPaths) => {
+    const patch = buildProjectSharingPatch(doc, modifiedPaths);
+    if (Object.keys(patch).length === 0) return;
     await appsMetadataRepo.updateProjectSharing(
       doc.workspaceId.toString(),
       doc._id.toString(),
-      {
-        access: doc.access,
-        workspaceRole: doc.workspaceRole,
-        sharedWith: doc.sharedWith,
-        publicShare: doc.publicShare ?? null,
-        chatEnabled: doc.chatEnabled,
-      },
+      patch,
     );
   });
 

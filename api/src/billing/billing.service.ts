@@ -6,9 +6,8 @@
  */
 
 import Stripe from "stripe";
-import { ObjectId } from "mongodb";
-import { LlmUsage } from "../database/schema";
 import { SUBSCRIPTION_STATUSES } from "../database/pg/schema/workspaces";
+import { usageStatsRepo } from "../repositories/usage-stats";
 import {
   workspaceRepo,
   type SubscriptionStatus,
@@ -210,37 +209,17 @@ export async function getCurrentPeriodUsage(
   invocationCount: number;
   totalTokens: number;
 }> {
-  const matchFilter: Record<string, unknown> = {
-    workspaceId: new ObjectId(workspaceId),
-  };
-
-  if (periodStart) {
-    matchFilter.createdAt = { $gte: periodStart };
-  } else {
-    // Default to the current calendar month (UTC)
-    matchFilter.createdAt = { $gte: startOfUtcMonth() };
-  }
-
-  const [result] = await LlmUsage.aggregate([
-    { $match: matchFilter },
-    {
-      $group: {
-        _id: null,
-        totalCostUsd: { $sum: "$costUsd" },
-        invocationCount: { $sum: 1 },
-        totalTokens: { $sum: "$totalTokens" },
-      },
-    },
-    { $project: { _id: 0 } },
-  ]);
-
-  return (
-    result ?? {
-      totalCostUsd: 0,
-      invocationCount: 0,
-      totalTokens: 0,
-    }
+  const from = periodStart ?? startOfUtcMonth();
+  const summary = await usageStatsRepo.getWorkspaceLlmUsageSummary(
+    workspaceId,
+    { from },
   );
+
+  return {
+    totalCostUsd: summary.totalCostUsd,
+    invocationCount: summary.invocationCount,
+    totalTokens: summary.totalTokens,
+  };
 }
 
 /**

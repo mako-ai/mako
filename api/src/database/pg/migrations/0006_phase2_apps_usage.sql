@@ -448,7 +448,8 @@ CREATE INDEX IF NOT EXISTS "idx_skill_usage_daily_last_at"
 
 CREATE TABLE IF NOT EXISTS "llm_usage" (
   "id" uuid PRIMARY KEY,
-  "workspace_id" uuid NOT NULL REFERENCES "workspaces"("id") ON DELETE CASCADE,
+  -- Soft UUID ref (NO FK): permanent billing ledger survives workspace deletion, matching Mongo.
+  "workspace_id" uuid NOT NULL,
   "user_id" uuid REFERENCES "users"("id") ON DELETE SET NULL,
   "chat_id" uuid,
   "invocation_type" text NOT NULL

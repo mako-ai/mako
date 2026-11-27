@@ -32,6 +32,7 @@ import {
   toWireId,
 } from "../../database/pg/id-codec";
 import { users } from "../../database/pg/schema/auth";
+import { databaseConnections } from "../../database/pg/schema/connections";
 import { workspaceApiKeys } from "../../database/pg/schema/workspaces";
 import {
   appFeedSnapshots,
@@ -154,6 +155,25 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
       .select({ id: workspaceApiKeys.id })
       .from(workspaceApiKeys)
       .where(eq(workspaceApiKeys.id, uuid))
+      .limit(1);
+    return rows[0] ? rows[0].id.toLowerCase() : null;
+  }
+
+  /**
+   * Verify `connectionId` exists in `database_connections` before inserting into
+   * `connection_verifications` so telemetry for deleted connections cleanly stores
+   * `NULL` rather than failing FK `23503` after `0006a` attaches the FK.
+   */
+  private async resolveExistingConnectionUuid(
+    connectionId: string | null | undefined,
+    db: MakoPgDb = this.getDb(),
+  ): Promise<string | null> {
+    const uuid = optionalEntityIdToPgUuid(connectionId);
+    if (!uuid) return null;
+    const rows = await db
+      .select({ id: databaseConnections.id })
+      .from(databaseConnections)
+      .where(eq(databaseConnections.id, uuid))
       .limit(1);
     return rows[0] ? rows[0].id.toLowerCase() : null;
   }
@@ -1346,8 +1366,10 @@ export class PgUsageStatsRepository implements UsageStatsRepository {
   ): Promise<ConnectionVerificationRecord> {
     const idUuid = input.id ? entityIdToPgUuid(input.id) : newDualId().uuid;
     const wsUuid = optionalEntityIdToPgUuid(input.workspaceId);
-    const connUuid = optionalEntityIdToPgUuid(input.connectionId);
-    const userUuid = await this.resolveNullableUserUuid(input.userId, db);
+    const [connUuid, userUuid] = await Promise.all([
+      this.resolveExistingConnectionUuid(input.connectionId, db),
+      this.resolveNullableUserUuid(input.userId, db),
+    ]);
 
     const values: typeof connectionVerifications.$inferInsert = {
       id: idUuid,
