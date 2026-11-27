@@ -1,7 +1,14 @@
-import { ObjectId } from "mongodb";
 import { randomUUID } from "crypto";
 import type { UIMessage } from "ai";
-import { Chat, SavedConsole } from "../database/workspace-schema";
+import { parseEntityId } from "../database/pg/id-codec";
+import {
+  chatRepo,
+  type ChatLocalAcp,
+  type ChatRecord,
+  type StoredChatMessage,
+  type StoredChatPart,
+} from "../repositories/chat";
+import { consolesChartsRepo } from "../repositories/consoles-charts";
 import type { AgentKind } from "../agent-lib";
 import { loggers } from "../logging";
 import {
@@ -37,34 +44,81 @@ export interface ThreadContext {
   activeAgent?: AgentKind;
 }
 
+function legacyMessageToStored(msg: {
+  id?: string;
+  role: "user" | "assistant" | "system";
+  parts?: StoredChatPart[];
+  content?: string;
+  reasoning?: string[];
+  toolCalls?: Array<{
+    toolCallId?: string;
+    toolName: string;
+    timestamp?: Date;
+    status?: "started" | "completed";
+    input?: unknown;
+    result?: unknown;
+  }>;
+}): StoredChatMessage {
+  if (Array.isArray(msg.parts) && msg.parts.length > 0) {
+    return {
+      ...(msg.id !== undefined ? { id: msg.id } : {}),
+      role: msg.role,
+      parts: msg.parts,
+      content: msg.content,
+      reasoning: msg.reasoning,
+      toolCalls: msg.toolCalls,
+    };
+  }
+  const parts: StoredChatPart[] = [];
+  for (const r of msg.reasoning ?? []) {
+    parts.push({ type: "reasoning", reasoning: r });
+  }
+  for (const tc of msg.toolCalls ?? []) {
+    parts.push({
+      type: `tool-${tc.toolName}`,
+      toolCallId: tc.toolCallId ?? "",
+      toolName: tc.toolName,
+      state: "output-available",
+      input: tc.input ?? {},
+      ...(tc.result !== undefined ? { output: tc.result } : {}),
+    });
+  }
+  if (
+    typeof msg.content === "string" &&
+    (msg.content.length > 0 || parts.length === 0)
+  ) {
+    parts.push({ type: "text", text: msg.content });
+  }
+  return {
+    ...(msg.id !== undefined ? { id: msg.id } : {}),
+    role: msg.role,
+    parts,
+    content: msg.content ?? "",
+    ...(msg.reasoning ? { reasoning: msg.reasoning } : {}),
+    ...(msg.toolCalls ? { toolCalls: msg.toolCalls } : {}),
+  };
+}
+
 export const getOrCreateThreadContext = async (
   sessionId: string | undefined,
   workspaceId: string,
   userId?: string,
 ): Promise<ThreadContext> => {
   if (sessionId) {
-    const query: any = {
-      _id: new ObjectId(sessionId),
-      workspaceId: new ObjectId(workspaceId),
-    };
-    // Add user filter if userId is provided
-    if (userId) {
-      query.createdBy = userId;
-    }
-
-    const existingChat = await Chat.findOne(query);
+    const existingChat = userId
+      ? await chatRepo.findOwnedById(workspaceId, sessionId, userId)
+      : await chatRepo.findById(sessionId, workspaceId);
     if (existingChat) {
       const messages = existingChat.messages || [];
-      // Map messages to ensure content is always a string (backward compat)
       const recentMessages = messages.slice(-CONTEXT_WINDOW_SIZE).map(msg => ({
-        role: msg.role,
-        content: msg.content || "", // Default to empty string if not present
+        role: msg.role as "user" | "assistant",
+        content: msg.content || "",
         toolCalls: msg.toolCalls,
       }));
       let threadId = existingChat.threadId;
       if (!threadId) {
         threadId = randomUUID();
-        await Chat.findByIdAndUpdate(sessionId, { threadId });
+        await chatRepo.updateThreadFields(sessionId, workspaceId, { threadId });
       }
       return {
         threadId,
@@ -73,7 +127,8 @@ export const getOrCreateThreadContext = async (
           messageCount: messages.length,
           lastActivityAt: existingChat.updatedAt,
         },
-        activeAgent: (existingChat as any).activeAgent,
+        activeAgent: (existingChat.activeAgent ?? undefined) as
+          AgentKind | undefined,
       };
     }
   }
@@ -124,42 +179,37 @@ export const persistChatSession = async (
   pinnedConsoleId?: string,
 ): Promise<string> => {
   const now = new Date();
+  const storedMessages = updatedMessages.map(legacyMessageToStored);
+
   if (!sessionId) {
-    const newChat = new Chat({
-      workspaceId: new ObjectId(workspaceId),
+    const newChat = await chatRepo.create({
+      workspaceId,
       threadId: threadContext.threadId,
       title: "New Chat",
-      messages: updatedMessages,
-      createdBy: userId || "system",
+      messages: storedMessages,
+      createdBy: userId ?? null,
       titleGenerated: false,
       createdAt: now,
       updatedAt: now,
-      activeAgent,
-      pinnedConsoleId,
+      activeAgent:
+        (activeAgent as "mongo" | "bigquery" | "triage" | undefined) ?? null,
+      pinnedConsoleId: pinnedConsoleId ?? null,
     });
-    await newChat.save();
-    return newChat._id.toString();
+    return newChat.id;
   }
-  const updateData: any = { messages: updatedMessages, updatedAt: now };
-  if (!threadContext.threadId) {
-    updateData.threadId = randomUUID();
-  }
-  if (activeAgent) {
-    updateData.activeAgent = activeAgent;
-  }
-  if (pinnedConsoleId !== undefined) {
-    updateData.pinnedConsoleId = pinnedConsoleId;
-  }
-  await Chat.findByIdAndUpdate(sessionId, updateData, {
-    returnDocument: "after",
+
+  await chatRepo.updateThreadFields(sessionId, workspaceId, {
+    messages: storedMessages,
+    updatedAt: now,
+    ...(!threadContext.threadId ? { threadId: randomUUID() } : {}),
+    ...(activeAgent
+      ? { activeAgent: activeAgent as "mongo" | "bigquery" | "triage" }
+      : {}),
+    ...(pinnedConsoleId !== undefined ? { pinnedConsoleId } : {}),
   });
   return sessionId;
 };
 
-/**
- * Persist user message immediately to create/update chat session before agent runs.
- * This ensures the user's message is saved even if the agent crashes.
- */
 export const persistUserMessage = async (
   sessionId: string | undefined,
   threadContext: ThreadContext,
@@ -171,76 +221,63 @@ export const persistUserMessage = async (
   workspacePrompt?: string,
 ): Promise<string> => {
   const now = new Date();
-  const userMessageObj = { role: "user" as const, content: userMessage };
+  const userMessageObj = legacyMessageToStored({
+    role: "user",
+    content: userMessage,
+  });
 
   if (!sessionId) {
-    // Create new chat with just the user message
-    const newChat = new Chat({
-      workspaceId: new ObjectId(workspaceId),
+    const newChat = await chatRepo.create({
+      workspaceId,
       threadId: threadContext.threadId,
       title: "New Chat",
-      messages: [...threadContext.recentMessages, userMessageObj],
-      createdBy: userId || "system",
+      messages: [
+        ...threadContext.recentMessages.map(legacyMessageToStored),
+        userMessageObj,
+      ],
+      createdBy: userId ?? null,
       titleGenerated: false,
       createdAt: now,
       updatedAt: now,
-      pinnedConsoleId,
-      systemPrompt,
-      workspacePrompt,
+      pinnedConsoleId: pinnedConsoleId ?? null,
+      systemPrompt: systemPrompt ?? null,
+      workspacePrompt: workspacePrompt ?? null,
     });
-    await newChat.save();
-    return newChat._id.toString();
+    return newChat.id;
   }
 
-  // Update existing chat with the new user message
-  // IMPORTANT: Fetch current messages from DB to avoid truncation data loss
-  // (threadContext.recentMessages only contains last CONTEXT_WINDOW_SIZE messages)
-  const existingChat = await Chat.findById(sessionId);
+  const existingChat = await chatRepo.findById(sessionId, workspaceId);
   if (!existingChat) {
-    // Chat was deleted between context load and persist - create new one
-    const newChat = new Chat({
-      workspaceId: new ObjectId(workspaceId),
+    const newChat = await chatRepo.create({
+      workspaceId,
       threadId: threadContext.threadId,
       title: "New Chat",
       messages: [userMessageObj],
-      createdBy: userId || "system",
+      createdBy: userId ?? null,
       titleGenerated: false,
       createdAt: now,
       updatedAt: now,
-      pinnedConsoleId,
-      systemPrompt,
-      workspacePrompt,
+      pinnedConsoleId: pinnedConsoleId ?? null,
+      systemPrompt: systemPrompt ?? null,
+      workspacePrompt: workspacePrompt ?? null,
     });
-    await newChat.save();
-    return newChat._id.toString();
+    return newChat.id;
   }
 
-  const existingMessages = existingChat.messages || [];
-  const updateData: Record<string, unknown> = {
-    messages: [...existingMessages, userMessageObj],
+  await chatRepo.updateThreadFields(sessionId, workspaceId, {
+    messages: [...existingChat.messages, userMessageObj],
     updatedAt: now,
-  };
-  if (pinnedConsoleId !== undefined) {
-    updateData.pinnedConsoleId = pinnedConsoleId;
-  }
-  // Update prompts if provided (only on first message of a new session or if they changed)
-  if (systemPrompt !== undefined && !existingChat.systemPrompt) {
-    updateData.systemPrompt = systemPrompt;
-  }
-  if (workspacePrompt !== undefined && !existingChat.workspacePrompt) {
-    updateData.workspacePrompt = workspacePrompt;
-  }
-  await Chat.findByIdAndUpdate(sessionId, updateData, {
-    returnDocument: "after",
+    ...(pinnedConsoleId !== undefined ? { pinnedConsoleId } : {}),
+    ...(systemPrompt !== undefined && !existingChat.systemPrompt
+      ? { systemPrompt }
+      : {}),
+    ...(workspacePrompt !== undefined && !existingChat.workspacePrompt
+      ? { workspacePrompt }
+      : {}),
   });
   return sessionId;
 };
 
-/**
- * Append tool calls incrementally to the current assistant message.
- * Creates an assistant message if one doesn't exist after the last user message.
- * Called during streaming as tool calls complete.
- */
 export const appendToolCalls = async (
   sessionId: string,
   toolCalls: Array<{
@@ -255,80 +292,79 @@ export const appendToolCalls = async (
   if (!toolCalls || toolCalls.length === 0) return;
 
   const now = new Date();
-  const chat = await Chat.findById(sessionId);
+  const chat = await chatRepo.findById(sessionId);
   if (!chat) return;
 
-  const messages = [...(chat.messages || [])];
+  const messages = [...chat.messages];
   const lastMessage = messages[messages.length - 1];
+  const newToolParts: StoredChatPart[] = toolCalls.map(tc => ({
+    type: `tool-${tc.toolName}`,
+    toolCallId: tc.toolCallId ?? "",
+    toolName: tc.toolName,
+    state: "output-available",
+    input: tc.input ?? {},
+    ...(tc.result !== undefined ? { output: tc.result } : {}),
+  }));
 
   if (lastMessage && lastMessage.role === "assistant") {
-    // Append to existing assistant message
-    const existingToolCalls = lastMessage.toolCalls || [];
-    lastMessage.toolCalls = [...existingToolCalls, ...toolCalls];
+    messages[messages.length - 1] = {
+      ...lastMessage,
+      parts: [...lastMessage.parts, ...newToolParts],
+      toolCalls: [...(lastMessage.toolCalls ?? []), ...toolCalls],
+    };
   } else {
-    // Create new assistant message with tool calls (content will be updated later)
-    messages.push({
-      role: "assistant" as const,
-      content: "", // Placeholder - will be updated in finalizeAssistantMessage
-      toolCalls,
-    });
+    messages.push(
+      legacyMessageToStored({
+        role: "assistant",
+        content: "",
+        toolCalls,
+      }),
+    );
   }
 
-  await Chat.findByIdAndUpdate(
-    sessionId,
-    { messages, updatedAt: now },
-    { returnDocument: "after" },
-  );
+  await chatRepo.updateThreadFields(sessionId, chat.workspaceId, {
+    messages,
+    updatedAt: now,
+  });
 };
 
-/**
- * Finalize the assistant message with the final text content.
- * Called after streaming completes.
- */
 export const finalizeAssistantMessage = async (
   sessionId: string,
   assistantContent: string,
   activeAgent?: AgentKind,
 ): Promise<void> => {
   const now = new Date();
-  const chat = await Chat.findById(sessionId);
+  const chat = await chatRepo.findById(sessionId);
   if (!chat) return;
 
-  const messages = [...(chat.messages || [])];
+  const messages = [...chat.messages];
   const lastMessage = messages[messages.length - 1];
 
   if (lastMessage && lastMessage.role === "assistant") {
-    // Update existing assistant message with final content
-    lastMessage.content = assistantContent;
-  } else if (assistantContent.trim()) {
-    // No assistant message exists yet (no tool calls were made) - create one
-    messages.push({
-      role: "assistant" as const,
+    const nonTextParts = lastMessage.parts.filter(p => p.type !== "text");
+    messages[messages.length - 1] = {
+      ...lastMessage,
+      parts: [...nonTextParts, { type: "text", text: assistantContent }],
       content: assistantContent,
-    });
+    };
+  } else if (assistantContent.trim()) {
+    messages.push(
+      legacyMessageToStored({
+        role: "assistant",
+        content: assistantContent,
+      }),
+    );
   }
 
-  const updateData: {
-    messages: typeof messages;
-    updatedAt: Date;
-    activeAgent?: AgentKind;
-  } = {
+  await chatRepo.updateThreadFields(sessionId, chat.workspaceId, {
     messages,
     updatedAt: now,
-  };
-  if (activeAgent) {
-    updateData.activeAgent = activeAgent;
-  }
-
-  await Chat.findByIdAndUpdate(sessionId, updateData, {
-    returnDocument: "after",
+    ...(activeAgent
+      ? { activeAgent: activeAgent as "mongo" | "bigquery" | "triage" }
+      : {}),
   });
 };
 
-/**
- * Persist error information to the chat for debugging.
- * Adds an assistant message with error details and any partial tool calls.
- */
 export const persistChatError = async (
   sessionId: string,
   error: {
@@ -351,12 +387,10 @@ export const persistChatError = async (
   const now = new Date();
 
   try {
-    const chat = await Chat.findById(sessionId);
+    const chat = await chatRepo.findById(sessionId);
     if (!chat) return;
 
-    const messages = [...(chat.messages || [])];
-
-    // Create error details for debugging
+    const messages = [...chat.messages];
     const errorDetails = [
       `⚠️ **Error occurred during processing**`,
       ``,
@@ -369,8 +403,6 @@ export const persistChatError = async (
     if (error.type) {
       errorDetails.push(`**Type:** ${error.type}`);
     }
-
-    // Add partial response if any
     if (partialResponse?.trim()) {
       errorDetails.push(
         ``,
@@ -378,8 +410,6 @@ export const persistChatError = async (
         partialResponse.trim(),
       );
     }
-
-    // Add tool call summary if any
     if (partialToolCalls && partialToolCalls.length > 0) {
       errorDetails.push(``, `**Tool calls before error:**`);
       for (const tc of partialToolCalls) {
@@ -387,50 +417,35 @@ export const persistChatError = async (
         errorDetails.push(`- ${status} ${tc.toolName}`);
       }
     }
-
-    // Add timestamp
     errorDetails.push(``, `*Occurred at: ${now.toISOString()}*`);
 
-    // Add as an assistant message with error marker
-    messages.push({
-      role: "assistant" as const,
-      content: errorDetails.join("\n"),
-      toolCalls:
-        partialToolCalls && partialToolCalls.length > 0
-          ? [
-              ...partialToolCalls,
-              {
-                toolName: "_error",
-                timestamp: now,
-                status: "completed" as const,
-                result: {
-                  error: error.message,
-                  code: error.code,
-                  type: error.type,
-                },
-              },
-            ]
-          : [
-              {
-                toolName: "_error",
-                timestamp: now,
-                status: "completed" as const,
-                result: {
-                  error: error.message,
-                  code: error.code,
-                  type: error.type,
-                },
-              },
-            ],
-    });
+    const errorToolCalls = [
+      ...(partialToolCalls ?? []),
+      {
+        toolName: "_error",
+        timestamp: now,
+        status: "completed" as const,
+        result: {
+          error: error.message,
+          code: error.code,
+          type: error.type,
+        },
+      },
+    ];
 
-    await Chat.findByIdAndUpdate(
-      sessionId,
-      { messages, updatedAt: now },
-      { returnDocument: "after" },
+    messages.push(
+      legacyMessageToStored({
+        role: "assistant",
+        content: errorDetails.join("\n"),
+        toolCalls: errorToolCalls,
+      }),
     );
+
+    await chatRepo.updateThreadFields(sessionId, chat.workspaceId, {
+      messages,
+      updatedAt: now,
+    });
   } catch (persistError) {
-    // Don't throw - this is best-effort error logging
     logger.error("Failed to persist chat error", {
       sessionId,
       error: persistError,
@@ -440,29 +455,14 @@ export const persistChatError = async (
 
 /**
  * Convert UIMessage to stored format.
- * UIMessage (AI SDK v6) uses parts array - we now store parts directly to preserve order.
- *
- * NEW: The `parts` array is the source of truth for message structure.
- * Legacy fields (content, reasoning, toolCalls) are still populated for backward compatibility.
+ * The `parts` array is the source of truth for message structure;
+ * legacy fields (`content`, `reasoning`, `toolCalls`) are kept for compatibility.
  */
 export function convertUIMessageToStoredFormat(msg: UIMessage): {
   id: string;
   role: "user" | "assistant";
-  parts: Array<{
-    type: string;
-    text?: string;
-    reasoning?: string;
-    providerMetadata?: unknown;
-    toolCallId?: string;
-    toolName?: string;
-    input?: unknown;
-    output?: unknown;
-    state?: string;
-    url?: string;
-    mediaType?: string;
-    filename?: string;
-  }>;
-  // Legacy fields for backward compatibility
+  parts: Array<StoredChatPart>;
+  metadata?: Record<string, unknown>;
   content: string;
   reasoning?: string[];
   toolCalls?: Array<{
@@ -472,37 +472,32 @@ export function convertUIMessageToStoredFormat(msg: UIMessage): {
     result?: unknown;
   }>;
 } {
-  // NEW: Store raw parts array - this preserves chronological order
-  const storedParts = (msg.parts || [])
-    .map(part => {
+  const storedParts: StoredChatPart[] = (msg.parts || [])
+    .map((part): StoredChatPart | null => {
       const p = part as Record<string, unknown>;
       const partType = p.type as string;
 
       if (partType === "text") {
-        return { type: "text", text: p.text as string };
-      }
-
-      if (partType === "reasoning") {
-        // Reasoning parts may have text in 'text' or 'reasoning' field.
-        // Preserve providerMetadata (Anthropic extended-thinking `signature`):
-        // it MUST round-trip byte-for-byte so a reloaded chat can replay the
-        // thinking block on a tool-use continuation. Dropping it makes Anthropic
-        // reject the turn ("thinking ... blocks in the latest assistant message
-        // cannot be modified").
         const providerMetadata = p.providerMetadata;
         return {
-          type: "reasoning",
-          reasoning: (p.reasoning as string) || (p.text as string),
+          type: "text",
+          text: p.text as string,
           ...(providerMetadata != null ? { providerMetadata } : {}),
         };
       }
 
-      // File parts (AI SDK FileUIPart): persist url/mediaType/filename
-      // explicitly so the attachment round-trips. Dropping these fields would
-      // reduce the part to `{ type: "file", _id }` and break
-      // convertToModelMessages on replay. Parts that are not model-ready
-      // (missing mediaType + payload) are unrecoverable, so drop them rather
-      // than persist a poison pill.
+      if (partType === "reasoning") {
+        const providerMetadata = p.providerMetadata;
+        return {
+          type: "reasoning",
+          reasoning:
+            (p.reasoning as string | undefined) ??
+            (p.text as string | undefined) ??
+            "",
+          ...(providerMetadata != null ? { providerMetadata } : {}),
+        };
+      }
+
       if (partType === "file") {
         if (!isModelReadyFilePart(p)) {
           return null;
@@ -511,11 +506,12 @@ export function convertUIMessageToStoredFormat(msg: UIMessage): {
           type: "file",
           url: p.url as string,
           mediaType: p.mediaType as string,
-          filename: p.filename as string | undefined,
+          ...(p.filename !== undefined
+            ? { filename: p.filename as string }
+            : {}),
         };
       }
 
-      // Tool parts: type is "tool-{toolName}" or "dynamic-tool"
       if (partType.startsWith("tool-") || partType === "dynamic-tool") {
         const toolName =
           partType === "dynamic-tool"
@@ -532,12 +528,14 @@ export function convertUIMessageToStoredFormat(msg: UIMessage): {
           state: (p.state as string) || "output-available",
           ...(hasOutput ? { output: p.output } : {}),
           ...(p.approval != null ? { approval: p.approval } : {}),
-          ...(p.errorText != null ? { errorText: p.errorText } : {}),
+          ...(p.errorText != null ? { errorText: p.errorText as string } : {}),
           ...(p.rawInput != null ? { rawInput: p.rawInput } : {}),
           ...(p.providerExecuted != null
-            ? { providerExecuted: p.providerExecuted }
+            ? { providerExecuted: p.providerExecuted as boolean }
             : {}),
-          ...(p.preliminary != null ? { preliminary: p.preliminary } : {}),
+          ...(p.preliminary != null
+            ? { preliminary: p.preliminary as boolean }
+            : {}),
           ...(p.callProviderMetadata != null
             ? { callProviderMetadata: p.callProviderMetadata }
             : {}),
@@ -545,18 +543,15 @@ export function convertUIMessageToStoredFormat(msg: UIMessage): {
             ? { resultProviderMetadata: p.resultProviderMetadata }
             : {}),
           ...(p.toolMetadata != null ? { toolMetadata: p.toolMetadata } : {}),
-          ...(p.title != null ? { title: p.title } : {}),
+          ...(p.title != null ? { title: p.title as string } : {}),
         };
       }
 
-      // Unknown part type - store as-is
-      return { type: partType, ...p };
+      // Unknown / step-start / source-url / data-* / Local ACP custom parts
+      return { ...p, type: partType };
     })
-    .filter((part): part is NonNullable<typeof part> => part !== null);
+    .filter((part): part is StoredChatPart => part !== null);
 
-  // TODO: Remove legacy field extraction once we're OK with losing backward compatibility
-  // for old consumers that read content/reasoning/toolCalls instead of parts.
-  // LEGACY: Extract text content from parts (excluding reasoning)
   const textContent = (msg.parts || [])
     .filter(
       (p): p is { type: "text"; text: string } =>
@@ -565,8 +560,6 @@ export function convertUIMessageToStoredFormat(msg: UIMessage): {
     .map(p => p.text)
     .join("");
 
-  // LEGACY: Extract reasoning/thinking parts separately (AI SDK v6 best practice)
-  // These are emitted by models like Claude with extended thinking or DeepSeek
   const reasoningParts = (msg.parts || [])
     .filter(
       (p): p is { type: "reasoning"; text: string } =>
@@ -574,22 +567,15 @@ export function convertUIMessageToStoredFormat(msg: UIMessage): {
     )
     .map(p => p.text);
 
-  // LEGACY: Extract tool calls from parts
-  // AI SDK v6 has two tool part types:
-  // - Static tools: type is "tool-{toolName}" (e.g., "tool-list_connections")
-  // - Dynamic tools: type is "dynamic-tool" with toolName as separate property
   const toolCalls = (msg.parts || [])
     .filter(p => {
       const type = p.type;
       if (typeof type !== "string") return false;
-      // Match static tools (type starts with "tool-") or dynamic tools (type === "dynamic-tool")
       return type.startsWith("tool-") || type === "dynamic-tool";
     })
     .map(p => {
       const part = p as Record<string, unknown>;
       const partType = part.type as string;
-      // For dynamic tools, use the toolName property; for static tools, extract from type
-      // Static tool names: "tool-{name}" -> split on "-" and rejoin (handles names with hyphens)
       const toolName =
         partType === "dynamic-tool"
           ? (part.toolName as string)
@@ -597,29 +583,25 @@ export function convertUIMessageToStoredFormat(msg: UIMessage): {
       return {
         toolCallId: (part.toolCallId as string) || "",
         toolName: toolName || "",
-        // IMPORTANT: input must never be undefined - OpenAI API requires 'arguments' when reloading
         input: part.input ?? {},
         result: part.output ?? null,
       };
     })
-    // Filter out tool calls without valid toolName
     .filter(tc => tc.toolName.length > 0);
+
+  const metadata = (msg as { metadata?: Record<string, unknown> }).metadata;
 
   return {
     id: msg.id,
     role: msg.role as "user" | "assistant",
-    // NEW: Source of truth - preserves chronological order
     parts: storedParts,
-    // LEGACY: Keep for backward compatibility
+    ...(metadata != null ? { metadata } : {}),
     content: textContent || "",
     reasoning: reasoningParts.length > 0 ? reasoningParts : undefined,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
   };
 }
 
-/**
- * Usage data for token tracking (for metered billing)
- */
 export interface ChatUsageData {
   promptTokens: number;
   completionTokens: number;
@@ -631,14 +613,28 @@ export interface ChatUsageData {
   model?: string;
 }
 
+function hasInlineDataUrlAttachment(messages: readonly UIMessage[]): boolean {
+  for (const msg of messages) {
+    if (!Array.isArray(msg.parts)) continue;
+    for (const part of msg.parts) {
+      if (!part || typeof part !== "object") continue;
+      const p = part as Record<string, unknown>;
+      if (
+        p.type === "file" &&
+        typeof p.url === "string" &&
+        p.url.startsWith("data:")
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Save chat using AI SDK best practice: single atomic save at the end.
- * Uses upsert to create or update the chat document.
- *
- * chatId must be a valid 24-character MongoDB ObjectId hex string.
- * The frontend generates this using generateObjectId() utility.
- *
- * @param usage - Optional usage data from AI SDK for token tracking
+ * Delegates through `chatRepo.saveMessages` (workspace-scoped dual-run).
+ * `stripToolOutputsForRetry` is strictly on the Mongo write path (PG has no 16MB BSON cap).
  */
 export const saveChat = async (
   chatId: string,
@@ -646,36 +642,37 @@ export const saveChat = async (
   userId: string,
   messages: UIMessage[],
   usage?: ChatUsageData,
-): Promise<typeof Chat.prototype | null> => {
+  options?: { localAcp?: ChatLocalAcp | null },
+): Promise<ChatRecord | null> => {
   const now = new Date();
 
-  // Move inline base64 image attachments out to object storage and replace them
-  // with authenticated proxy URLs. This keeps the chat document small (the old
-  // inline-base64 approach could blow past MongoDB's 16 MB BSON limit, silently
-  // failing the save so images "disappeared" on reload) and lets images be
-  // fetched lazily. Best-effort: on failure the original part is kept inline.
-  // Tool outputs first: drop screenshots and truncate pathological payloads
-  // BEFORE the size-sensitive steps below — see sanitizeMessagesForPersistence.
   let messagesToPersist = sanitizeMessagesForPersistence(messages);
-  try {
-    messagesToPersist = await externalizeChatAttachments(messagesToPersist, {
-      workspaceId,
-      chatId,
-      userId,
-    });
-  } catch (error) {
-    logger.error("Failed to externalize chat attachments; saving inline", {
-      error,
-      chatId,
-    });
+  if (hasInlineDataUrlAttachment(messagesToPersist)) {
+    try {
+      // Ensure the parent `chats` row exists before `externalizeChatAttachments`
+      // inserts into `chat_attachments` (FK `chat_attachments.chat_id -> chats(id)`).
+      if (parseEntityId(chatId) && parseEntityId(workspaceId)) {
+        await chatRepo.ensureExists({
+          id: chatId,
+          workspaceId,
+          createdBy: userId,
+          localAcp: options?.localAcp ?? null,
+          now,
+        });
+      }
+      messagesToPersist = await externalizeChatAttachments(messagesToPersist, {
+        workspaceId,
+        chatId,
+        userId,
+      });
+    } catch (error) {
+      logger.error("Failed to externalize chat attachments; saving inline", {
+        error,
+        chatId,
+      });
+    }
   }
 
-  // Drop assistant messages that arrived with no parts. This happens when a
-  // stream is aborted before any delta is emitted: `toUIMessageStream`
-  // has already minted an assistant message id, so `onEnd` hands us a
-  // zero-parts message. Persisting it would poison the chat — on the next
-  // turn `convertToModelMessages` would reject the history with
-  // "Invalid prompt: The messages do not match the ModelMessage[] schema."
   const persistableMessages = messagesToPersist.filter(
     m => m.role !== "assistant" || (m.parts && m.parts.length > 0),
   );
@@ -686,13 +683,6 @@ export const saveChat = async (
     });
   }
 
-  // Strip duplicate reasoning parts BEFORE persisting. The stream lifecycle
-  // (`originalMessages` continuation merge, resumable-stream replay) can hand
-  // `onFinish` an assistant message containing the same thinking block twice —
-  // often separated by tool/text parts. Persisting them corrupts the chat for
-  // every subsequent load (duplicate thinking blocks in the UI) and forces the
-  // model-input path to re-dedupe on every turn. Same signature/text keys as
-  // the model-input dedupe; first occurrence and order are preserved.
   const reasoningDedupe = dedupeAssistantReasoning(persistableMessages);
   if (reasoningDedupe.changed) {
     logger.warn("Removed duplicate reasoning parts before persistence", {
@@ -701,10 +691,6 @@ export const saveChat = async (
     });
   }
 
-  // Same lifecycle, different part kinds: resumable-stream replays append
-  // duplicate text/step-start parts (they have no id to merge on, unlike tool
-  // and reasoning parts). Strip byte-identical repeats before persisting so a
-  // corrupted in-flight turn doesn't poison the chat for every later load.
   const artifactDedupe = dedupeAssistantStreamArtifacts(
     reasoningDedupe.messages,
   );
@@ -715,98 +701,40 @@ export const saveChat = async (
     });
   }
 
-  const storedMessages = artifactDedupe.messages.map(
+  const storedMessages: StoredChatMessage[] = artifactDedupe.messages.map(
     convertUIMessageToStoredFormat,
   );
+  const mongoBsonRetryMessages: StoredChatMessage[] = stripToolOutputsForRetry(
+    artifactDedupe.messages,
+  ).map(convertUIMessageToStoredFormat);
 
-  // Count assistant messages to determine the message index for usage history
   const assistantMessageCount = persistableMessages.filter(
     m => m.role === "assistant",
   ).length;
 
-  // Build the update operation
-  const updateOp: Record<string, unknown> = {
-    $set: {
-      messages: storedMessages,
-      updatedAt: now,
-    },
-    // Cloud /api/agent/chat saves go through here. Clear any prior Local ACP
-    // binding so History reopen doesn't force a dead Claude/Codex session.
-    // ACP PUT /chats/:id/messages re-$sets localAcp immediately after saveChat.
-    $unset: {
-      // A finished turn's full save supersedes any mid-turn checkpoint.
-      turnCheckpoint: "",
-      localAcp: "",
-    },
-    $setOnInsert: {
-      workspaceId: new ObjectId(workspaceId),
-      createdBy: userId,
-      title: "New Chat",
-      titleGenerated: false,
-      threadId: randomUUID(),
-      createdAt: now,
-    },
-  };
-
-  if (usage && usage.totalTokens > 0) {
-    (updateOp as Record<string, Record<string, unknown>>).$inc = {
-      "usage.promptTokens": usage.promptTokens,
-      "usage.completionTokens": usage.completionTokens,
-      "usage.totalTokens": usage.totalTokens,
-      "usage.cacheReadTokens": usage.cacheReadTokens ?? 0,
-      "usage.cacheWriteTokens": usage.cacheWriteTokens ?? 0,
-      "usage.reasoningTokens": usage.reasoningTokens ?? 0,
-      "usage.costUsd": usage.costUsd ?? 0,
-    };
-
-    (updateOp as Record<string, Record<string, unknown>>).$push = {
-      "usage.history": {
-        messageIndex: assistantMessageCount - 1,
-        promptTokens: usage.promptTokens,
-        completionTokens: usage.completionTokens,
-        totalTokens: usage.totalTokens,
-        cacheReadTokens: usage.cacheReadTokens ?? 0,
-        cacheWriteTokens: usage.cacheWriteTokens ?? 0,
-        reasoningTokens: usage.reasoningTokens ?? 0,
-        costUsd: usage.costUsd ?? 0,
-        model: usage.model,
-        timestamp: now,
-      },
-    };
-  }
-
-  let result;
-  try {
-    result = await Chat.findOneAndUpdate(
-      { _id: new ObjectId(chatId) },
-      updateOp,
-      { upsert: true, returnDocument: "after" },
-    );
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    if (!/BSON|too large|larger than/i.test(msg)) throw error;
-    // The messages array outgrew Mongo's document limit despite the
-    // sanitizer. Retry once with every tool output reduced to a preview —
-    // losing payloads beats silently losing the whole conversation (§13.25).
-    logger.error(
-      "Chat save exceeded BSON limit; retrying with stripped tool outputs",
-      {
-        chatId,
-        error: msg,
-      },
-    );
-    (updateOp.$set as Record<string, unknown>).messages =
-      stripToolOutputsForRetry(artifactDedupe.messages).map(
-        convertUIMessageToStoredFormat,
-      );
-    result = await Chat.findOneAndUpdate(
-      { _id: new ObjectId(chatId) },
-      updateOp,
-      { upsert: true, returnDocument: "after" },
-    );
-  }
-
-  return result;
+  return chatRepo.saveMessages({
+    chatId,
+    workspaceId,
+    userId,
+    messages: storedMessages,
+    mongoBsonRetryMessages,
+    usage:
+      usage && usage.totalTokens > 0
+        ? {
+            assistantMessageIndex: assistantMessageCount - 1,
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            totalTokens: usage.totalTokens,
+            cacheReadTokens: usage.cacheReadTokens,
+            cacheWriteTokens: usage.cacheWriteTokens,
+            reasoningTokens: usage.reasoningTokens,
+            costUsd: usage.costUsd,
+            model: usage.model,
+          }
+        : undefined,
+    localAcp: options?.localAcp,
+    now,
+  });
 };
 
 /**
@@ -815,6 +743,7 @@ export const saveChat = async (
  */
 export const getConsolesByIds = async (
   consoleIds: string[],
+  workspaceId?: string,
 ): Promise<
   Array<{
     id: string;
@@ -827,21 +756,22 @@ export const getConsolesByIds = async (
 > => {
   if (!consoleIds.length) return [];
 
-  const validIds = consoleIds
-    .filter(id => ObjectId.isValid(id))
-    .map(id => new ObjectId(id));
-
+  const validIds = consoleIds.filter(id => parseEntityId(id) !== null);
   if (!validIds.length) return [];
 
-  const consoles = await SavedConsole.find({
-    _id: { $in: validIds },
-  });
+  const consoles = workspaceId
+    ? await consolesChartsRepo.findConsolesByIds(workspaceId, validIds)
+    : (
+        await Promise.all(
+          validIds.map(id => consolesChartsRepo.findConsoleByIdGlobal(id)),
+        )
+      ).filter((c): c is NonNullable<typeof c> => c !== null);
 
   return consoles.map(c => ({
-    id: c._id.toString(),
+    id: c.id,
     title: c.name,
     content: c.code,
-    connectionId: c.connectionId?.toString(),
+    connectionId: c.connectionId,
     databaseId: c.databaseId,
     databaseName: c.databaseName,
   }));
@@ -849,29 +779,21 @@ export const getConsolesByIds = async (
 
 /**
  * Mid-turn checkpoint (§13.27): persist the in-progress assistant message so
- * a process death mid-turn costs seconds, not the turn. Filtered on
- * activeStreamId so a late trailing write after finalization (which clears
- * the pointer and $unsets the checkpoint) matches nothing instead of
- * resurrecting a stale copy. Best-effort by design.
+ * a process death mid-turn costs seconds, not the turn.
  */
 export const saveTurnCheckpoint = async (
   chatId: string,
   streamId: string,
   message: UIMessage,
+  workspaceId?: string,
 ): Promise<void> => {
   try {
     const [sanitized] = sanitizeMessagesForPersistence([message]);
-    await Chat.updateOne(
-      { _id: chatId, activeStreamId: streamId },
-      {
-        $set: {
-          turnCheckpoint: {
-            message: convertUIMessageToStoredFormat(sanitized),
-            at: new Date(),
-            streamId,
-          },
-        },
-      },
+    await chatRepo.saveTurnCheckpoint(
+      workspaceId,
+      chatId,
+      streamId,
+      convertUIMessageToStoredFormat(sanitized),
     );
   } catch (error) {
     logger.warn("Turn checkpoint write failed", {

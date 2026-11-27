@@ -1,9 +1,9 @@
 /** Params, the admin check and the server loader/serializer shared by the MCP server routers. */
 import { z } from "@hono/zod-openapi";
-import { Types } from "mongoose";
 import { workspaceService } from "../../services/workspace.service";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
-import { type IMcpServer, McpServer } from "../../database/workspace-schema";
+import { parseEntityId } from "../../database/pg/id-codec";
+import { mcpRepo, type McpServerRecord } from "../../repositories/mcp";
 import { getMcpPreset, mcpPresetEnvOAuthClient } from "../../mcp/presets";
 import { decryptString } from "../../services/crypto.service";
 import {
@@ -32,8 +32,8 @@ export async function requireAdmin(
 }
 
 /** Non-secret client id of the server's OAuth app (workspace or env). */
-function oauthClientIdOf(server: IMcpServer): string | null {
-  const encrypted = server.oauth?.clientInformation;
+function oauthClientIdOf(server: McpServerRecord): string | null {
+  const encrypted = server.oauthClientInformationEncrypted;
   if (encrypted) {
     try {
       const info = JSON.parse(decryptString(encrypted)) as {
@@ -51,14 +51,14 @@ function oauthClientIdOf(server: IMcpServer): string | null {
 }
 
 export function serializeServer(
-  server: IMcpServer,
+  server: McpServerRecord,
   extras: {
     hasWorkspaceCredential?: boolean;
     hasUserCredential?: boolean;
   } = {},
 ) {
   return {
-    id: server._id.toString(),
+    id: server.id,
     name: server.name,
     description: server.description ?? null,
     connectorType: server.connectorType,
@@ -98,10 +98,7 @@ export function serializeServer(
 export async function loadServer(
   workspaceId: string,
   id: string,
-): Promise<IMcpServer | null> {
-  if (!Types.ObjectId.isValid(id)) return null;
-  return McpServer.findOne({
-    _id: new Types.ObjectId(id),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
+): Promise<McpServerRecord | null> {
+  if (!parseEntityId(id) || !parseEntityId(workspaceId)) return null;
+  return mcpRepo.findServerById(id, workspaceId);
 }

@@ -21,11 +21,11 @@
  */
 import { timed } from "../middleware/server-timing";
 import { Types } from "mongoose";
+import type { IAppProject } from "../database/workspace-schema";
 import {
-  AppIndexEntry,
-  AppProject,
-  type IAppProject,
-} from "../database/workspace-schema";
+  appsMetadataRepo,
+  toAppProjectCompat,
+} from "../repositories/apps-metadata";
 import { workspaceRepo } from "../repositories/workspaces";
 import {
   resolveAppRef,
@@ -48,10 +48,9 @@ export async function findShareByToken(
 ): Promise<IAppProject | null> {
   if (!token || token.length < 3 || token.length > 128) return null;
   if (!/^[a-zA-Z0-9_-]+$/.test(token)) return null;
-  return AppProject.findOne({
-    "publicShare.token": token,
-    "publicShare.enabled": true,
-  });
+  const project = await appsMetadataRepo.findProjectByShareToken(token);
+  if (!project?.publicShare?.enabled) return null;
+  return toAppProjectCompat(project);
 }
 
 /** A share anyone with the link can open: enabled and not password-gated. */
@@ -221,7 +220,6 @@ export async function previewableWorkspaceApp(
   ref: string,
 ): Promise<AppIndexRow | null> {
   if (!Types.ObjectId.isValid(workspaceId)) return null;
-  const ws = new Types.ObjectId(workspaceId);
   const workspace = await workspaceRepo.findById(workspaceId);
   if (!workspace || workspace.settings?.linkPreviews === false) return null;
   // Persisted rows first (no git: a crawler must not wait on a clone).
@@ -230,12 +228,10 @@ export async function previewableWorkspaceApp(
     (await resolveAppRef(workspaceId, ref).catch(() => null));
   if (!row || row.scope !== "workspace") return null;
   if (Types.ObjectId.isValid(row.appId)) {
-    const state = await AppProject.findOne({
-      _id: new Types.ObjectId(row.appId),
-      workspaceId: ws,
-    })
-      .select("access")
-      .lean();
+    const state = await appsMetadataRepo.findProjectById(
+      row.appId,
+      workspaceId,
+    );
     if (state && state.access !== "workspace") return null;
   }
   return row;
@@ -365,28 +361,25 @@ async function lookupTabRef(
   ref: string,
 ): Promise<{ workspaceId: string; appId: string } | null> {
   if (/^[0-9a-f]{24}$/i.test(ref)) {
-    const row = await AppIndexEntry.findOne({ appId: ref.toLowerCase() })
-      .select("workspaceId appId")
-      .lean();
-    return row
-      ? { workspaceId: row.workspaceId.toString(), appId: row.appId }
-      : null;
+    const row = await appsMetadataRepo.findIndexEntryByAppId(ref.toLowerCase());
+    return row ? { workspaceId: row.workspaceId, appId: row.appId } : null;
   }
-  const rows = await AppIndexEntry.find({ slug: ref, scope: "workspace" })
-    .select("workspaceId appId")
-    .limit(20)
-    .lean();
+  const rows = await appsMetadataRepo.listIndexEntriesBySlugAndScope(
+    ref,
+    "workspace",
+    20,
+  );
   if (rows.length === 0) return null;
   const workspaces = await workspaceRepo.findByIds([
-    ...new Set(rows.map(r => r.workspaceId.toString())),
+    ...new Set(rows.map(r => r.workspaceId)),
   ]);
   const allowed = new Set(
     workspaces.filter(w => w.settings?.linkPreviews !== false).map(w => w.id),
   );
-  const candidates = rows.filter(r => allowed.has(r.workspaceId.toString()));
+  const candidates = rows.filter(r => allowed.has(r.workspaceId));
   if (candidates.length !== 1) return null;
   return {
-    workspaceId: candidates[0].workspaceId.toString(),
+    workspaceId: candidates[0].workspaceId,
     appId: candidates[0].appId,
   };
 }

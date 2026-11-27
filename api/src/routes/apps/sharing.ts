@@ -3,8 +3,9 @@
  * chat with a published app (my chats, on / off).
  */
 import { createRoute, z } from "@hono/zod-openapi";
-import { Chat, type IAppProject } from "../../database/workspace-schema";
+import type { IAppProject } from "../../database/workspace-schema";
 import { appsMetadataRepo } from "../../repositories/apps-metadata";
+import { chatRepo } from "../../repositories/chat";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
 import { canManageSharing } from "../../utils/resource-acl";
 import {
@@ -108,26 +109,21 @@ appsSharingRoutes.openapi(
       if (!loaded.userId) {
         return fail(c, 403, "Sign in to chat");
       }
-      const chats = await Chat.find(
-        {
-          workspaceId: loaded.project.workspaceId,
-          appId: loaded.project._id.toString(),
-          createdBy: loaded.userId,
-        },
-        { title: 1, updatedAt: 1, createdAt: 1, activeStreamId: 1 },
-      )
-        .sort({ updatedAt: -1 })
-        .limit(50)
-        .lean();
+      const chats = await chatRepo.listAppChats(
+        loaded.project.workspaceId.toString(),
+        loaded.project._id.toString(),
+        loaded.userId,
+        50,
+      );
       return c.json(
         {
           success: true as const,
           chats: chats.map(chat => ({
-            id: chat._id.toString(),
+            id: chat.id,
             title: chat.title,
             createdAt: chat.createdAt,
             updatedAt: chat.updatedAt,
-            streaming: !!chat.activeStreamId,
+            streaming: chat.streaming,
           })),
         },
         200,

@@ -14,6 +14,9 @@ import assert from "node:assert/strict";
 import { convertToModelMessages, type UIMessage } from "ai";
 import {
   sanitizeMessagesForPersistence,
+  sanitizePgJsonValue,
+  sanitizePgString,
+  sliceSafeUtf16,
   stripToolOutputsForRetry,
   sanitizeMessagesForModel,
 } from "./message-sanitizer";
@@ -260,5 +263,92 @@ void main();
   ).parts;
   assert.equal(sparts[1].output?.truncatedForStorage, true);
   assert.ok(String(sparts[1].output?.preview).length <= 1024);
+
+  // Postgres UTF-8 / JSONB safety (PR #1558 [4717350514]):
+  // 1. NUL bytes (\u0000) stripped; unpaired surrogates replaced with U+FFFD; valid emojis kept.
+  assert.equal(sanitizePgString("hello\u0000world"), "helloworld");
+  assert.equal(sanitizePgString("valid 🚀 emoji"), "valid 🚀 emoji");
+  assert.equal(
+    sanitizePgString("lone high \uD83D end"),
+    "lone high \uFFFD end",
+  );
+  assert.equal(sanitizePgString("lone low \uDE00 end"), "lone low \uFFFD end");
+  assert.equal(
+    sanitizePgString("rev \uDE00\uD83D end"),
+    "rev \uFFFD\uFFFD end",
+  );
+  assert.equal(
+    sanitizePgString("high-pair \uD83D\uD83D\uDE00"),
+    "high-pair \uFFFD😀",
+  );
+
+  // 2. Surrogate-safe slicing never splits an emoji across the 4096/1024 preview boundary.
+  const emojiAtBoundary = "a".repeat(4095) + "🚀" + "b".repeat(10);
+  const sliced = sliceSafeUtf16(emojiAtBoundary, 4096);
+  assert.equal(sliced.length, 4095);
+  assert.equal(sliced, "a".repeat(4095));
+  assert.equal(sanitizePgString(sliced), sliced, "no trailing lone surrogate");
+
+  // 3. sanitizeMessagesForPersistence sanitizes NUL + lone surrogates across user & assistant
+  //    messages, object keys, metadata, and oversized emoji-straddling tool output previews.
+  const payloadWithEmojiAtCut = {
+    // JSON.stringify({ x: "..." }) has '{"x":"' = 6 chars prefix; put 🚀 at index 4095..4096
+    x: "a".repeat(4095 - 6) + "🚀" + "z".repeat(300 * 1024),
+  };
+  const unsafeMessages = [
+    {
+      id: "u-nul\u0000",
+      role: "user",
+      metadata: { "bad\u0000key": "val\u0000\uD83D" },
+      parts: [{ type: "text", text: "query\u0000text \uDE00 🚀" }],
+    },
+    {
+      id: "a-nul",
+      role: "assistant",
+      parts: [
+        { type: "text", text: "result:\u0000ok" },
+        {
+          type: "tool-run_sql",
+          toolCallId: "tc-nul",
+          state: "output-available",
+          input: { sql: "SELECT '\u0000'" },
+          output: payloadWithEmojiAtCut,
+        },
+        {
+          type: "dynamic-tool",
+          toolName: "mcp_test",
+          toolCallId: "tc-dyn",
+          state: "output-available",
+          input: { q: "hi\u0000" },
+          output: { rows: [{ col: "bin\u0000data\uD83D" }] },
+        },
+      ],
+    },
+  ] as unknown as UIMessage[];
+  const cleanMsgs = sanitizeMessagesForPersistence(unsafeMessages);
+  const cleanJson = JSON.stringify(cleanMsgs);
+  assert.ok(!cleanJson.includes("\\u0000"), "no NUL bytes remain");
+  assert.ok(
+    !/\\u[dD][89aAbB][0-9a-fA-F]{2}(?!\\u[dD][cCdDeEfF][0-9a-fA-F]{2})/.test(
+      cleanJson,
+    ),
+    "no unpaired high surrogates remain",
+  );
+  assert.ok(
+    !/(?<!\\u[dD][89aAbB][0-9a-fA-F]{2})\\u[dD][cCdDeEfF][0-9a-fA-F]{2}/.test(
+      cleanJson,
+    ),
+    "no unpaired low surrogates remain",
+  );
+  assert.ok(cleanJson.includes("🚀"), "valid emoji preserved");
+  assert.deepEqual(
+    (cleanMsgs[0] as unknown as { metadata: Record<string, string> }).metadata,
+    { badkey: "val\uFFFD" },
+  );
+  // Reference preservation on clean input
+  const cleanObj = { a: "ok", nested: ["🚀", 123] };
+  assert.equal(sanitizePgJsonValue(cleanObj), cleanObj);
+
+  // eslint-disable-next-line no-console
   console.log("persistence sanitizer tests passed");
 }

@@ -7,7 +7,7 @@
  * Design notes:
  *  - Tool *definitions* come from the DB (`cachedTools`, persisted on
  *    connect/test/refresh), so starting a chat never blocks on MCP servers.
- *  - Tool *executions* open a short-lived client per call (connect → call →
+ *  - Tool *executions* open a short-lived client per call (connect -> call ->
  *    close). No pooling — every call is bound to exactly one workspace/user
  *    credential, so credentials can never bleed across tenants.
  *  - Risk tiers + per-user grants (per-tool or server-wide `*`) drive the
@@ -20,17 +20,16 @@ import { createMCPClient } from "@ai-sdk/mcp";
 import { dynamicTool, jsonSchema, type ToolSet } from "ai";
 import crypto from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { Types } from "mongoose";
+import type { Types } from "mongoose";
+import type { IMcpServer } from "../database/workspace-schema";
 import {
-  type IMcpCachedTool,
-  type IMcpServer,
-  type McpGrantDecision,
-  type McpToolRestriction,
   MCP_SERVER_WIDE_GRANT_TOOL,
-  McpConnectionConfig,
-  McpServer,
-  McpToolGrant,
-} from "../database/workspace-schema";
+  mcpRepo,
+  type IMcpCachedTool,
+  type McpGrantDecision,
+  type McpServerRecord,
+  type McpToolRestriction,
+} from "../repositories/mcp";
 import { getMcpPreset } from "../mcp/presets";
 import { decryptRecord } from "./crypto.service";
 import { assertPublicIp, SafeFetchError } from "./safe-fetch.service";
@@ -42,6 +41,9 @@ export type McpRiskTier = "read" | "write" | "destructive";
 
 /** How a tool execution was authorized (for audit logs + UI). */
 export type McpApprovalSource = "grant" | "manual" | "denied-by-grant";
+
+/** Accepts either canonical `McpServerRecord` or legacy Mongoose `IMcpServer` (tests). */
+export type McpServerLike = McpServerRecord | IMcpServer;
 
 const MCP_TOOL_PREFIX = "mcp";
 
@@ -74,7 +76,7 @@ export async function assertSafeMcpUrl(rawUrl: string): Promise<void> {
   assertPublicIp(address);
 }
 
-/** Deterministic tool-name prefix for a server (e.g. "Close CRM" → close_crm). */
+/** Deterministic tool-name prefix for a server (e.g. "Close CRM" -> close_crm). */
 export function mcpServerSlug(serverName: string): string {
   const slug = serverName
     .toLowerCase()
@@ -111,16 +113,9 @@ export function mcpPrefixedToolName(
 
 /**
  * Risk tier for a discovered tool.
- *
- * - The whole connection is read-tier when the server's writeScope is "read"
- *   (providers with scope headers, e.g. Close, also enforce this server-side).
- * - `readOnlyHint: true` marks a tool read-tier.
- * - `destructiveHint: true` marks it destructive-tier. Absent hints fall back
- *   to plain "write" so unannotated custom servers stay usable (their calls
- *   still require approval; the provider-side scope caps real capability).
  */
 export function mcpToolRiskTier(
-  server: Pick<IMcpServer, "writeScope">,
+  server: Pick<McpServerRecord, "writeScope">,
   tool: Pick<IMcpCachedTool, "annotations">,
 ): McpRiskTier {
   if (server.writeScope === "read") return "read";
@@ -131,14 +126,10 @@ export function mcpToolRiskTier(
 
 /**
  * Admin-set permission ceiling for a tool (Claude-connectors model):
- * explicit per-tool restriction, else a risk-aware default. Restrictions cap
- * what users can choose — a user can always pick something stricter.
- *
- * Destructive-tier tools default to "ask" (never always-allowable) unless an
- * admin explicitly relaxes that tool to "always" on this server.
+ * explicit per-tool restriction, else a risk-aware default.
  */
 export function mcpToolRestriction(
-  server: Pick<IMcpServer, "toolPolicy" | "writeScope">,
+  server: Pick<McpServerRecord, "toolPolicy" | "writeScope">,
   tool: Pick<IMcpCachedTool, "name" | "annotations">,
 ): McpToolRestriction {
   const explicit = server.toolPolicy?.restrictions?.[tool.name];
@@ -148,7 +139,9 @@ export function mcpToolRestriction(
 }
 
 /** Tools the server's restrictions expose to the agent (non-blocked). */
-export function mcpAllowedCachedTools(server: IMcpServer): IMcpCachedTool[] {
+export function mcpAllowedCachedTools(
+  server: Pick<McpServerRecord, "cachedTools" | "toolPolicy" | "writeScope">,
+): IMcpCachedTool[] {
   return server.cachedTools.filter(
     t => mcpToolRestriction(server, t) !== "block",
   );
@@ -160,15 +153,12 @@ export function mcpAllowedCachedTools(server: IMcpServer): IMcpCachedTool[] {
  * token from the connection's stored (auto-refreshed) tokens.
  */
 async function buildConnectionHeaders(
-  server: IMcpServer,
+  server: McpServerLike,
   encryptedHeaders: Record<string, string>,
   configUserId: string,
 ): Promise<Record<string, string>> {
   const headers = decryptRecord(encryptedHeaders ?? {});
   const preset = getMcpPreset(server.connectorType);
-  // Preset credential fields may declare a value prefix (e.g. GitHub's
-  // Authorization header wants "Bearer <PAT>" but the form asks for just the
-  // token) — apply it unless the user already included it.
   for (const field of preset.headerFields) {
     const value = headers[field.name];
     if (field.valuePrefix && value && !value.startsWith(field.valuePrefix)) {
@@ -177,8 +167,6 @@ async function buildConnectionHeaders(
   }
   if (preset.scopeHeader) {
     const scopeValue = preset.scopeHeader.scopeValues[server.writeScope];
-    // An empty value omits the header (e.g. GitHub's X-MCP-Readonly is only
-    // meaningful when set to "true").
     if (scopeValue) headers[preset.scopeHeader.name] = scopeValue;
   }
   if (server.authType === "oauth") {
@@ -201,7 +189,7 @@ export interface McpDiscoveredTool {
  * input schemas). Used by the test-connection / refresh-tools endpoints.
  */
 export async function discoverMcpTools(
-  server: IMcpServer,
+  server: McpServerLike,
   encryptedHeaders: Record<string, string>,
   configUserId = "",
 ): Promise<McpDiscoveredTool[]> {
@@ -230,10 +218,10 @@ export async function discoverMcpTools(
 
 /**
  * Execute one MCP tool call with a short-lived client bound to the resolved
- * credential. Connect → call → close; nothing is shared across calls.
+ * credential. Connect -> call -> close; nothing is shared across calls.
  */
 async function executeMcpToolCall(params: {
-  server: IMcpServer;
+  server: McpServerRecord;
   encryptedHeaders: Record<string, string>;
   configUserId: string;
   toolName: string;
@@ -268,20 +256,8 @@ async function executeMcpToolCall(params: {
   }
 }
 
-/**
- * Cap on the serialized size of one MCP tool result. MCP servers can return
- * arbitrarily large payloads (full record lists, documents); an uncapped
- * result would blow the model context in a single step. Mirrors what other
- * MCP hosts do (Claude Code / Cursor truncate large tool outputs).
- */
 const MCP_OUTPUT_MAX_CHARS = 16_000;
 
-/**
- * Normalize an MCP CallToolResult for the model: extract text blocks into a
- * plain string (instead of JSON-encoding the whole content-block envelope),
- * summarize non-text blocks, and truncate oversized output with an explicit
- * marker so the model knows data was elided.
- */
 export function normalizeMcpToolOutput(raw: unknown): unknown {
   let output: unknown = raw;
   const asRecord = raw as
@@ -332,23 +308,14 @@ export interface McpChatTools {
   catalog: McpToolCatalogInfo[];
 }
 
-/** Search/inventory metadata for one MCP tool (no schema — cards only). */
 export interface McpToolCatalogInfo {
-  /** Prefixed provider-facing name (`mcp_<server>_<tool>`). */
   name: string;
   serverId: string;
   serverName: string;
-  /** Full upstream description (the provider-facing one is dieted). */
   description: string;
   readOnly: boolean;
 }
 
-/**
- * Schema diet: MCP servers routinely ship 1–2k-token descriptions and
- * schemas. The provider-facing definition gets a truncated description and a
- * schema stripped of prose bloat; the full description stays available to
- * `search_tools` via the catalog, where it is actually useful.
- */
 const MCP_TOOL_DESCRIPTION_MAX_CHARS = 200;
 const MCP_SCHEMA_DESCRIPTION_MAX_CHARS = 160;
 
@@ -358,12 +325,6 @@ export function dietMcpDescription(description: string): string {
   return `${trimmed.slice(0, MCP_TOOL_DESCRIPTION_MAX_CHARS - 1)}…`;
 }
 
-/**
- * Deep-copy a JSON schema, truncating verbose nested `description` strings
- * and dropping documentation-only keys (`examples`, `$comment`) that cost
- * context without improving argument quality. Structural keywords are
- * untouched, so validation behavior is identical.
- */
 export function dietMcpInputSchema(
   schema: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -390,49 +351,44 @@ export function dietMcpInputSchema(
 }
 
 interface ResolvedMcpServer {
-  server: IMcpServer;
+  server: McpServerRecord;
   encryptedHeaders: Record<string, string>;
   /** Which connection config the credential belongs to ("" = workspace). */
   configUserId: string;
 }
 
-/**
- * Resolve the active MCP servers usable by this user in this workspace:
- * workspace-credential servers with a shared config, plus user-credential
- * servers where this user has connected. Servers without a usable credential
- * are skipped (their tools never reach the model).
- */
 async function resolveActiveServers(
   workspaceId: string,
   userId: string | undefined,
 ): Promise<ResolvedMcpServer[]> {
-  const servers = await McpServer.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-    isActive: true,
-    status: "connected",
-  }).lean<IMcpServer[]>();
+  const servers = await mcpRepo.listActiveConnectedServers(workspaceId);
   if (servers.length === 0) return [];
 
-  const configs = await McpConnectionConfig.find({
-    serverId: { $in: servers.map(s => s._id) },
-  }).lean();
+  const configs = await mcpRepo.listConnectionConfigsForUser(
+    workspaceId,
+    servers.map(s => s.id),
+    userId ?? null,
+  );
 
   const resolved: ResolvedMcpServer[] = [];
   for (const server of servers) {
-    const wantUserId = server.authPerformer === "user" ? (userId ?? "") : "";
+    const wantUserId =
+      server.authPerformer === "user" ? (userId ?? null) : null;
     if (server.authPerformer === "user" && !userId) continue;
     const config = configs.find(
       c =>
-        c.serverId.toString() === server._id.toString() &&
-        c.userId === wantUserId,
+        c.serverId === server.id &&
+        (server.authPerformer === "user"
+          ? c.userId !== null
+          : c.userId === null),
     );
     if (!config && server.authType !== "none") continue;
     // OAuth connections are only usable once tokens exist.
-    if (server.authType === "oauth" && !config?.oauthTokens) continue;
+    if (server.authType === "oauth" && !config?.oauthTokensEncrypted) continue;
     resolved.push({
-      server: server as IMcpServer,
-      encryptedHeaders: (config?.headers ?? {}) as Record<string, string>,
-      configUserId: wantUserId,
+      server,
+      encryptedHeaders: config?.headersEncrypted ?? {},
+      configUserId: wantUserId ?? "",
     });
   }
   return resolved;
@@ -448,15 +404,17 @@ export async function resolveMcpToolGrant(params: {
   serverId: Types.ObjectId | string;
   userId: string | undefined;
   toolName: string;
+  workspaceId?: string;
 }): Promise<{ decision: McpGrantDecision; toolName: string } | null> {
-  const { serverId, userId, toolName } = params;
+  const { serverId, userId, toolName, workspaceId } = params;
   if (!userId) return null;
 
-  const grants = await McpToolGrant.find({
-    serverId,
+  const grants = await mcpRepo.findToolGrantsForResolution({
+    serverId: typeof serverId === "string" ? serverId : serverId.toString(),
     userId,
-    toolName: { $in: [toolName, MCP_SERVER_WIDE_GRANT_TOOL] },
-  }).lean();
+    toolName,
+    workspaceId,
+  });
 
   const toolGrant = grants.find(g => g.toolName === toolName);
   if (toolGrant) {
@@ -474,31 +432,8 @@ export async function resolveMcpToolGrant(params: {
   return null;
 }
 
-/**
- * Approval decision for one tool call, following the Claude-connectors
- * model: the admin restriction is a *ceiling*, and the user's grant
- * (per-tool or server-wide `*`) picks a setting up to that ceiling.
- *
- * Resolution:
- *  - blocked tools never get here (filtered at build time)
- *  - user chose Block (always_deny, tool or `*`) → no prompt; execute() refuses
- *  - ceiling "ask" → always prompt (Always allow grants can't apply)
- *  - read-tier tools with an "always" ceiling → auto-run (no grant needed)
- *  - user chose Always allow (tool or `*`) → auto-run
- *  - no choice yet on a write tool → prompt
- */
-/**
- * Is a "read" tier something the provider will hold us to, or just a label?
- *
- * `readOnlyHint` comes from the MCP server's own tool annotations, so it is
- * the server's claim about its own tool. `writeScope` is ours: it is picked in
- * the add-server form, defaults to "read", and only becomes a real constraint
- * when the preset sends a scope header the provider enforces (Close's
- * Close-API-Key scope, GitHub's X-MCP-Readonly). Without one, a connection
- * labelled "read" can still call whatever the credential allows.
- */
 export function mcpReadTierIsEnforced(
-  server: Pick<IMcpServer, "writeScope" | "connectorType">,
+  server: Pick<McpServerRecord, "writeScope" | "connectorType">,
   tool: Pick<IMcpCachedTool, "annotations">,
 ): boolean {
   if (tool.annotations?.readOnlyHint === true) return true;
@@ -506,33 +441,23 @@ export function mcpReadTierIsEnforced(
 }
 
 async function mcpNeedsApproval(params: {
-  server: IMcpServer;
+  server: McpServerRecord;
   tool: IMcpCachedTool;
   userId: string | undefined;
 }): Promise<boolean> {
   const { server, tool, userId } = params;
   const ceiling = mcpToolRestriction(server, tool);
   const grant = await resolveMcpToolGrant({
-    serverId: server._id,
+    serverId: server.id,
+    workspaceId: server.workspaceId,
     userId,
     toolName: tool.name,
   });
 
   if (grant?.decision === "always_deny") {
-    // No approval prompt: execute() returns the denial to the model.
     return false;
   }
   if (ceiling === "ask") return true;
-  // Read tools with an open ceiling don't need a grant — matches the product
-  // docs and stops Close-style connectors from prompting on every search.
-  //
-  // But only when the read-ness is TRUSTWORTHY. `writeScope` is a label chosen
-  // in the add-server form, it defaults to "read", and it reaches the provider
-  // only for presets that send a scope header (Close, GitHub). On a custom or
-  // Slack connection the same label is unenforced — so treating it alone as
-  // "read" would silently auto-run every tool on a default-configured server,
-  // including ones annotated destructive. A tool the server itself annotates
-  // readOnlyHint is trustworthy on any connection.
   if (
     mcpToolRiskTier(server, tool) === "read" &&
     mcpReadTierIsEnforced(server, tool)
@@ -542,10 +467,6 @@ async function mcpNeedsApproval(params: {
   return grant?.decision !== "always_allow";
 }
 
-/**
- * Build the MCP portion of the agent toolset for one chat request, from
- * cached tool definitions (no MCP round-trips here).
- */
 export async function buildMcpToolsForChat(params: {
   workspaceId: string;
   userId?: string;
@@ -578,7 +499,7 @@ export async function buildMcpToolsForChat(params: {
   for (const { server, encryptedHeaders, configUserId } of resolved) {
     for (const cachedTool of mcpAllowedCachedTools(server)) {
       const prefixedName = mcpPrefixedToolName(server.name, cachedTool.name);
-      if (tools[prefixedName]) continue; // name collision: first wins
+      if (tools[prefixedName]) continue;
       const riskTier = mcpToolRiskTier(server, cachedTool);
       const fullDescription = cachedTool.description ?? cachedTool.name;
 
@@ -599,12 +520,10 @@ export async function buildMcpToolsForChat(params: {
             userId,
           }),
         execute: async input => {
-          // Re-check the admin ceiling at execution time: an admin may have
-          // blocked the tool after this chat's toolset was built (or between
-          // an approval and its continuation).
-          const freshServer = await McpServer.findById(server._id)
-            .select("toolPolicy writeScope status isActive")
-            .lean();
+          const freshServer = await mcpRepo.findServerById(
+            server.id,
+            workspaceId,
+          );
           if (
             !freshServer ||
             !freshServer.isActive ||
@@ -624,7 +543,8 @@ export async function buildMcpToolsForChat(params: {
           }
 
           const grant = await resolveMcpToolGrant({
-            serverId: server._id,
+            serverId: server.id,
+            workspaceId,
             userId,
             toolName: cachedTool.name,
           });
@@ -633,7 +553,7 @@ export async function buildMcpToolsForChat(params: {
             logger.info("MCP tool call denied by user grant", {
               workspaceId,
               userId,
-              serverId: server._id.toString(),
+              serverId: server.id,
               toolName: cachedTool.name,
               grantToolName: grant.toolName,
             });
@@ -659,29 +579,29 @@ export async function buildMcpToolsForChat(params: {
             logger.info("MCP tool call executed", {
               workspaceId,
               userId,
-              serverId: server._id.toString(),
+              serverId: server.id,
               serverName: server.name,
               toolName: cachedTool.name,
               riskTier,
               approvalSource,
               durationMs: Date.now() - startedAt,
             });
-            if (grant) {
-              void McpToolGrant.updateOne(
-                {
-                  serverId: server._id,
+            if (grant && userId) {
+              void mcpRepo
+                .touchToolGrantLastUsed({
+                  workspaceId,
+                  serverId: server.id,
                   userId,
                   toolName: grant.toolName,
-                },
-                { $set: { lastUsedAt: new Date() } },
-              ).catch(() => undefined);
+                })
+                .catch(() => undefined);
             }
             return normalizeMcpToolOutput(output);
           } catch (error) {
             logger.warn("MCP tool call failed", {
               error,
               workspaceId,
-              serverId: server._id.toString(),
+              serverId: server.id,
               toolName: cachedTool.name,
             });
             return {
@@ -697,7 +617,7 @@ export async function buildMcpToolsForChat(params: {
       if (riskTier === "read") readOnlyToolNames.push(prefixedName);
       catalog.push({
         name: prefixedName,
-        serverId: server._id.toString(),
+        serverId: server.id,
         serverName: server.name,
         description: fullDescription,
         readOnly: riskTier === "read",
@@ -708,23 +628,17 @@ export async function buildMcpToolsForChat(params: {
   return { tools, readOnlyToolNames, allToolNames, catalog };
 }
 
-/**
- * Metadata the chat UI needs to render approval cards and grant buttons for
- * every exposed MCP tool, keyed by prefixed tool name.
- */
 export interface McpToolUiInfo {
   prefixedName: string;
   serverId: string;
   serverName: string;
-  /** Preset logo or the server URL's favicon, for the approval card. */
   serverIcon: string | null;
   toolName: string;
   riskTier: McpRiskTier;
-  /** False when the admin ceiling for this tool is not "always". */
   canAlwaysAllow: boolean;
 }
 
-function mcpServerIconUrl(server: IMcpServer): string | null {
+function mcpServerIconUrl(server: McpServerRecord): string | null {
   const preset = getMcpPreset(server.connectorType);
   if (preset.icon) return preset.icon;
   try {
@@ -746,12 +660,11 @@ export async function listMcpToolUiInfo(
       const riskTier = mcpToolRiskTier(server, cachedTool);
       infos.push({
         prefixedName: mcpPrefixedToolName(server.name, cachedTool.name),
-        serverId: server._id.toString(),
+        serverId: server.id,
         serverName: server.name,
         serverIcon: mcpServerIconUrl(server),
         toolName: cachedTool.name,
         riskTier,
-        // "Always allow" is offered only when the admin ceiling permits it.
         canAlwaysAllow: mcpToolRestriction(server, cachedTool) === "always",
       });
     }

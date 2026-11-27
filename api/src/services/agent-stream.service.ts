@@ -3,15 +3,15 @@
  * message assembly, and the resume/stop endpoints' logic. Extracted from
  * agent.routes.ts so the route file stays a thin spec + handler layer.
  */
-import { ObjectId } from "mongodb";
 import {
   readUIMessageStream,
   type UIMessage,
   type UIMessageChunk,
   UI_MESSAGE_STREAM_HEADERS,
 } from "ai";
+import { parseEntityId } from "../database/pg/id-codec";
+import { chatRepo } from "../repositories/chat";
 import { saveTurnCheckpoint } from "./agent-thread.service";
-import { Chat } from "../database/workspace-schema";
 import { workspaceService } from "./workspace.service";
 import {
   getResumableStreamContext,
@@ -231,16 +231,16 @@ export async function authorizeChatStreamAccess(
   const user = c.get("user");
   const apiKeyWorkspace = c.get("workspace");
 
-  if (!ObjectId.isValid(chatId)) {
+  if (!parseEntityId(chatId)) {
     return { ok: false, status: 400 };
   }
 
-  const chat = await Chat.findById(chatId).select("workspaceId activeStreamId");
+  const chat = await chatRepo.getStreamState(chatId);
   if (!chat) {
     return { ok: false, status: 404 };
   }
 
-  const chatWorkspaceId = chat.workspaceId.toString();
+  const chatWorkspaceId = chat.workspaceId;
   if (apiKeyWorkspace) {
     if (apiKeyWorkspace._id.toString() !== chatWorkspaceId) {
       return { ok: false, status: 403 };
@@ -320,12 +320,11 @@ export async function resumeChatStream(
       reason: "stale-pointer",
     });
     // Clear it so future mounts short-circuit.
-    void Chat.updateOne(
-      { _id: new ObjectId(chatId), activeStreamId },
-      { $set: { activeStreamId: null } },
-    ).catch(error =>
-      logger.warn("Failed to clear stale activeStreamId", { error, chatId }),
-    );
+    void chatRepo
+      .clearActiveStreamIfMatch(access.chat.workspaceId, chatId, activeStreamId)
+      .catch(error =>
+        logger.warn("Failed to clear stale activeStreamId", { error, chatId }),
+      );
     return { kind: "no-content", reason: "stale-pointer" };
   }
 
@@ -374,10 +373,7 @@ export async function stopChatGeneration(
   // Clear the pointer immediately so reconnecting clients don't reattach to
   // the aborted stream. Finalization also clears it, but only on the
   // instance that owns the generation.
-  await Chat.updateOne(
-    { _id: new ObjectId(chatId) },
-    { $set: { activeStreamId: null } },
-  );
+  await chatRepo.clearActiveStream(access.chat.workspaceId, chatId);
   publishRealtimeEvent(access.chat.workspaceId, {
     type: "chat.activity",
     chatId,
@@ -439,10 +435,11 @@ const CHECKPOINT_INTERVAL_MS = 2_000;
  */
 export async function trackTurnCheckpoints(input: {
   chatId: string;
+  workspaceId?: string;
   streamId: string;
   sseStream: ReadableStream<string | Uint8Array>;
 }): Promise<void> {
-  const { chatId, streamId, sseStream } = input;
+  const { chatId, workspaceId, streamId, sseStream } = input;
   const chunks = sseStream.pipeThrough(
     createSseChunkDecoder(),
   ) as ReadableStream<UIMessageChunk>;
@@ -454,13 +451,15 @@ export async function trackTurnCheckpoints(input: {
       const now = Date.now();
       if (now - lastWrite >= CHECKPOINT_INTERVAL_MS) {
         lastWrite = now;
-        await saveTurnCheckpoint(chatId, streamId, snapshot);
+        await saveTurnCheckpoint(chatId, streamId, snapshot, workspaceId);
         pending = null;
       }
     }
     // One final checkpoint so a crash between the last interval and the
     // finish loses nothing; finalization's $unset supersedes it shortly.
-    if (pending) await saveTurnCheckpoint(chatId, streamId, pending);
+    if (pending) {
+      await saveTurnCheckpoint(chatId, streamId, pending, workspaceId);
+    }
   } catch (error) {
     logger.warn("Turn checkpoint tracking ended with an error", {
       chatId,

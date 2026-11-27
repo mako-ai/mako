@@ -12,15 +12,15 @@ import {
   streamText,
   type UIMessage,
 } from "ai";
-import { Types } from "mongoose";
 
 import { getModel } from "../agent-lib/ai-gateway";
 import { getDefaultModelId } from "../agent-lib/ai-models";
 import { withToolOutputBackstop } from "../agent-lib/tools/shared/output-cap";
 import { buildUnifiedModeRuntime } from "../agents/modes/runtime";
 import { checkBillingLimits } from "../billing/usage-limit.middleware";
+import { generateObjectIdHex } from "../database/pg/id-codec";
 import { type IWorkflowRunRef } from "../database/schema";
-import { Chat } from "../database/workspace-schema";
+import { chatRepo } from "../repositories/chat";
 import { saveChat } from "../services/agent-thread.service";
 import { trackUsage } from "../services/llm-usage.service";
 import { HatchetError } from "./hatchet";
@@ -95,7 +95,7 @@ export async function runStepAgent(params: {
   let transcript = messages;
   let text = "";
   let failure: unknown;
-  const chatId = new Types.ObjectId();
+  const chatId = generateObjectIdHex();
   try {
     const stream = result.toUIMessageStream({
       originalMessages: messages,
@@ -110,16 +110,16 @@ export async function runStepAgent(params: {
   } catch (error) {
     failure = error;
   } finally {
-    await Chat.create({
-      _id: chatId,
-      workspaceId: new Types.ObjectId(workspaceId),
+    await chatRepo.create({
+      id: chatId,
+      workspaceId,
       createdBy: userId,
       title: goal.slice(0, 80),
       titleGenerated: true,
       source: "workflow",
       messages: [],
     });
-    await saveChat(chatId.toString(), workspaceId, userId, transcript);
+    await saveChat(chatId, workspaceId, userId, transcript);
     void trackUsage({
       workspaceId,
       userId,
@@ -136,5 +136,5 @@ export async function runStepAgent(params: {
     const why = failure instanceof Error ? failure.message : String(failure);
     throw new HatchetError(`The agent did not finish: ${why}`, 502);
   }
-  return { text, toolCalls, chatId: chatId.toString() };
+  return { text, toolCalls, chatId };
 }

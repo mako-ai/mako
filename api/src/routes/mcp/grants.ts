@@ -1,6 +1,5 @@
 /** Tool approval: the chat cards' tool info and each member's own grants. */
 import { createRoute, z } from "@hono/zod-openapi";
-import { Types } from "mongoose";
 import { loggers } from "../../logging";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
 import {
@@ -8,10 +7,8 @@ import {
   OPEN_RESPONSES,
   createRouter,
 } from "../../openapi/core";
-import {
-  MCP_SERVER_WIDE_GRANT_TOOL,
-  McpToolGrant,
-} from "../../database/workspace-schema";
+import { parseEntityId } from "../../database/pg/id-codec";
+import { MCP_SERVER_WIDE_GRANT_TOOL, mcpRepo } from "../../repositories/mcp";
 import {
   listMcpToolUiInfo,
   mcpToolRestriction,
@@ -37,7 +34,7 @@ mcpGrantRoutes.openapi(
   async c => {
     try {
       const workspaceId = c.req.param("workspaceId");
-      if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+      if (!workspaceId || !parseEntityId(workspaceId)) {
         return fail(c, 400, "Valid workspace ID is required");
       }
       const user = (c as AuthenticatedContext).get("user");
@@ -85,14 +82,15 @@ mcpGrantRoutes.openapi(
       if (!server) {
         return fail(c, 404, "Server not found");
       }
-      const grants = await McpToolGrant.find({
-        serverId: server._id,
-        userId: user.id,
-      }).lean();
+      const grants = await mcpRepo.listToolGrantsForUser(
+        server.workspaceId,
+        server.id,
+        user.id,
+      );
       return c.json({
         success: true,
         grants: grants.map(g => ({
-          id: g._id.toString(),
+          id: g.id,
           toolName: g.toolName,
           decision: g.decision,
           lastUsedAt: g.lastUsedAt ?? null,
@@ -179,14 +177,16 @@ mcpGrantRoutes.openapi(
         }
       }
 
-      await McpToolGrant.updateOne(
-        { serverId: server._id, userId: user.id, toolName },
-        { $set: { workspaceId: server.workspaceId, decision } },
-        { upsert: true },
-      );
+      await mcpRepo.upsertToolGrant({
+        workspaceId: server.workspaceId,
+        serverId: server.id,
+        userId: user.id,
+        toolName,
+        decision,
+      });
       logger.info("MCP tool grant saved", {
         workspaceId,
-        serverId: server._id.toString(),
+        serverId: server.id,
         toolName,
         decision,
         serverWide: isServerWide,
@@ -230,15 +230,16 @@ mcpGrantRoutes.openapi(
       if (!server) {
         return fail(c, 404, "Server not found");
       }
-      if (!Types.ObjectId.isValid(grantId)) {
+      if (!parseEntityId(grantId)) {
         return fail(c, 404, "Grant not found");
       }
-      const result = await McpToolGrant.deleteOne({
-        _id: new Types.ObjectId(grantId),
-        serverId: server._id,
-        userId: user.id,
-      });
-      if (result.deletedCount === 0) {
+      const deleted = await mcpRepo.deleteToolGrantById(
+        server.workspaceId,
+        server.id,
+        grantId,
+        user.id,
+      );
+      if (!deleted) {
         return fail(c, 404, "Grant not found");
       }
       return c.json({ success: true });

@@ -27,7 +27,10 @@ import {
   parseEntityId,
 } from "../../database/pg/id-codec";
 import { users } from "../../database/pg/schema/auth";
-import { migrationDomainState } from "../../database/pg/schema/control-plane";
+import {
+  migrationDomainState,
+  migrationTombstones,
+} from "../../database/pg/schema/control-plane";
 import { loggers } from "../../logging";
 import {
   isMigrationForceMongoOnly,
@@ -489,6 +492,41 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
     }
   }
 
+  /**
+   * Clear any prior tombstone for an entity ID when it is created or upserted
+   * (e.g. deterministic SHA-1 IDs `sha1("consoles:<ws>:<path>")`, folders,
+   * versions, and notebooks re-created after a workspace repo disconnect/reconnect).
+   * Strictly a no-op in `mongo_only` mode (zero PG calls).
+   */
+  private async clearTombstoneIfActive(
+    workspaceId: string,
+    tableName: string,
+    entityId: string,
+  ): Promise<void> {
+    if (!entityId || this.isForceMongoOnly() || !this.hasPg()) return;
+    const mode = (
+      await this.router.getState(CONSOLES_CHARTS_DOMAIN, workspaceId)
+    ).mode;
+    if (mode === "mongo_only") return;
+    try {
+      await this.getDb()
+        .delete(migrationTombstones)
+        .where(
+          and(
+            eq(migrationTombstones.tableName, tableName),
+            eq(migrationTombstones.entityId, toPgEntityId(entityId)),
+          ),
+        );
+    } catch (error) {
+      logger.warn("Failed to clear migration tombstone in Postgres", {
+        workspaceId,
+        tableName,
+        entityId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private async hasAnyPgReadWorkspace(): Promise<boolean> {
     if (this.isForceMongoOnly() || !this.hasPg()) return false;
     try {
@@ -671,13 +709,13 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
     );
   }
 
-  createConsoleFolder(
+  async createConsoleFolder(
     input: CreateConsoleFolderInput,
   ): Promise<ConsoleFolderRecord> {
     const id = input.id ?? newDualId().oid;
     const createdAt = input.createdAt ?? new Date();
     const fullInput: CreateConsoleFolderInput = { ...input, id, createdAt };
-    return this.executeTrackedWrite(
+    const created = await this.executeTrackedWrite(
       {
         domain: CONSOLES_CHARTS_DOMAIN,
         workspaceId: input.workspaceId,
@@ -701,6 +739,12 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
         pg: () => this.pg.createConsoleFolder(fullInput),
       },
     );
+    await this.clearTombstoneIfActive(
+      input.workspaceId,
+      "console_folders",
+      created.id,
+    );
+    return created;
   }
 
   updateConsoleFolder(
@@ -1000,7 +1044,7 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
     return [...merged.values()];
   }
 
-  createConsole(input: CreateConsoleInput): Promise<SavedConsoleRecord> {
+  async createConsole(input: CreateConsoleInput): Promise<SavedConsoleRecord> {
     const id = input.id ?? newDualId().oid;
     const now = new Date();
     const fullInput: CreateConsoleInput = {
@@ -1009,7 +1053,8 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
       createdAt: input.createdAt ?? now,
       updatedAt: input.updatedAt ?? now,
     };
-    return this.executeTrackedWrite(
+    let primaryRecord: SavedConsoleRecord | null = null;
+    const created = await this.executeTrackedWrite(
       {
         domain: CONSOLES_CHARTS_DOMAIN,
         workspaceId: input.workspaceId,
@@ -1023,13 +1068,78 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
         },
       },
       {
-        mongo: async pgPrimary =>
-          this.mongo.createConsole(
-            await this.mapConsoleCreateForMongo(fullInput, pgPrimary),
-          ),
-        pg: () => this.pg.createConsole(fullInput),
+        mongo: async pgPrimary => {
+          const mappedInput = await this.mapConsoleCreateForMongo(
+            fullInput,
+            pgPrimary,
+          );
+          try {
+            const res = await this.mongo.createConsole(mappedInput);
+            if (!primaryRecord) primaryRecord = res;
+            return res;
+          } catch (error) {
+            if (
+              pgPrimary &&
+              primaryRecord &&
+              (error as { code?: number }).code === 11000
+            ) {
+              const legacyMap = await this.resolveMongoUserIdMap([
+                primaryRecord.createdBy,
+                primaryRecord.owner_id,
+                primaryRecord.lastRun?.runBy,
+                ...primaryRecord.sharedWith.flatMap(s => [s.userId, s.addedBy]),
+              ]);
+              const mongoRec: SavedConsoleRecord = {
+                ...primaryRecord,
+                createdBy: this.mapUserIdForMongo(
+                  primaryRecord.createdBy,
+                  legacyMap,
+                ),
+                owner_id: this.mapUserIdForMongo(
+                  primaryRecord.owner_id,
+                  legacyMap,
+                ),
+                sharedWith:
+                  this.mapShareEntriesForMongo(
+                    primaryRecord.sharedWith,
+                    legacyMap,
+                  ) ?? primaryRecord.sharedWith,
+                lastRun:
+                  this.mapLastRunForMongo(primaryRecord.lastRun, legacyMap) ??
+                  undefined,
+              };
+              await this.mongo.upsertConsole(mongoRec);
+              return primaryRecord;
+            }
+            throw error;
+          }
+        },
+        pg: async () => {
+          try {
+            const res = await this.pg.createConsole(fullInput);
+            if (!primaryRecord) primaryRecord = res;
+            return res;
+          } catch (error) {
+            const code =
+              (error as { code?: unknown; cause?: { code?: unknown } }).code ??
+              (error as { cause?: { code?: unknown } }).cause?.code;
+            if (primaryRecord && code === "23505") {
+              await this.pg.upsertConsole(primaryRecord, {
+                ignoreUpdatedAtGuard: true,
+              });
+              return primaryRecord;
+            }
+            throw error;
+          }
+        },
       },
     );
+    await this.clearTombstoneIfActive(
+      input.workspaceId,
+      "saved_consoles",
+      created.id,
+    );
+    return created;
   }
 
   updateConsole(
@@ -1108,7 +1218,7 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
     );
   }
 
-  guardedSaveConsole(
+  async guardedSaveConsole(
     input: GuardedSaveConsoleInput,
   ): Promise<SavedConsoleRecord | null> {
     const now = input.set.updatedAt ?? new Date();
@@ -1127,7 +1237,7 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
           }
         : {}),
     };
-    return this.executeGatedWrite(
+    const saved = await this.executeGatedWrite(
       {
         domain: CONSOLES_CHARTS_DOMAIN,
         workspaceId: input.workspaceId,
@@ -1228,6 +1338,14 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
       res => res !== null,
       null,
     );
+    if (saved) {
+      await this.clearTombstoneIfActive(
+        input.workspaceId,
+        "saved_consoles",
+        saved.id,
+      );
+    }
+    return saved;
   }
 
   bumpConsoleDraftRevision(
@@ -1785,7 +1903,7 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
     );
   }
 
-  createEntityVersion(
+  async createEntityVersion(
     input: CreateEntityVersionInput,
   ): Promise<EntityVersionRecord> {
     let mintedId = input.id ?? newDualId().oid;
@@ -1798,7 +1916,7 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
       workspaceId: input.workspaceId,
       entityId: input.entityId,
     };
-    return this.executeTrackedWrite(
+    const created = await this.executeTrackedWrite(
       {
         domain: CONSOLES_CHARTS_DOMAIN,
         workspaceId: input.workspaceId,
@@ -1838,6 +1956,12 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
         },
       },
     );
+    await this.clearTombstoneIfActive(
+      input.workspaceId,
+      "entity_versions",
+      created.id,
+    );
+    return created;
   }
 
   async listEntityVersions(
@@ -2041,13 +2165,13 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
     );
   }
 
-  createNotebookFolder(
+  async createNotebookFolder(
     input: CreateNotebookFolderInput,
   ): Promise<NotebookFolderRecord> {
     const id = input.id ?? newDualId().oid;
     const createdAt = input.createdAt ?? new Date();
     const fullInput: CreateNotebookFolderInput = { ...input, id, createdAt };
-    return this.executeTrackedWrite(
+    const created = await this.executeTrackedWrite(
       {
         domain: CONSOLES_CHARTS_DOMAIN,
         workspaceId: input.workspaceId,
@@ -2071,6 +2195,12 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
         pg: () => this.pg.createNotebookFolder(fullInput),
       },
     );
+    await this.clearTombstoneIfActive(
+      input.workspaceId,
+      "notebook_folders",
+      created.id,
+    );
+    return created;
   }
 
   updateNotebookFolder(
@@ -2265,13 +2395,13 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
     );
   }
 
-  createNotebookIndex(
+  async createNotebookIndex(
     input: CreateNotebookIndexInput,
   ): Promise<NotebookIndexRecord> {
     const id = input.id ?? newDualId().oid;
     const updatedAt = input.updatedAt ?? new Date();
     const fullInput: CreateNotebookIndexInput = { ...input, id, updatedAt };
-    return this.executeTrackedWrite(
+    const created = await this.executeTrackedWrite(
       {
         domain: CONSOLES_CHARTS_DOMAIN,
         workspaceId: input.workspaceId,
@@ -2305,6 +2435,12 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
         pg: () => this.pg.createNotebookIndex(fullInput),
       },
     );
+    await this.clearTombstoneIfActive(
+      input.workspaceId,
+      "notebook_indexes",
+      created.id,
+    );
+    return created;
   }
 
   updateNotebookIndex(
@@ -2916,5 +3052,64 @@ export class DualConsolesChartsRepository implements ConsolesChartsRepository {
         shadowOptions: CONSOLES_CHARTS_SHADOW_OPTIONS,
       },
     );
+  }
+
+  async purgeWorkspaceContentIndex(workspaceId: string): Promise<void> {
+    if (!isValidWorkspaceId(workspaceId)) return;
+    let deletedByTable: {
+      saved_consoles: string[];
+      console_folders: string[];
+      entity_versions: string[];
+      notebook_indexes: string[];
+      notebook_folders: string[];
+    } | null = null;
+    const retryPayload: Record<string, unknown> = {
+      table: "saved_consoles",
+      action: "purge_workspace_index",
+      workspaceId,
+    };
+    await this.router.executeWrite(
+      {
+        domain: CONSOLES_CHARTS_DOMAIN,
+        workspaceId,
+        operation: "purgeWorkspaceContentIndex",
+        entityId: workspaceId,
+        retryPayload,
+      },
+      {
+        mongo: async () => {
+          const ids =
+            await this.mongo.purgeWorkspaceContentIndexReturningIds(
+              workspaceId,
+            );
+          if (!deletedByTable) {
+            deletedByTable = ids;
+            retryPayload.deletedByTable = ids;
+          }
+        },
+        pg: async () => {
+          const ids =
+            await this.pg.purgeWorkspaceContentIndexReturningIds(workspaceId);
+          if (!deletedByTable) {
+            deletedByTable = ids;
+            retryPayload.deletedByTable = ids;
+          }
+        },
+      },
+    );
+    if (deletedByTable) {
+      const byTable = deletedByTable as {
+        saved_consoles: string[];
+        console_folders: string[];
+        entity_versions: string[];
+        notebook_indexes: string[];
+        notebook_folders: string[];
+      };
+      for (const [tableName, ids] of Object.entries(byTable)) {
+        if (ids.length > 0) {
+          await this.recordTombstonesIfDualWrite(workspaceId, tableName, ids);
+        }
+      }
+    }
   }
 }

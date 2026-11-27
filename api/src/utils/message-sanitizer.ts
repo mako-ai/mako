@@ -201,8 +201,7 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
 
       // For tool parts, only keep those with complete states
       const state = (part as Record<string, unknown>).state as
-        | string
-        | undefined;
+        string | undefined;
 
       // Match AI SDK UIToolInvocation terminal states (see convert-to-model-messages.ts).
       // `approval-responded` is deliberately kept: an approved-but-unexecuted
@@ -233,15 +232,123 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
 }
 
 /**
- * Shrink assistant TOOL outputs before persistence (§13.25). Found on prod:
- * an app_browse-heavy turn carries screenshots as base64 inside tool
- * outputs; externalizeChatAttachments only covers user image `file` parts,
- * so the stored messages array blew past MongoDB's 16 MB BSON limit and the
- * WHOLE save threw — caught by a log-only catch, the entire turn vanished
- * on reload while the agent's work (commits, publishes) survived. The
- * screenshot's post-turn value is nil (the model already saw it), so it is
- * dropped here; any other pathologically large output is truncated with a
- * marker rather than sinking the save.
+ * Matches NUL bytes (`\u0000`) and UTF-16 surrogates (`\uD800`–`\uDFFF`) so
+ * common clean strings skip allocation on the fast path.
+ */
+// eslint-disable-next-line no-control-regex
+const PG_UNSAFE_UNICODE_RE = /[\u0000\uD800-\uDFFF]/;
+
+/**
+ * Strip NUL bytes (`\u0000`) and replace unpaired UTF-16 surrogates with
+ * U+FFFD while preserving valid surrogate pairs (emojis / astral plane)
+ * verbatim. Prevents Postgres `22021` (text) and `22P05` (jsonb) errors.
+ */
+export function sanitizePgString(str: string): string {
+  if (!PG_UNSAFE_UNICODE_RE.test(str)) return str;
+  let out = "";
+  let dirty = false;
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code === 0) {
+      dirty = true;
+      continue;
+    }
+    if (code >= 0xd800 && code <= 0xdbff) {
+      if (i + 1 < str.length) {
+        const next = str.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          out += str[i] + str[i + 1];
+          i += 1;
+          continue;
+        }
+      }
+      dirty = true;
+      out += "\uFFFD";
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      dirty = true;
+      out += "\uFFFD";
+      continue;
+    }
+    out += str[i];
+  }
+  return dirty ? out : str;
+}
+
+/**
+ * Truncate a UTF-16 string to at most `maxLen` code units without splitting a
+ * valid surrogate pair in half (which would create an unpaired high surrogate
+ * rejected by Postgres `jsonb`).
+ */
+export function sliceSafeUtf16(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str;
+  if (maxLen <= 0) return "";
+  let end = maxLen;
+  const lastCode = str.charCodeAt(end - 1);
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+    end -= 1;
+  }
+  return str.slice(0, end);
+}
+
+/**
+ * Recursively sanitize all strings (values and plain-object keys) inside a
+ * JSON-serializable structure for Postgres `text`/`jsonb` safety. Returns the
+ * original reference unchanged when nothing inside needed sanitization.
+ */
+export function sanitizePgJsonValue<T>(value: T): T {
+  if (typeof value === "string") {
+    return sanitizePgString(value) as T;
+  }
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  if (value instanceof Date || value instanceof Uint8Array) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    let changed = false;
+    const out = new Array<unknown>(value.length);
+    for (let i = 0; i < value.length; i++) {
+      const next = sanitizePgJsonValue(value[i]);
+      if (next !== value[i]) changed = true;
+      out[i] = next;
+    }
+    return (changed ? out : value) as T;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    return value;
+  }
+  const rec = value as Record<string, unknown>;
+  const keys = Object.keys(rec);
+  let changed = false;
+  const out: Record<string, unknown> = {};
+  for (const key of keys) {
+    const cleanKey = sanitizePgString(key);
+    const val = rec[key];
+    const cleanVal = sanitizePgJsonValue(val);
+    if (cleanKey !== key || cleanVal !== val) {
+      changed = true;
+    }
+    out[cleanKey] = cleanVal;
+  }
+  return (changed ? out : value) as T;
+}
+
+/**
+ * Shrink assistant TOOL outputs before persistence (§13.25) and strip
+ * Postgres-illegal NUL bytes (`\u0000`) / unpaired UTF-16 surrogates across
+ * all message parts and metadata. Found on prod: an app_browse-heavy turn
+ * carries screenshots as base64 inside tool outputs; externalizeChatAttachments
+ * only covers user image `file` parts, so the stored messages array blew past
+ * MongoDB's 16 MB BSON limit and the WHOLE save threw — caught by a log-only
+ * catch, the entire turn vanished on reload while the agent's work (commits,
+ * publishes) survived. The screenshot's post-turn value is nil (the model
+ * already saw it), so it is dropped here; any other pathologically large output
+ * is truncated on a UTF-16 code-point boundary with a marker rather than
+ * sinking the save.
  */
 const MAX_STORED_TOOL_OUTPUT_BYTES = 256 * 1024;
 
@@ -249,35 +356,39 @@ export function sanitizeMessagesForPersistence(
   messages: UIMessage[],
 ): UIMessage[] {
   return messages.map(message => {
-    if (message.role !== "assistant" || !Array.isArray(message.parts)) {
-      return message;
+    let nextMessage = message;
+
+    if (message.role === "assistant" && Array.isArray(message.parts)) {
+      let changed = false;
+      const parts = message.parts.map(part => {
+        if (!isRecord(part) || typeof part.type !== "string") return part;
+        if (!part.type.startsWith("tool-")) return part;
+        const output = (part as { output?: unknown }).output;
+        if (!isRecord(output)) return part;
+        let next = output;
+        if (typeof next.screenshotBase64 === "string") {
+          const { screenshotBase64: _dropped, ...rest } = next;
+          next = { ...rest, screenshotOmitted: true };
+        }
+        const serialized = JSON.stringify(next);
+        const size = Buffer.byteLength(serialized, "utf8");
+        if (size > MAX_STORED_TOOL_OUTPUT_BYTES) {
+          next = {
+            truncatedForStorage: true,
+            originalBytes: size,
+            preview: sliceSafeUtf16(serialized, 4096),
+          };
+        }
+        if (next === output) return part;
+        changed = true;
+        return { ...part, output: next };
+      });
+      if (changed) {
+        nextMessage = { ...message, parts: parts as typeof message.parts };
+      }
     }
-    let changed = false;
-    const parts = message.parts.map(part => {
-      if (!isRecord(part) || typeof part.type !== "string") return part;
-      if (!part.type.startsWith("tool-")) return part;
-      const output = (part as { output?: unknown }).output;
-      if (!isRecord(output)) return part;
-      let next = output;
-      if (typeof next.screenshotBase64 === "string") {
-        const { screenshotBase64: _dropped, ...rest } = next;
-        next = { ...rest, screenshotOmitted: true };
-      }
-      const size = Buffer.byteLength(JSON.stringify(next), "utf8");
-      if (size > MAX_STORED_TOOL_OUTPUT_BYTES) {
-        next = {
-          truncatedForStorage: true,
-          originalBytes: size,
-          preview: JSON.stringify(next).slice(0, 4096),
-        };
-      }
-      if (next === output) return part;
-      changed = true;
-      return { ...part, output: next };
-    });
-    return changed
-      ? { ...message, parts: parts as typeof message.parts }
-      : message;
+
+    return sanitizePgJsonValue(nextMessage);
   });
 }
 
@@ -288,7 +399,7 @@ export function sanitizeMessagesForPersistence(
 export function stripToolOutputsForRetry(messages: UIMessage[]): UIMessage[] {
   return messages.map(message => {
     if (message.role !== "assistant" || !Array.isArray(message.parts)) {
-      return message;
+      return sanitizePgJsonValue(message);
     }
     const parts = message.parts.map(part => {
       if (!isRecord(part) || typeof part.type !== "string") return part;
@@ -299,10 +410,15 @@ export function stripToolOutputsForRetry(messages: UIMessage[]): UIMessage[] {
         ...part,
         output: {
           truncatedForStorage: true,
-          preview: JSON.stringify(output ?? null).slice(0, 1024),
+          preview: sanitizePgString(
+            sliceSafeUtf16(JSON.stringify(output ?? null), 1024),
+          ),
         },
       };
     });
-    return { ...message, parts: parts as typeof message.parts };
+    return sanitizePgJsonValue({
+      ...message,
+      parts: parts as typeof message.parts,
+    });
   });
 }

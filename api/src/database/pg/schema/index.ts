@@ -11,3 +11,5 @@ export * from "./connections";
 export * from "./consoles-charts";
 export * from "./apps-metadata";
 export * from "./usage-stats";
+export * from "./mcp";
+export * from "./chat";

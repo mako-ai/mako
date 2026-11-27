@@ -669,6 +669,7 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
           eq(appProjects.id, entityIdToPgUuid(id)),
           eq(appProjects.workspaceId, entityIdToPgUuid(workspaceId)),
           isNull(appProjects.ownerId),
+          isNull(appProjects.createdBy),
         ),
       )
       .returning({ id: appProjects.id });

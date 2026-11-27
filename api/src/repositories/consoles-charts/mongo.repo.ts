@@ -2322,4 +2322,119 @@ export class MongoConsolesChartsRepository implements ConsolesChartsRepository {
       .lean<MongoScheduledQueryRunLike[]>();
     return docs.map(mongoScheduledQueryRunToRecord);
   }
+
+  async purgeWorkspaceContentIndexReturningIds(workspaceId: string): Promise<{
+    saved_consoles: string[];
+    console_folders: string[];
+    entity_versions: string[];
+    notebook_indexes: string[];
+    notebook_folders: string[];
+  }> {
+    const empty = {
+      saved_consoles: [] as string[],
+      console_folders: [] as string[],
+      entity_versions: [] as string[],
+      notebook_indexes: [] as string[],
+      notebook_folders: [] as string[],
+    };
+    if (!isValidOid(workspaceId)) return empty;
+    const wsOid = toObjectId(workspaceId);
+    const [consoles, folders, versions, notebooks, nbFolders] =
+      await Promise.all([
+        SavedConsole.find({ workspaceId: wsOid })
+          .select("_id")
+          .lean<Array<{ _id: Types.ObjectId }>>(),
+        ConsoleFolder.find({ workspaceId: wsOid })
+          .select("_id")
+          .lean<Array<{ _id: Types.ObjectId }>>(),
+        EntityVersion.find({ workspaceId: wsOid, entityType: "console" })
+          .select("_id")
+          .lean<Array<{ _id: Types.ObjectId }>>(),
+        NotebookIndex.find({ workspaceId: wsOid })
+          .select("_id")
+          .lean<Array<{ _id: Types.ObjectId }>>(),
+        NotebookFolder.find({ workspaceId: wsOid })
+          .select("_id")
+          .lean<Array<{ _id: Types.ObjectId }>>(),
+      ]);
+    await Promise.all([
+      SavedConsole.deleteMany({ workspaceId: wsOid }),
+      ConsoleFolder.deleteMany({ workspaceId: wsOid }),
+      EntityVersion.deleteMany({ workspaceId: wsOid, entityType: "console" }),
+      NotebookIndex.deleteMany({ workspaceId: wsOid }),
+      NotebookFolder.deleteMany({ workspaceId: wsOid }),
+    ]);
+    return {
+      saved_consoles: consoles.map(d => d._id.toString()),
+      console_folders: folders.map(d => d._id.toString()),
+      entity_versions: versions.map(d => d._id.toString()),
+      notebook_indexes: notebooks.map(d => d._id.toString()),
+      notebook_folders: nbFolders.map(d => d._id.toString()),
+    };
+  }
+
+  async purgeWorkspaceContentIndex(workspaceId: string): Promise<void> {
+    await this.purgeWorkspaceContentIndexReturningIds(workspaceId);
+  }
+
+  /**
+   * Delete ONLY the specified captured IDs per table within `workspaceId`.
+   * Used by delayed Stage 4 `replaySyncToMongo` purge retries so content
+   * re-created after a workspace repo reconnect is never wiped.
+   */
+  async deleteWorkspaceContentIndexByIds(
+    workspaceId: string,
+    idsByTable: {
+      saved_consoles?: readonly string[];
+      console_folders?: readonly string[];
+      entity_versions?: readonly string[];
+      notebook_indexes?: readonly string[];
+      notebook_folders?: readonly string[];
+    },
+  ): Promise<void> {
+    if (!isValidOid(workspaceId)) return;
+    const wsOid = toObjectId(workspaceId);
+    const toOids = (ids: readonly string[] | undefined): Types.ObjectId[] =>
+      (ids ?? []).filter(isValidOid).map(toObjectId);
+
+    const consoleOids = toOids(idsByTable.saved_consoles);
+    const folderOids = toOids(idsByTable.console_folders);
+    const versionOids = toOids(idsByTable.entity_versions);
+    const notebookOids = toOids(idsByTable.notebook_indexes);
+    const nbFolderOids = toOids(idsByTable.notebook_folders);
+
+    await Promise.all([
+      consoleOids.length > 0
+        ? SavedConsole.deleteMany({
+            workspaceId: wsOid,
+            _id: { $in: consoleOids },
+          })
+        : Promise.resolve(),
+      folderOids.length > 0
+        ? ConsoleFolder.deleteMany({
+            workspaceId: wsOid,
+            _id: { $in: folderOids },
+          })
+        : Promise.resolve(),
+      versionOids.length > 0
+        ? EntityVersion.deleteMany({
+            workspaceId: wsOid,
+            entityType: "console",
+            _id: { $in: versionOids },
+          })
+        : Promise.resolve(),
+      notebookOids.length > 0
+        ? NotebookIndex.deleteMany({
+            workspaceId: wsOid,
+            _id: { $in: notebookOids },
+          })
+        : Promise.resolve(),
+      nbFolderOids.length > 0
+        ? NotebookFolder.deleteMany({
+            workspaceId: wsOid,
+            _id: { $in: nbFolderOids },
+          })
+        : Promise.resolve(),
+    ]);
+  }
 }

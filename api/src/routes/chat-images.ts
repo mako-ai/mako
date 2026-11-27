@@ -1,5 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { ObjectId } from "mongodb";
+import { parseEntityId } from "../database/pg/id-codec";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
   getChatAttachmentForUser,
@@ -107,10 +107,10 @@ chatImagesRoutes.openapi(
       const workspaceId = c.req.param("workspaceId") as string;
       const attachmentId = c.req.param("attachmentId");
 
-      if (!ObjectId.isValid(workspaceId)) {
+      if (!parseEntityId(workspaceId)) {
         return fail(c, 400, "Invalid workspace id");
       }
-      if (!ObjectId.isValid(attachmentId)) {
+      if (!parseEntityId(attachmentId)) {
         return fail(c, 400, "Invalid attachment id");
       }
 

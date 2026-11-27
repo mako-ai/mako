@@ -96,6 +96,12 @@ export const POST_BACKFILL_STEPS: readonly PostBackfillStep[] = [
     requires:
       "connections (0004) and usage_stats (0006) backfills completed (all database_connections present in Postgres)",
   },
+  {
+    name: "llm-usage-chat-fk",
+    file: "0008a_llm_usage_chat_fk.sql",
+    requires:
+      "all workspaces have `chat` in Stage >= 2 and `chats` backfill completed",
+  },
 ];
 
 export function resolvePostBackfillFolder(customFolder?: string): string {

@@ -297,4 +297,8 @@ export const consolesChartsRepo: ConsolesChartsRepository = {
       consoleId,
       limit,
     ),
+
+  // 8. Workspace repo disconnect purge
+  purgeWorkspaceContentIndex: workspaceId =>
+    activeConsolesChartsRepo.purgeWorkspaceContentIndex(workspaceId),
 };

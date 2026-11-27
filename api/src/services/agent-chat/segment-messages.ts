@@ -25,6 +25,7 @@ import { loggers } from "../../logging";
 import { sanitizeMessagesForModel } from "../../utils/message-sanitizer";
 import { buildScreenshotVisionModelMessage } from "../agent-stream.service";
 import { resolveChatAttachmentsForModel } from "../chat-attachment.service";
+import { normalizeReloadedToolParts } from "./exact-history";
 import type { ChatTurn } from "./turn";
 
 const logger = loggers.agent();
@@ -129,6 +130,13 @@ export async function buildSegmentModelMessages(
       });
     }
   }
+  // Byte-exact prompt-cache preservation: normalize reloaded tool inputs via
+  // each tool's inputSchema and sort tool outputs in PG jsonb key order so live
+  // and DB-reloaded history serialize to the exact same bytes.
+  messagesForModel = await normalizeReloadedToolParts(
+    messagesForModel,
+    turn.tools,
+  );
   const modelMessages = await convertToModelMessages(messagesForModel);
   if (includeVisionAttachments) {
     const screenshotVisionMessage = buildScreenshotVisionModelMessage(

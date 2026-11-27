@@ -1,7 +1,6 @@
 import { Types } from "mongoose";
 import {
   Flow,
-  SavedConsole,
   NotificationRule,
   NotificationDelivery,
   decrypt,
@@ -14,6 +13,7 @@ import {
   type NotificationTrigger,
 } from "../database/workspace-schema";
 import { connectionsRepo } from "../repositories/connections";
+import { consolesChartsRepo } from "../repositories/consoles-charts";
 import { RunNotificationTemplate } from "../emails/RunNotificationEmail";
 import { renderEmail } from "../emails/render";
 import { loggers } from "../logging";
@@ -45,7 +45,7 @@ export async function resolveResourceDisplayName(params: {
 }): Promise<string> {
   const id = params.resourceId;
   if (params.resourceType === "scheduled_query") {
-    const doc = await SavedConsole.findById(id).select("name").lean();
+    const doc = await consolesChartsRepo.findConsoleByIdGlobal(id);
     return doc?.name || id;
   }
   const flowDoc = await Flow.findById(id);

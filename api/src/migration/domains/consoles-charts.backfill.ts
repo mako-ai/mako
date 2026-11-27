@@ -37,6 +37,7 @@ import {
 } from "../../database/pg/id-codec";
 import { users } from "../../database/pg/schema/auth";
 import { databaseConnections } from "../../database/pg/schema/connections";
+import { migrationTombstones } from "../../database/pg/schema/control-plane";
 import {
   consoleFolders,
   entityVersions,
@@ -2376,6 +2377,97 @@ async function replaySyncToPg(
     );
     return;
   }
+  if (action === "purge_workspace_index" && wsId) {
+    const hinted =
+      payload.deletedByTable && typeof payload.deletedByTable === "object"
+        ? (payload.deletedByTable as Record<string, unknown>)
+        : null;
+    if (!hinted) {
+      // Never wipe whole-workspace PG content on a delayed retry without the
+      // captured deleted IDs — doing so would erase content re-created after
+      // a workspace repo reconnect.
+      return;
+    }
+
+    const filterAbsentFromMongo = async (
+      rawIds: string[],
+      existsInMongo: (oidHex: string) => Promise<boolean>,
+    ): Promise<string[]> => {
+      const absent: string[] = [];
+      const seen = new Set<string>();
+      for (const rawId of rawIds) {
+        const parsed = parseEntityId(rawId);
+        if (!parsed?.oid || seen.has(parsed.oid)) continue;
+        seen.add(parsed.oid);
+        if (!(await existsInMongo(parsed.oid))) {
+          absent.push(parsed.oid);
+        }
+      }
+      return absent;
+    };
+
+    const [
+      absentConsoles,
+      absentFolders,
+      absentVersions,
+      absentNotebooks,
+      absentNbFolders,
+    ] = await Promise.all([
+      filterAbsentFromMongo(
+        extractStringArray(hinted.saved_consoles),
+        async oid =>
+          Boolean(await SavedConsole.exists({ _id: new Types.ObjectId(oid) })),
+      ),
+      filterAbsentFromMongo(
+        extractStringArray(hinted.console_folders),
+        async oid =>
+          Boolean(await ConsoleFolder.exists({ _id: new Types.ObjectId(oid) })),
+      ),
+      filterAbsentFromMongo(
+        extractStringArray(hinted.entity_versions),
+        async oid =>
+          Boolean(await EntityVersion.exists({ _id: new Types.ObjectId(oid) })),
+      ),
+      filterAbsentFromMongo(
+        extractStringArray(hinted.notebook_indexes),
+        async oid =>
+          Boolean(await NotebookIndex.exists({ _id: new Types.ObjectId(oid) })),
+      ),
+      filterAbsentFromMongo(
+        extractStringArray(hinted.notebook_folders),
+        async oid =>
+          Boolean(
+            await NotebookFolder.exists({ _id: new Types.ObjectId(oid) }),
+          ),
+      ),
+    ]);
+
+    await pgRepo.deleteWorkspaceContentIndexByIds(wsId, {
+      saved_consoles: absentConsoles,
+      console_folders: absentFolders,
+      entity_versions: absentVersions,
+      notebook_indexes: absentNotebooks,
+      notebook_folders: absentNbFolders,
+    });
+
+    const recordAbsentTombstones = async (
+      t: ConsolesChartsTableName,
+      oids: readonly string[],
+    ) => {
+      for (const oid of oids) {
+        const pgUuid = optionalPgUuid(oid);
+        if (pgUuid) {
+          await recordMigrationTombstone(t, pgUuid, db);
+        }
+      }
+    };
+    await recordAbsentTombstones("saved_consoles", absentConsoles);
+    await recordAbsentTombstones("console_folders", absentFolders);
+    await recordAbsentTombstones("entity_versions", absentVersions);
+    await recordAbsentTombstones("notebook_indexes", absentNotebooks);
+    await recordAbsentTombstones("notebook_folders", absentNbFolders);
+    return;
+  }
   if (
     action === "delete_in_folder" &&
     table === "saved_consoles" &&
@@ -2438,9 +2530,26 @@ async function replaySyncToPg(
     return;
   }
 
+  const clearReplayedTombstone = async (
+    targetTable: ConsolesChartsTableName,
+    pgUuid: string,
+  ) => {
+    await db
+      .delete(migrationTombstones)
+      .where(
+        and(
+          eq(migrationTombstones.tableName, targetTable),
+          eq(migrationTombstones.entityId, pgUuid.toLowerCase()),
+        ),
+      );
+  };
+
   const entityPgUuid = optionalPgUuid(id);
   if (entityPgUuid) {
-    await repairTableEntities(table, [entityPgUuid], db);
+    const repaired = await repairTableEntities(table, [entityPgUuid], db);
+    if (repaired > 0) {
+      await clearReplayedTombstone(table, entityPgUuid);
+    }
   } else if (table === "notebook_indexes" && wsId && payload.notebookId) {
     const wsOid = parseEntityId(wsId)?.oid;
     if (wsOid) {
@@ -2449,7 +2558,11 @@ async function replaySyncToPg(
         notebookId: String(payload.notebookId),
       }).lean<MongoNotebookIndexLike | null>();
       if (doc) {
-        await repairTableEntities(table, [toPgUuid(doc._id)], db);
+        const docPgUuid = toPgUuid(doc._id);
+        const repaired = await repairTableEntities(table, [docPgUuid], db);
+        if (repaired > 0) {
+          await clearReplayedTombstone(table, docPgUuid);
+        }
       }
     }
   }
@@ -2601,6 +2714,86 @@ async function replaySyncToMongo(
       payload.kind as FavouriteRecord["kind"] & string,
       String(payload.refId),
     );
+    return;
+  }
+  if (action === "purge_workspace_index" && wsId) {
+    const hinted =
+      payload.deletedByTable && typeof payload.deletedByTable === "object"
+        ? (payload.deletedByTable as Record<string, unknown>)
+        : null;
+    if (!hinted) {
+      return;
+    }
+
+    const filterAbsentFromPg = async (
+      rawIds: string[],
+      tableRef:
+        | typeof savedConsoles
+        | typeof consoleFolders
+        | typeof entityVersions
+        | typeof notebookIndexes
+        | typeof notebookFolders,
+    ): Promise<string[]> => {
+      const pairs: Array<{ oid: string; uuid: string }> = [];
+      const seen = new Set<string>();
+      for (const rawId of rawIds) {
+        const parsed = parseEntityId(rawId);
+        if (!parsed?.oid || seen.has(parsed.oid)) continue;
+        seen.add(parsed.oid);
+        pairs.push({ oid: parsed.oid, uuid: parsed.uuid });
+      }
+      if (pairs.length === 0) return [];
+      const existing = await db
+        .select({ id: tableRef.id })
+        .from(tableRef)
+        .where(
+          inArray(
+            tableRef.id,
+            pairs.map(p => p.uuid),
+          ),
+        );
+      const existingSet = new Set(existing.map(r => r.id.toLowerCase()));
+      return pairs
+        .filter(p => !existingSet.has(p.uuid.toLowerCase()))
+        .map(p => p.oid);
+    };
+
+    const [
+      absentConsoles,
+      absentFolders,
+      absentVersions,
+      absentNotebooks,
+      absentNbFolders,
+    ] = await Promise.all([
+      filterAbsentFromPg(
+        extractStringArray(hinted.saved_consoles),
+        savedConsoles,
+      ),
+      filterAbsentFromPg(
+        extractStringArray(hinted.console_folders),
+        consoleFolders,
+      ),
+      filterAbsentFromPg(
+        extractStringArray(hinted.entity_versions),
+        entityVersions,
+      ),
+      filterAbsentFromPg(
+        extractStringArray(hinted.notebook_indexes),
+        notebookIndexes,
+      ),
+      filterAbsentFromPg(
+        extractStringArray(hinted.notebook_folders),
+        notebookFolders,
+      ),
+    ]);
+
+    await mongoRepo.deleteWorkspaceContentIndexByIds(wsId, {
+      saved_consoles: absentConsoles,
+      console_folders: absentFolders,
+      entity_versions: absentVersions,
+      notebook_indexes: absentNotebooks,
+      notebook_folders: absentNbFolders,
+    });
     return;
   }
   if (

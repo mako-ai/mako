@@ -11,6 +11,8 @@ import { registerWorkspacesMigrationDomain } from "./workspaces.backfill";
 import { registerConnectionsMigrationDomain } from "./connections.backfill";
 import { registerConsolesChartsMigrationDomain } from "./consoles-charts.backfill";
 import { registerUsageStatsMigrationDomain } from "./usage-stats.backfill";
+import { registerMcpMigrationDomain } from "./mcp.backfill";
+import { registerChatMigrationDomain } from "./chat.backfill";
 
 let registered = false;
 
@@ -28,6 +30,8 @@ export function registerMigrationDomains(
   registerConsolesChartsMigrationDomain();
   registerAppsMetadataMigrationDomain();
   registerUsageStatsMigrationDomain();
+  registerMcpMigrationDomain();
+  registerChatMigrationDomain();
   registered = true;
 }
 
@@ -38,4 +42,6 @@ export {
   registerConsolesChartsMigrationDomain,
   registerAppsMetadataMigrationDomain,
   registerUsageStatsMigrationDomain,
+  registerMcpMigrationDomain,
+  registerChatMigrationDomain,
 };

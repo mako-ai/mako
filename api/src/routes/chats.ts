@@ -1,9 +1,14 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import type { UIMessage } from "ai";
-import { Chat } from "../database/workspace-schema";
-import { ObjectId } from "mongodb";
+import { parseEntityId } from "../database/pg/id-codec";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import {
+  chatRecordToApiResponse,
+  chatRepo,
+  type StoredChatMessage,
+} from "../repositories/chat";
 import { getConsolesByIds, saveChat } from "../services/agent-thread.service";
+import { getArtifactStore } from "../services/artifact-store.service";
 import { generateChatTitle } from "../services/title-generator";
 import { loggers } from "../logging";
 import {
@@ -26,9 +31,8 @@ const logger = loggers.api("chats");
 
 /**
  * Extract unique console IDs the agent worked on (modify/create/open/run
- * tool calls) from chat messages. This is the reattach replay for UI
- * intents: reopening a chat restores the consoles the agent created, edited,
- * opened or ran — including work done while no window was attached.
+ * tool calls) from chat messages. Inspects normalized `parts[]` (`tool-*`
+ * and `dynamic-tool`) as well as legacy `toolCalls[]`.
  */
 const CONSOLE_RESTORE_TOOL_NAMES = new Set([
   "modify_console",
@@ -40,21 +44,53 @@ const CONSOLE_RESTORE_TOOL_NAMES = new Set([
   "set_console_connection",
 ]);
 
-function extractModifiedConsoleIds(
+function extractConsoleIdFromPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const id = (payload as { consoleId?: unknown }).consoleId;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+export function extractModifiedConsoleIds(
   messages: Array<{
+    parts?: Array<{
+      type?: string;
+      toolName?: string;
+      input?: unknown;
+      output?: unknown;
+    }>;
     toolCalls?: Array<{ toolName: string; input?: any; result?: any }>;
   }>,
 ): string[] {
   const consoleIds = new Set<string>();
 
   for (const msg of messages) {
-    if (!msg.toolCalls) continue;
-    for (const tc of msg.toolCalls) {
-      if (!CONSOLE_RESTORE_TOOL_NAMES.has(tc.toolName)) continue;
-      // consoleId is in the input for tools targeting an existing console,
-      // and in the result for create_console (the server mints the id).
-      if (tc.input?.consoleId) consoleIds.add(tc.input.consoleId);
-      if (tc.result?.consoleId) consoleIds.add(tc.result.consoleId);
+    if (Array.isArray(msg.parts)) {
+      for (const part of msg.parts) {
+        if (!part || typeof part.type !== "string") continue;
+        let toolName: string | null = null;
+        if (part.type === "dynamic-tool") {
+          toolName = typeof part.toolName === "string" ? part.toolName : null;
+        } else if (part.type.startsWith("tool-")) {
+          toolName =
+            part.type.slice("tool-".length) ||
+            (typeof part.toolName === "string" ? part.toolName : null);
+        }
+        if (!toolName || !CONSOLE_RESTORE_TOOL_NAMES.has(toolName)) continue;
+        const inputId = extractConsoleIdFromPayload(part.input);
+        if (inputId) consoleIds.add(inputId);
+        const outputId = extractConsoleIdFromPayload(part.output);
+        if (outputId) consoleIds.add(outputId);
+      }
+    }
+
+    if (Array.isArray(msg.toolCalls)) {
+      for (const tc of msg.toolCalls) {
+        if (!CONSOLE_RESTORE_TOOL_NAMES.has(tc.toolName)) continue;
+        const inputId = extractConsoleIdFromPayload(tc.input);
+        if (inputId) consoleIds.add(inputId);
+        const resultId = extractConsoleIdFromPayload(tc.result);
+        if (resultId) consoleIds.add(resultId);
+      }
     }
   }
 
@@ -80,13 +116,9 @@ const ChatBody = {
   },
 };
 
-// Apply unified auth middleware to all chat routes
 chatsRoutes.use("*", unifiedAuthMiddleware);
-
-// Middleware to verify workspace access and enrich logging context
 chatsRoutes.use("*", requireWorkspaceAccess());
 
-// List chat sessions (most recent first), one page at a time
 const ChatListQuery = z.object({
   limit: z.coerce
     .number()
@@ -156,7 +188,6 @@ chatsRoutes.openapi(
   }),
   async c => {
     try {
-      // Get authenticated user
       const user = c.get("user");
       const userId = user?.id;
 
@@ -165,12 +196,11 @@ chatsRoutes.openapi(
       }
       const workspaceId = c.req.param("workspaceId") as string;
 
-      if (!ObjectId.isValid(workspaceId)) {
+      if (!parseEntityId(workspaceId)) {
         return fail(c, 400, "Invalid workspace id");
       }
 
       const { limit, cursor } = c.req.valid("query");
-      // Filtered by both workspaceId AND createdBy for privacy.
       const page = await listUserChats({
         workspaceId,
         userId: userId.toString(),
@@ -202,7 +232,6 @@ chatsRoutes.openapi(
   }),
   async c => {
     try {
-      // Get authenticated user
       const user = c.get("user");
       const userId = user?.id;
 
@@ -211,7 +240,7 @@ chatsRoutes.openapi(
       }
       const workspaceId = c.req.param("workspaceId") as string;
 
-      if (!ObjectId.isValid(workspaceId)) {
+      if (!parseEntityId(workspaceId)) {
         return fail(c, 400, "Invalid workspace id");
       }
 
@@ -223,21 +252,18 @@ chatsRoutes.openapi(
       }
 
       const title = (body?.title as string) || "New Chat";
-
       const now = new Date();
-      const chat = new Chat({
-        workspaceId: new ObjectId(workspaceId),
+      const chat = await chatRepo.create({
+        workspaceId,
         title,
         messages: [],
-        createdBy: userId.toString(), // Set actual user ID
+        createdBy: userId.toString(),
         titleGenerated: false,
         createdAt: now,
         updatedAt: now,
       });
 
-      await chat.save();
-
-      return c.json({ chatId: chat._id.toString() });
+      return c.json({ chatId: chat.id });
     } catch (error) {
       logger.error("Error creating chat", { error });
       return fail(c, 500, "Failed to create chat");
@@ -258,7 +284,6 @@ chatsRoutes.openapi(
   }),
   async c => {
     try {
-      // Get authenticated user
       const user = c.get("user");
       const userId = user?.id;
 
@@ -268,31 +293,25 @@ chatsRoutes.openapi(
       const workspaceId = c.req.param("workspaceId") as string;
       const id = c.req.param("id");
 
-      if (!ObjectId.isValid(workspaceId)) {
+      if (!parseEntityId(workspaceId)) {
         return fail(c, 400, "Invalid workspace id");
       }
 
-      if (!ObjectId.isValid(id)) {
+      if (!parseEntityId(id)) {
         return fail(c, 400, "Invalid chat id");
       }
 
-      // Filter by workspaceId, chat id, AND createdBy for privacy
-      const chat = await Chat.findOne({
-        _id: new ObjectId(id),
-        workspaceId: new ObjectId(workspaceId),
-        createdBy: userId.toString(),
-      });
+      const chat = await chatRepo.findOwnedById(
+        workspaceId,
+        id,
+        userId.toString(),
+      );
 
       if (!chat) {
         return fail(c, 404, "Chat not found");
       }
 
-      // Extract console IDs from modify_console tool calls in chat messages
-      // These are consoles that the agent modified during this conversation
-      // §13.27: a turn that died mid-stream left its checkpoint behind
-      // (finalization clears both the checkpoint and activeStreamId on any
-      // normal finish). Age-gated so a LIVE turn — whose checkpoint updates
-      // every ~2s — is never duplicated under the client's resume replay.
+      const messages: StoredChatMessage[] = [...(chat.messages || [])];
       const checkpoint = chat.turnCheckpoint;
       if (
         checkpoint?.message &&
@@ -300,21 +319,15 @@ chatsRoutes.openapi(
         checkpoint.streamId === chat.activeStreamId &&
         Date.now() - new Date(checkpoint.at).getTime() > 120_000
       ) {
-        chat.messages = [
-          ...(chat.messages || []),
-          checkpoint.message as (typeof chat.messages)[number],
-        ];
+        messages.push(checkpoint.message as StoredChatMessage);
       }
 
-      const modifiedConsoleIds = extractModifiedConsoleIds(chat.messages || []);
-
-      // Fetch the consoles that were modified (they should be saved as drafts)
-      const consoles = await getConsolesByIds(modifiedConsoleIds);
+      const modifiedConsoleIds = extractModifiedConsoleIds(messages);
+      const consoles = await getConsolesByIds(modifiedConsoleIds, workspaceId);
 
       return c.json({
-        ...chat.toObject(),
-        _id: chat._id.toString(),
-        consoles, // Include consoles that were modified by the agent
+        ...chatRecordToApiResponse({ ...chat, messages }),
+        consoles,
       });
     } catch (error) {
       logger.error("Error getting chat", { error });
@@ -324,12 +337,7 @@ chatsRoutes.openapi(
 );
 
 /**
- * Upsert full message history for a chat.
- *
- * Used by Local Agent ACP (Claude Code / Codex) turns that never hit
- * /api/agent/chat — the browser streams the turn locally, then persists the
- * UIMessage transcript here so History / reopen works like cloud chats.
- * Does not set activeStreamId (ACP turns are not resumable server-side).
+ * Upsert full message history for a chat (Local Agent ACP turns).
  */
 chatsRoutes.openapi(
   createRoute({
@@ -372,10 +380,10 @@ chatsRoutes.openapi(
       const workspaceId = c.req.param("workspaceId") as string;
       const id = c.req.param("id");
 
-      if (!ObjectId.isValid(workspaceId)) {
+      if (!parseEntityId(workspaceId)) {
         return fail(c, 400, "Invalid workspace id");
       }
-      if (!ObjectId.isValid(id)) {
+      if (!parseEntityId(id)) {
         return fail(c, 400, "Invalid chat id");
       }
 
@@ -385,14 +393,12 @@ chatsRoutes.openapi(
         return fail(c, 400, "'messages' must be an array");
       }
 
-      // Ownership: refuse to upsert into another user's chat. New chats
-      // (missing doc) are created by saveChat with this user as createdBy.
-      const existing = await Chat.findOne({
-        _id: new ObjectId(id),
-        workspaceId: new ObjectId(workspaceId),
-      }).select({ createdBy: 1, titleGenerated: 1 });
-
-      if (existing && existing.createdBy !== userId.toString()) {
+      const existing = await chatRepo.findOwnershipMeta(
+        workspaceId,
+        id,
+        userId.toString(),
+      );
+      if (existing && !existing.isOwnedByActor) {
         return fail(c, 404, "Chat not found");
       }
 
@@ -401,42 +407,13 @@ chatsRoutes.openapi(
         workspaceId,
         userId.toString(),
         messages,
+        undefined,
+        body.localAcp !== undefined ? { localAcp: body.localAcp } : undefined,
       );
       if (!saved) {
         return fail(c, 500, "Failed to save chat");
       }
 
-      // saveChat $unsets localAcp; re-bind only when ACP persistence supplies
-      // one. Explicit null also clears (model switch away from local ACP).
-      if (body.localAcp) {
-        await Chat.updateOne(
-          {
-            _id: new ObjectId(id),
-            workspaceId: new ObjectId(workspaceId),
-            createdBy: userId.toString(),
-          },
-          {
-            $set: {
-              localAcp: {
-                providerId: body.localAcp.providerId,
-                sessionId: body.localAcp.sessionId,
-                modelId: body.localAcp.modelId,
-              },
-            },
-          },
-        );
-      } else if (body.localAcp === null) {
-        await Chat.updateOne(
-          {
-            _id: new ObjectId(id),
-            workspaceId: new ObjectId(workspaceId),
-            createdBy: userId.toString(),
-          },
-          { $unset: { localAcp: "" } },
-        );
-      }
-
-      // Fire-and-forget title on first persist (same pattern as agent.routes).
       const needsTitle = existing == null || existing.titleGenerated === false;
       if (needsTitle) {
         const firstUserMessage = messages.find(m => m.role === "user");
@@ -456,10 +433,7 @@ chatsRoutes.openapi(
                 userId: userId.toString(),
                 userEmail: user?.email,
               });
-              await Chat.updateOne(
-                { _id: new ObjectId(id), titleGenerated: false },
-                { title, titleGenerated: true },
-              );
+              await chatRepo.setGeneratedTitleIfUnset(workspaceId, id, title);
             } catch (err) {
               logger.error("Background title generation failed", {
                 error: err,
@@ -482,7 +456,7 @@ chatsRoutes.openapi(
   },
 );
 
-// Update chat title (optional future use)
+// Update chat title
 chatsRoutes.openapi(
   createRoute({
     method: "put",
@@ -495,7 +469,6 @@ chatsRoutes.openapi(
   }),
   async c => {
     try {
-      // Get authenticated user
       const user = c.get("user");
       const userId = user?.id;
 
@@ -505,11 +478,11 @@ chatsRoutes.openapi(
       const workspaceId = c.req.param("workspaceId") as string;
       const id = c.req.param("id");
 
-      if (!ObjectId.isValid(workspaceId)) {
+      if (!parseEntityId(workspaceId)) {
         return fail(c, 400, "Invalid workspace id");
       }
 
-      if (!ObjectId.isValid(id)) {
+      if (!parseEntityId(id)) {
         return fail(c, 400, "Invalid chat id");
       }
 
@@ -517,7 +490,7 @@ chatsRoutes.openapi(
       try {
         body = await c.req.json();
       } catch {
-        // Ignore JSON parse errors – request body can be empty for this endpoint
+        // Ignore JSON parse errors
       }
 
       const { title } = body;
@@ -525,18 +498,14 @@ chatsRoutes.openapi(
         return fail(c, 400, "'title' is required");
       }
 
-      // Only update if user owns the chat
-      const result = await Chat.findOneAndUpdate(
-        {
-          _id: new ObjectId(id),
-          workspaceId: new ObjectId(workspaceId),
-          createdBy: userId.toString(),
-        },
-        { title, updatedAt: new Date() },
-        { returnDocument: "after" },
+      const updated = await chatRepo.updateTitle(
+        workspaceId,
+        id,
+        userId.toString(),
+        title,
       );
 
-      if (!result) {
+      if (!updated) {
         return fail(c, 404, "Chat not found");
       }
 
@@ -548,7 +517,7 @@ chatsRoutes.openapi(
   },
 );
 
-// Delete a chat session
+// Delete a chat session (transactional DB delete + post-commit blob purge)
 chatsRoutes.openapi(
   createRoute({
     method: "delete",
@@ -561,7 +530,6 @@ chatsRoutes.openapi(
   }),
   async c => {
     try {
-      // Get authenticated user
       const user = c.get("user");
       const userId = user?.id;
 
@@ -571,23 +539,35 @@ chatsRoutes.openapi(
       const workspaceId = c.req.param("workspaceId") as string;
       const id = c.req.param("id");
 
-      if (!ObjectId.isValid(workspaceId)) {
+      if (!parseEntityId(workspaceId)) {
         return fail(c, 400, "Invalid workspace id");
       }
 
-      if (!ObjectId.isValid(id)) {
+      if (!parseEntityId(id)) {
         return fail(c, 400, "Invalid chat id");
       }
 
-      // Only delete if user owns the chat
-      const result = await Chat.findOneAndDelete({
-        _id: new ObjectId(id),
-        workspaceId: new ObjectId(workspaceId),
-        createdBy: userId.toString(),
-      });
+      const result = await chatRepo.deleteOwned(
+        workspaceId,
+        id,
+        userId.toString(),
+      );
 
-      if (!result) {
+      if (!result.deleted) {
         return fail(c, 404, "Chat not found");
+      }
+
+      if (result.deletedAttachmentKeys.length > 0) {
+        const store = getArtifactStore();
+        for (const key of result.deletedAttachmentKeys) {
+          void store.delete(key).catch(err =>
+            logger.warn("Failed to purge deleted chat attachment blob", {
+              chatId: id,
+              key,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        }
       }
 
       return c.json({ success: true });

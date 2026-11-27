@@ -12,8 +12,8 @@
  */
 import type { UIMessage } from "ai";
 
-import { Chat } from "../../database/workspace-schema";
 import { loggers } from "../../logging";
+import { chatRepo } from "../../repositories/chat";
 import { saveChat } from "../agent-thread.service";
 import { hasAttachedClients } from "../realtime-presence.service";
 import type { ChatTurn } from "./turn";
@@ -130,7 +130,7 @@ export async function maybeContinueStrandedTurn(input: {
   if (await hasAttachedClients(workspaceId)) return false;
 
   // Confirm this segment still owns the turn (no newer turn or stop).
-  const freshChat = await Chat.findById(chatId).select("activeStreamId");
+  const freshChat = await chatRepo.getStreamState(chatId, workspaceId);
   if (!freshChat || freshChat.activeStreamId !== input.segmentStreamId) {
     return false;
   }
