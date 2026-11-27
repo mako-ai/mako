@@ -4,16 +4,7 @@
  */
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Call = [string, ...unknown[]];
 
@@ -256,65 +247,53 @@ describe("realtime presence (Redis sorted set)", () => {
   });
 });
 
-describe("mixed-revision realtime presence", () => {
-  let mongo: MongoMemoryServer;
-  const workspaceId = new Types.ObjectId();
-  const id = workspaceId.toHexString();
-
-  beforeAll(async () => {
-    mongo = await MongoMemoryServer.create();
-    await mongoose.connect(mongo.getUri());
-  });
-  afterAll(async () => {
-    await mongoose.disconnect();
-    await mongo.stop();
-  });
-  beforeEach(() => {
+it("sends no Mongo commands during the Redis presence lifecycle", async () => {
+  const mongo = await MongoMemoryServer.create();
+  try {
     vi.stubEnv("DATABASE_URL", mongo.getUri());
     vi.stubEnv("REDIS_URL", "redis://presence.test:6379");
-    vi.stubEnv("REALTIME_PRESENCE_MONGO_COMPAT", undefined);
+    await mongoose.connect(mongo.getUri(), { monitorCommands: true });
+    const client = mongoose.connection.getClient();
+    const commands: string[] = [];
+    client.on("commandStarted", e => {
+      if (e.command[e.commandName] === "realtime_presence") {
+        commands.push(e.commandName);
+      }
+    });
+
+    const workspaceId = new Types.ObjectId();
+    const id = workspaceId.toHexString();
+    await client.db().collection("realtime_presence").insertOne({
+      workspaceId,
+      clientId: "legacy-tab",
+      userId: "user",
+      lastSeenAt: new Date(),
+    });
+    // Positive control for the monitor, and a fresh legacy row that would
+    // make an accidental Mongo fallback report a client after disconnect.
+    expect(commands).toEqual(["insert"]);
+    commands.length = 0;
     resetRealtimePresenceForTests();
     redisMock.state.execError = null;
     redisMock.state.execResults = [];
     redisMock.state.zremError = null;
     vi.useFakeTimers({ toFake: ["Date"] });
-  });
-  afterEach(() => {
+    await touchRealtimePresence(id, "tab", "user");
+    vi.setSystemTime(Date.now() + 31_000);
+    await touchRealtimePresence(id, "tab", "user");
+    redisMock.state.execResults.push([
+      [null, 0],
+      [null, 1],
+    ]);
+    expect(await hasAttachedClients(id)).toBe(true);
+    await clearRealtimePresence(id, "tab");
+    expect(await hasAttachedClients(id)).toBe(false);
+    expect(commands).toEqual([]);
+  } finally {
     vi.useRealTimers();
     vi.unstubAllEnvs();
     resetRealtimePresenceForTests();
-  });
-  it("finds old-revision heartbeats on Redis misses after the recovery window", async () => {
-    const start = Date.now();
-    await hasAttachedClients(id);
-    vi.setSystemTime(start + 31_000);
-    const legacy = mongoose.connection.collection("realtime_presence");
-    await legacy.insertOne({
-      workspaceId,
-      clientId: "old",
-      userId: "user",
-      lastSeenAt: new Date(),
-    });
-    expect(await hasAttachedClients(id)).toBe(true);
-    expect(await hasAttachedClients(new Types.ObjectId().toHexString())).toBe(
-      false,
-    );
-    vi.stubEnv("REALTIME_PRESENCE_MONGO_COMPAT", "false");
-    expect(await hasAttachedClients(id)).toBe(false);
-    vi.stubEnv("REALTIME_PRESENCE_MONGO_COMPAT", undefined);
-    vi.setSystemTime(start + 92_000);
-    expect(await hasAttachedClients(id)).toBe(false);
-  });
-  it("lets old readers see new-revision heartbeats and disconnects even if Redis is unavailable", async () => {
-    redisMock.state.execError = new Error("Redis unavailable");
-    const legacy = mongoose.connection.collection("realtime_presence");
-    await touchRealtimePresence(id, "new", "user");
-    await expect(
-      legacy.findOne({ workspaceId, clientId: "new" }),
-    ).resolves.toMatchObject({ userId: "user" });
-    await clearRealtimePresence(id, "new");
-    await expect(
-      legacy.findOne({ workspaceId, clientId: "new" }),
-    ).resolves.toBeNull();
-  });
+    await mongoose.disconnect();
+    await mongo.stop();
+  }
 });

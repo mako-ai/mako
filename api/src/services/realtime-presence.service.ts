@@ -16,11 +16,6 @@
  * Consumers:
  *   - agent.routes.ts "no client attached" fallback for client-only tools.
  */
-import {
-  touchLegacyPresence,
-  clearLegacyPresence,
-  hasFreshLegacyPresence,
-} from "./realtime-presence-compat";
 import { Redis } from "ioredis";
 import { BASE_REDIS_OPTIONS } from "../utils/redis";
 import { loggers } from "../logging";
@@ -191,27 +186,15 @@ export function resetRealtimePresenceForTests(): void {
 // API
 // --------------------------------------------------------------------------
 
-// A failed write on one revision's store must not cut short the other write.
-async function finishPresenceWrites(writes: Promise<void>[]): Promise<void> {
-  const results = await Promise.allSettled(writes);
-  for (const result of results) {
-    if (result.status === "rejected") throw result.reason;
-  }
-}
-
 /** Refresh a client's presence. Best-effort, never throws. */
 export async function touchRealtimePresence(
   workspaceId: string,
   clientId: string,
-  userId: string,
+  _userId: string,
 ): Promise<void> {
   if (!clientId) return;
   try {
-    const now = Date.now();
-    await finishPresenceWrites([
-      touchLegacyPresence(workspaceId, clientId, userId, now),
-      getStore().touch(workspaceId, clientId, now),
-    ]);
+    await getStore().touch(workspaceId, clientId, Date.now());
   } catch (error) {
     logger.debug("Failed to touch realtime presence", {
       error,
@@ -228,10 +211,7 @@ export async function clearRealtimePresence(
 ): Promise<void> {
   if (!clientId) return;
   try {
-    await finishPresenceWrites([
-      clearLegacyPresence(workspaceId, clientId),
-      getStore().clear(workspaceId, clientId),
-    ]);
+    await getStore().clear(workspaceId, clientId);
   } catch (error) {
     logger.debug("Failed to clear realtime presence", {
       error,
@@ -246,11 +226,7 @@ export async function hasAttachedClients(
   workspaceId: string,
 ): Promise<boolean> {
   try {
-    const now = Date.now();
-    return (
-      (await getStore().hasFresh(workspaceId, now)) ||
-      (await hasFreshLegacyPresence(workspaceId, now - PRESENCE_FRESHNESS_MS))
-    );
+    return await getStore().hasFresh(workspaceId, Date.now());
   } catch (error) {
     // Fail open: assuming a client is attached preserves today's behavior
     // (client-driven tool loop) rather than risking a wrong synthetic result.
