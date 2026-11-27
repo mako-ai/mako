@@ -200,10 +200,10 @@ jobs:
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_BRANCH_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       # Apps sandboxes (E2B Firecracker microVMs).
-      # E2B_API_KEY is a Secret Manager reference (mako-ai-dev secret
-      # E2B_API_KEY, mako-dev key, newest enabled version at deploy time),
-      # set with --set-secrets below, so
-      # `gcloud run services describe` never prints it.
+      # E2B_API_KEY, POSTGRES_URL (pooled Neon staging branch), and
+      # POSTGRES_DIRECT_URL (unpooled Neon staging branch) are Secret Manager
+      # references in mako-ai-dev (newest enabled version at deploy time), set
+      # with --set-secrets below, so `gcloud run services describe` never prints them.
       APPS_SANDBOX_PROVIDER: e2b
       # A variable so a project whose template needs another name is a
       # settings change, not a code change (see
@@ -623,6 +623,16 @@ jobs:
             --sort-by=~createTime --limit=1 --format='value(name.basename())')
           test -n "${E2B_KEY_VERSION}"
           echo "E2B_API_KEY: Secret Manager version ${E2B_KEY_VERSION}"
+          POSTGRES_URL_VERSION=$(gcloud secrets versions list POSTGRES_URL \
+            --project "${GCP_PROJECT_ID}" --filter=state:enabled \
+            --sort-by=~createTime --limit=1 --format='value(name.basename())')
+          test -n "${POSTGRES_URL_VERSION}"
+          echo "POSTGRES_URL: Secret Manager version ${POSTGRES_URL_VERSION}"
+          POSTGRES_DIRECT_URL_VERSION=$(gcloud secrets versions list POSTGRES_DIRECT_URL \
+            --project "${GCP_PROJECT_ID}" --filter=state:enabled \
+            --sort-by=~createTime --limit=1 --format='value(name.basename())')
+          test -n "${POSTGRES_DIRECT_URL_VERSION}"
+          echo "POSTGRES_DIRECT_URL: Secret Manager version ${POSTGRES_DIRECT_URL_VERSION}"
           # --project is explicit because the auth action exports CLOUDSDK_CORE_PROJECT
           # from the SA key's home project, which overrides setup-gcloud's project_id.
           gcloud run deploy ${SERVICE_NAME} \
@@ -709,7 +719,7 @@ jobs:
             --set-env-vars WORKFLOWS_NAME_PREFIX=${WORKFLOWS_NAME_PREFIX} \
             --set-env-vars HATCHET_API_URL=${HATCHET_API_URL} \
             --set-env-vars HATCHET_CLIENT_TLS_STRATEGY=none \
-            --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest,E2B_API_KEY=E2B_API_KEY:${E2B_KEY_VERSION} \
+            --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest,E2B_API_KEY=E2B_API_KEY:${E2B_KEY_VERSION},POSTGRES_URL=POSTGRES_URL:${POSTGRES_URL_VERSION},POSTGRES_DIRECT_URL=POSTGRES_DIRECT_URL:${POSTGRES_DIRECT_URL_VERSION} \
             --quiet
 
           # Get the Cloud Run URL
@@ -924,10 +934,10 @@ jobs:
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       # Apps sandboxes (E2B Firecracker microVMs).
-      # E2B_API_KEY is a Secret Manager reference (mako-ai-prod secret
-      # E2B_API_KEY, mako-prod key, newest enabled version at deploy time),
-      # set with --set-secrets below, so
-      # `gcloud run services describe` never prints it.
+      # E2B_API_KEY, POSTGRES_URL (pooled Neon production branch), and
+      # POSTGRES_DIRECT_URL (unpooled Neon production branch) are Secret Manager
+      # references in mako-ai-prod (newest enabled version at deploy time), set
+      # with --set-secrets below, so `gcloud run services describe` never prints them.
       APPS_SANDBOX_PROVIDER: e2b
       # A variable so a project whose template needs another name is a
       # settings change, not a code change (see
@@ -1155,6 +1165,16 @@ jobs:
             --sort-by=~createTime --limit=1 --format='value(name.basename())')
           test -n "${E2B_KEY_VERSION}"
           echo "E2B_API_KEY: Secret Manager version ${E2B_KEY_VERSION}"
+          POSTGRES_URL_VERSION=$(gcloud secrets versions list POSTGRES_URL \
+            --project "${GCP_PROJECT_ID}" --filter=state:enabled \
+            --sort-by=~createTime --limit=1 --format='value(name.basename())')
+          test -n "${POSTGRES_URL_VERSION}"
+          echo "POSTGRES_URL: Secret Manager version ${POSTGRES_URL_VERSION}"
+          POSTGRES_DIRECT_URL_VERSION=$(gcloud secrets versions list POSTGRES_DIRECT_URL \
+            --project "${GCP_PROJECT_ID}" --filter=state:enabled \
+            --sort-by=~createTime --limit=1 --format='value(name.basename())')
+          test -n "${POSTGRES_DIRECT_URL_VERSION}"
+          echo "POSTGRES_DIRECT_URL: Secret Manager version ${POSTGRES_DIRECT_URL_VERSION}"
           gcloud run deploy ${SERVICE_NAME} \
             --project ${GCP_PROJECT_ID} \
             --image ${{ steps.image.outputs.sha_tag }} \
@@ -1248,7 +1268,7 @@ jobs:
             --set-env-vars HATCHET_API_URL=${HATCHET_API_URL} \
             --set-env-vars HATCHET_CLIENT_TLS_STRATEGY=none \
             --set-env-vars APPS_ORIGIN_BASE=https://makousercontent.com \
-            --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest,E2B_API_KEY=E2B_API_KEY:${E2B_KEY_VERSION} \
+            --set-secrets HATCHET_ADMIN_PASSWORD=HATCHET_ADMIN_PASSWORD:latest,E2B_API_KEY=E2B_API_KEY:${E2B_KEY_VERSION},POSTGRES_URL=POSTGRES_URL:${POSTGRES_URL_VERSION},POSTGRES_DIRECT_URL=POSTGRES_DIRECT_URL:${POSTGRES_DIRECT_URL_VERSION} \
             --quiet
 
       - name: Finalize Cloud Run direct URL
