@@ -396,8 +396,25 @@ export async function resyncToPg(
         });
       }
       const presentPg = records.map(r => toPgUuid(r.id));
+      const scopedIds = uniq(scope.entityIds);
       let deleted: string[] = [];
-      if (scope.workspaceId) {
+      let toTombstone: string[] = [];
+      if (scopedIds.length > 0) {
+        const missing = scopedIds
+          .map(toPgUuid)
+          .filter(id => !presentPg.includes(id));
+        if (missing.length > 0) {
+          deleted = (
+            await db
+              .delete(workspaceApiKeys)
+              .where(inArray(workspaceApiKeys.id, missing))
+              .returning({ id: workspaceApiKeys.id })
+          ).map(r => r.id);
+          // Tombstone ALL missing entity IDs (even those not yet backfilled into PG)
+          // so an in-flight backfill cannot resurrect a revoked API key.
+          toTombstone = missing;
+        }
+      } else if (scope.workspaceId) {
         const wsUuid = toPgUuid(scope.workspaceId);
         const where = presentPg.length
           ? and(
@@ -411,20 +428,9 @@ export async function resyncToPg(
             .where(where)
             .returning({ id: workspaceApiKeys.id })
         ).map(r => r.id);
-      } else {
-        const missing = uniq(scope.entityIds)
-          .map(toPgUuid)
-          .filter(id => !presentPg.includes(id));
-        if (missing.length > 0) {
-          deleted = (
-            await db
-              .delete(workspaceApiKeys)
-              .where(inArray(workspaceApiKeys.id, missing))
-              .returning({ id: workspaceApiKeys.id })
-          ).map(r => r.id);
-        }
+        toTombstone = deleted;
       }
-      await tombstone(deleted);
+      await tombstone(toTombstone);
       return { table, upserted: records.length, deleted: deleted.length };
     }
 
@@ -474,7 +480,7 @@ export async function resyncToPg(
             await ensurePgWorkspace(db, wsId);
           }
           for (const r of records) {
-            const row = inviteRecordToPgRow(r, mapNullable);
+            const row = inviteRecordToPgRow(r, mapNullable, new Date());
             const { id: _id, ...rest } = row;
             void _id;
             await db.insert(workspaceInvites).values(row).onConflictDoUpdate({
@@ -713,11 +719,13 @@ async function resyncSimpleToPg<R extends { id: string }>(
   const presentPg = records.map(r => toPgUuid(r.id));
   const ids = uniq(scope.entityIds);
   let where;
+  let explicitMissing: string[] | null = null;
   if (ids.length > 0) {
     const missing = ids.map(toPgUuid).filter(id => !presentPg.includes(id));
     if (missing.length === 0) {
       return { table, upserted: records.length, deleted: 0 };
     }
+    explicitMissing = missing;
     where = inArray(ops.pgTable.id, missing);
   } else if (scope.workspaceId) {
     const wsUuid = toPgUuid(scope.workspaceId);
@@ -733,7 +741,9 @@ async function resyncSimpleToPg<R extends { id: string }>(
   const deleted = (
     await db.delete(ops.pgTable).where(where).returning({ id: ops.pgTable.id })
   ).map(r => r.id);
-  await tombstone(deleted);
+  // When explicit entityIds were targeted, tombstone ALL missing IDs even if PG
+  // did not yet have them so an in-flight backfill cannot resurrect deleted rows.
+  await tombstone(explicitMissing ?? deleted);
   return { table, upserted: records.length, deleted: deleted.length };
 }
 

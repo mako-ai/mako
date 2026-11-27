@@ -559,9 +559,7 @@ export interface WorkspaceRepository {
   touchWorkflowLastNeededAt(workspaceId: string, at?: Date): Promise<void>;
 
   // ── 2. Workspace API keys ────────────────────────────────────────────
-  findApiKeyByHash(
-    keyHash: string,
-  ): Promise<{
+  findApiKeyByHash(keyHash: string): Promise<{
     workspace: WorkspaceRecord;
     apiKey: WorkspaceApiKeyRecord;
   } | null>;

@@ -460,13 +460,24 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     if (!isEntityId(workspaceId)) {
       return false;
     }
-    const wsOid = oid(workspaceId);
+    const wsWire = toWire(workspaceId);
+    const wsOid = oid(wsWire);
     return runInMongoTransaction(async session => {
       const opts = session ? { session } : undefined;
       const res = await Workspace.deleteOne({ _id: wsOid }, opts);
+      if ((res.deletedCount ?? 0) === 0) {
+        return false;
+      }
+      // Run sequentially on the transaction session (MongoDB drivers forbid
+      // concurrent operations on a single ClientSession inside a transaction).
       await WorkspaceMember.deleteMany({ workspaceId: wsOid }, opts);
       await WorkspaceInvite.deleteMany({ workspaceId: wsOid }, opts);
-      return (res.deletedCount ?? 0) > 0;
+      await WorkspaceUserHandle.deleteMany({ workspaceId: wsOid }, opts);
+      await GitHubInstallation.deleteMany({ workspaceId: wsOid }, opts);
+      await McpOAuthCode.deleteMany({ workspaceId: wsWire }, opts);
+      await McpOAuthToken.deleteMany({ workspaceId: wsWire }, opts);
+      await AcpPlanGrant.deleteMany({ workspaceId: wsWire }, opts);
+      return true;
     });
   }
 
@@ -579,7 +590,10 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     if (options.includeSelfDirective) {
       unset.selfDirective = "";
     }
-    await Workspace.updateOne({ _id: oid(workspaceId) }, { $unset: unset });
+    await Workspace.collection.updateOne(
+      { _id: oid(workspaceId) },
+      { $unset: unset },
+    );
   }
 
   // ── Billing ──────────────────────────────────────────────────────────
@@ -867,9 +881,7 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
 
   // ── 2. Workspace API keys ────────────────────────────────────────────
 
-  async findApiKeyByHash(
-    keyHash: string,
-  ): Promise<{
+  async findApiKeyByHash(keyHash: string): Promise<{
     workspace: WorkspaceRecord;
     apiKey: WorkspaceApiKeyRecord;
   } | null> {
@@ -937,16 +949,24 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     );
   }
 
+  async replaceApiKeyByNameReturningReplacedIds(
+    input: CreateApiKeyInput,
+  ): Promise<{ apiKey: WorkspaceApiKeyRecord; replacedIds: string[] }> {
+    const trimmedName = input.name.trim();
+    const replacedIds = await this.deleteApiKeysByNameReturningIds(
+      input.workspaceId,
+      trimmedName,
+    );
+    const apiKey = await this.createApiKey({ ...input, name: trimmedName });
+    return { apiKey, replacedIds };
+  }
+
   async replaceApiKeyByName(
     input: CreateApiKeyInput,
   ): Promise<WorkspaceApiKeyRecord> {
-    const wsOid = oid(input.workspaceId);
-    await Workspace.updateOne(
-      { _id: wsOid },
-      { $pull: { apiKeys: { name: input.name } } },
-      { timestamps: false },
-    );
-    return this.createApiKey(input);
+    const { apiKey } =
+      await this.replaceApiKeyByNameReturningReplacedIds(input);
+    return apiKey;
   }
 
   async updateApiKeyScopesByName(
@@ -977,46 +997,89 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     return res.modifiedCount > 0;
   }
 
+  async deleteApiKeysByNameReturningIds(
+    workspaceId: string,
+    name: string,
+  ): Promise<string[]> {
+    if (!isEntityId(workspaceId)) {
+      return [];
+    }
+    const wsWire = toWire(workspaceId);
+    const existing = await this.listApiKeys(wsWire);
+    const matchingIds = existing.filter(k => k.name === name).map(k => k.id);
+    if (matchingIds.length === 0) {
+      return [];
+    }
+    const res = await Workspace.updateOne(
+      { _id: oid(wsWire) },
+      { $pull: { apiKeys: { name } } },
+      { timestamps: false },
+    );
+    return res.modifiedCount > 0 ? matchingIds : [];
+  }
+
   async deleteApiKeysByName(
     workspaceId: string,
     name: string,
   ): Promise<number> {
+    return (await this.deleteApiKeysByNameReturningIds(workspaceId, name))
+      .length;
+  }
+
+  async deleteApiKeysByCreatorReturningIds(
+    workspaceId: string,
+    createdBy: string,
+  ): Promise<string[]> {
     if (!isEntityId(workspaceId)) {
-      return 0;
+      return [];
+    }
+    const wsWire = toWire(workspaceId);
+    const existing = await this.listApiKeys(wsWire);
+    const matchingIds = existing
+      .filter(k => k.createdBy === createdBy)
+      .map(k => k.id);
+    if (matchingIds.length === 0) {
+      return [];
     }
     const res = await Workspace.updateOne(
-      { _id: oid(workspaceId) },
-      { $pull: { apiKeys: { name } } },
+      { _id: oid(wsWire) },
+      { $pull: { apiKeys: { createdBy } } },
       { timestamps: false },
     );
-    return res.modifiedCount;
+    return res.modifiedCount > 0 ? matchingIds : [];
   }
 
   async deleteApiKeysByCreator(
     workspaceId: string,
     createdBy: string,
   ): Promise<number> {
-    if (!isEntityId(workspaceId)) {
-      return 0;
-    }
-    const res = await Workspace.updateOne(
-      { _id: oid(workspaceId) },
-      { $pull: { apiKeys: { createdBy } } },
-      { timestamps: false },
-    );
-    return res.modifiedCount;
+    return (
+      await this.deleteApiKeysByCreatorReturningIds(workspaceId, createdBy)
+    ).length;
   }
 
-  async pruneExpiredApiKeysByNamePrefix(
+  async pruneExpiredApiKeysByNamePrefixReturningIds(
     workspaceId: string,
     namePrefix: string,
     createdBefore: Date,
-  ): Promise<number> {
+  ): Promise<string[]> {
     if (!isEntityId(workspaceId)) {
-      return 0;
+      return [];
+    }
+    const wsWire = toWire(workspaceId);
+    const existing = await this.listApiKeys(wsWire);
+    const matchingIds = existing
+      .filter(
+        k =>
+          k.name.startsWith(namePrefix) &&
+          k.createdAt.getTime() < createdBefore.getTime(),
+      )
+      .map(k => k.id);
+    if (matchingIds.length === 0) {
+      return [];
     }
     const res = await Workspace.updateOne(
-      { _id: oid(workspaceId) },
+      { _id: oid(wsWire) },
       {
         $pull: {
           apiKeys: {
@@ -1027,20 +1090,34 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
       },
       { timestamps: false },
     );
-    return res.modifiedCount;
+    return res.modifiedCount > 0 ? matchingIds : [];
   }
 
-  async touchApiKeyLastUsed(
+  async pruneExpiredApiKeysByNamePrefix(
+    workspaceId: string,
+    namePrefix: string,
+    createdBefore: Date,
+  ): Promise<number> {
+    return (
+      await this.pruneExpiredApiKeysByNamePrefixReturningIds(
+        workspaceId,
+        namePrefix,
+        createdBefore,
+      )
+    ).length;
+  }
+
+  async touchApiKeyLastUsedReturningChanged(
     workspaceId: string,
     keyId: string,
     now: Date = new Date(),
     minIntervalMs: number = DEFAULT_LAST_USED_MIN_INTERVAL_MS,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!isEntityId(workspaceId) || !isEntityId(keyId)) {
-      return;
+      return false;
     }
     const cutoff = new Date(now.getTime() - minIntervalMs);
-    await Workspace.updateOne(
+    const res = await Workspace.updateOne(
       {
         _id: oid(workspaceId),
         apiKeys: {
@@ -1056,6 +1133,21 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
       },
       { $set: { "apiKeys.$.lastUsedAt": now } },
       { timestamps: false },
+    );
+    return (res.modifiedCount ?? 0) > 0;
+  }
+
+  async touchApiKeyLastUsed(
+    workspaceId: string,
+    keyId: string,
+    now: Date = new Date(),
+    minIntervalMs: number = DEFAULT_LAST_USED_MIN_INTERVAL_MS,
+  ): Promise<void> {
+    await this.touchApiKeyLastUsedReturningChanged(
+      workspaceId,
+      keyId,
+      now,
+      minIntervalMs,
     );
   }
 
@@ -1226,15 +1318,24 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     return { ...record, user: userMap.get(record.userId) ?? null };
   }
 
-  async removeMember(workspaceId: string, userId: string): Promise<boolean> {
+  async removeMemberReturningId(
+    workspaceId: string,
+    userId: string,
+  ): Promise<string | null> {
     if (!isEntityId(workspaceId)) {
-      return false;
+      return null;
     }
-    const res = await WorkspaceMember.deleteOne({
+    const deleted = await WorkspaceMember.findOneAndDelete({
       workspaceId: oid(workspaceId),
       userId,
-    });
-    return (res.deletedCount ?? 0) > 0;
+    })
+      .select("_id")
+      .lean<{ _id: Types.ObjectId } | null>();
+    return deleted ? toWire(deleted._id) : null;
+  }
+
+  async removeMember(workspaceId: string, userId: string): Promise<boolean> {
+    return (await this.removeMemberReturningId(workspaceId, userId)) !== null;
   }
 
   // ── 4. Workspace invites ─────────────────────────────────────────────
@@ -1678,16 +1779,16 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     return doc ? mongoMcpTokenToRecord(doc) : null;
   }
 
-  async touchMcpTokenLastUsed(
+  async touchMcpTokenLastUsedReturningChanged(
     tokenId: string,
     now: Date = new Date(),
     minIntervalMs: number = DEFAULT_LAST_USED_MIN_INTERVAL_MS,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!isEntityId(tokenId)) {
-      return;
+      return false;
     }
     const cutoff = new Date(now.getTime() - minIntervalMs);
-    await McpOAuthToken.updateOne(
+    const res = await McpOAuthToken.updateOne(
       {
         _id: oid(tokenId),
         $or: [
@@ -1697,6 +1798,19 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
         ],
       },
       { $set: { lastUsedAt: now } },
+    );
+    return (res.modifiedCount ?? 0) > 0;
+  }
+
+  async touchMcpTokenLastUsed(
+    tokenId: string,
+    now: Date = new Date(),
+    minIntervalMs: number = DEFAULT_LAST_USED_MIN_INTERVAL_MS,
+  ): Promise<void> {
+    await this.touchMcpTokenLastUsedReturningChanged(
+      tokenId,
+      now,
+      minIntervalMs,
     );
   }
 
@@ -1763,18 +1877,55 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     });
   }
 
+  async revokeMcpGrantsForMemberReturningIds(input: {
+    workspaceId: string;
+    userId: string;
+  }): Promise<string[]> {
+    if (!input.workspaceId) {
+      return [];
+    }
+    const filter = {
+      workspaceId: toWireOrRaw(input.workspaceId),
+      userId: input.userId,
+    };
+    const docs = await McpOAuthToken.find(filter)
+      .select("_id")
+      .lean<Array<{ _id: Types.ObjectId }>>();
+    if (docs.length === 0) {
+      return [];
+    }
+    await McpOAuthToken.deleteMany(filter);
+    return docs.map(d => toWire(d._id));
+  }
+
   async revokeMcpGrantsForMember(input: {
     workspaceId: string;
     userId: string;
   }): Promise<number> {
+    return (await this.revokeMcpGrantsForMemberReturningIds(input)).length;
+  }
+
+  async revokeMcpConnectionReturningIds(input: {
+    workspaceId: string;
+    clientId: string;
+    userId: string;
+  }): Promise<string[]> {
     if (!input.workspaceId) {
-      return 0;
+      return [];
     }
-    const res = await McpOAuthToken.deleteMany({
+    const filter = {
       workspaceId: toWireOrRaw(input.workspaceId),
+      clientId: input.clientId,
       userId: input.userId,
-    });
-    return res.deletedCount ?? 0;
+    };
+    const docs = await McpOAuthToken.find(filter)
+      .select("_id")
+      .lean<Array<{ _id: Types.ObjectId }>>();
+    if (docs.length === 0) {
+      return [];
+    }
+    await McpOAuthToken.deleteMany(filter);
+    return docs.map(d => toWire(d._id));
   }
 
   async revokeMcpConnection(input: {
@@ -1782,15 +1933,7 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     clientId: string;
     userId: string;
   }): Promise<number> {
-    if (!input.workspaceId) {
-      return 0;
-    }
-    const res = await McpOAuthToken.deleteMany({
-      workspaceId: toWireOrRaw(input.workspaceId),
-      clientId: input.clientId,
-      userId: input.userId,
-    });
-    return res.deletedCount ?? 0;
+    return (await this.revokeMcpConnectionReturningIds(input)).length;
   }
 
   // ── 9. ACP plan grants ───────────────────────────────────────────────
@@ -1909,18 +2052,32 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     return mongoGitHubInstallationToRecord(doc);
   }
 
+  async deleteGitHubInstallationReturningId(
+    workspaceId: string,
+    installationId: number,
+  ): Promise<string | null> {
+    if (!isEntityId(workspaceId)) {
+      return null;
+    }
+    const deleted = await GitHubInstallation.findOneAndDelete({
+      workspaceId: oid(workspaceId),
+      installationId,
+    })
+      .select("_id")
+      .lean<{ _id: Types.ObjectId } | null>();
+    return deleted ? toWire(deleted._id) : null;
+  }
+
   async deleteGitHubInstallation(
     workspaceId: string,
     installationId: number,
   ): Promise<boolean> {
-    if (!isEntityId(workspaceId)) {
-      return false;
-    }
-    const res = await GitHubInstallation.deleteOne({
-      workspaceId: oid(workspaceId),
-      installationId,
-    });
-    return (res.deletedCount ?? 0) > 0;
+    return (
+      (await this.deleteGitHubInstallationReturningId(
+        workspaceId,
+        installationId,
+      )) !== null
+    );
   }
 
   async deleteGitHubInstallationsByInstallationIdReturningIds(
@@ -1947,19 +2104,40 @@ export class MongoWorkspaceRepository implements WorkspaceRepository {
     return ids.length;
   }
 
+  async pruneStaleGitHubInstallationsReturningIds(
+    workspaceId: string,
+    accountLogin: string,
+    keepInstallationId: number,
+  ): Promise<string[]> {
+    if (!isEntityId(workspaceId)) {
+      return [];
+    }
+    const filter = {
+      workspaceId: oid(workspaceId),
+      accountLogin,
+      installationId: { $ne: keepInstallationId },
+    };
+    const docs = await GitHubInstallation.find(filter)
+      .select("_id")
+      .lean<Array<{ _id: Types.ObjectId }>>();
+    if (docs.length === 0) {
+      return [];
+    }
+    await GitHubInstallation.deleteMany(filter);
+    return docs.map(d => toWire(d._id));
+  }
+
   async pruneStaleGitHubInstallations(
     workspaceId: string,
     accountLogin: string,
     keepInstallationId: number,
   ): Promise<number> {
-    if (!isEntityId(workspaceId)) {
-      return 0;
-    }
-    const res = await GitHubInstallation.deleteMany({
-      workspaceId: oid(workspaceId),
-      accountLogin,
-      installationId: { $ne: keepInstallationId },
-    });
-    return res.deletedCount ?? 0;
+    return (
+      await this.pruneStaleGitHubInstallationsReturningIds(
+        workspaceId,
+        accountLogin,
+        keepInstallationId,
+      )
+    ).length;
   }
 }

@@ -70,22 +70,30 @@ export async function loadPeopleDirectory(
     }
     linked.set(a.userId, entry);
   }
+  const memberIds = new Set(members.map(m => m.userId));
+  const currentMemberPeople: WorkspacePerson[] = [];
   const people: WorkspacePerson[] = users.map(u => {
     const id = u.id;
-    return {
+    const person: WorkspacePerson = {
       userId: id,
       email: u.email,
       handle:
         handleOf.get(id) ?? (u.legacyId ? handleOf.get(u.legacyId) : undefined),
       ...(linked.get(id) ?? (u.legacyId ? linked.get(u.legacyId) : undefined)),
     };
+    if (
+      memberIds.has(id) ||
+      (u.legacyId !== undefined && memberIds.has(u.legacyId))
+    ) {
+      currentMemberPeople.push(person);
+    }
+    return person;
   });
-  const memberIds = new Set(members.map(m => m.userId));
   const directory = new PeopleDirectory(
     people,
     workspaceEmailDomains(
       // The domain is the CURRENT members' — not who used to be here.
-      people.filter(p => memberIds.has(p.userId)),
+      currentMemberPeople,
       workspace?.settings?.autoJoin?.domains ?? [],
     ),
   );

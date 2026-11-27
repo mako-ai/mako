@@ -35,6 +35,7 @@ import {
   isUuidString,
   isUuidv7,
   newDualId,
+  objectIdUuidTimestamp,
   toWireId,
 } from "../../database/pg/id-codec";
 import { users } from "../../database/pg/schema/auth";
@@ -941,9 +942,7 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
 
   // ── 2. Workspace API keys ────────────────────────────────────────────
 
-  async findApiKeyByHash(
-    keyHash: string,
-  ): Promise<{
+  async findApiKeyByHash(keyHash: string): Promise<{
     workspace: WorkspaceRecord;
     apiKey: WorkspaceApiKeyRecord;
   } | null> {
@@ -1003,21 +1002,23 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     return pgApiKeyToRecord(row);
   }
 
-  async replaceApiKeyByName(
+  async replaceApiKeyByNameReturningReplacedIds(
     input: CreateApiKeyInput,
-  ): Promise<WorkspaceApiKeyRecord> {
+  ): Promise<{ apiKey: WorkspaceApiKeyRecord; replacedIds: string[] }> {
     const db = this.getDb();
     const wsUuid = toPgUuid(input.workspaceId);
     const id = input.id ? toPgUuid(input.id) : newDualId().uuid;
+    const trimmedName = input.name.trim();
     return db.transaction(async tx => {
-      await tx
+      const removed = await tx
         .delete(workspaceApiKeys)
         .where(
           and(
             eq(workspaceApiKeys.workspaceId, wsUuid),
-            eq(workspaceApiKeys.name, input.name),
+            eq(workspaceApiKeys.name, trimmedName),
           ),
-        );
+        )
+        .returning({ id: workspaceApiKeys.id });
       const createdByUuid = await this.resolveNullableWriteUserUuid(
         input.createdBy,
         tx,
@@ -1027,7 +1028,7 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         .values({
           id,
           workspaceId: wsUuid,
-          name: input.name.trim(),
+          name: trimmedName,
           keyHash: input.keyHash,
           prefix: input.prefix,
           scopes: input.scopes ?? null,
@@ -1038,8 +1039,19 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
           lastUsedAt: null,
         })
         .returning();
-      return pgApiKeyToRecord(row);
+      return {
+        apiKey: pgApiKeyToRecord(row),
+        replacedIds: removed.map(r => toWireId(r.id)),
+      };
     });
+  }
+
+  async replaceApiKeyByName(
+    input: CreateApiKeyInput,
+  ): Promise<WorkspaceApiKeyRecord> {
+    const { apiKey } =
+      await this.replaceApiKeyByNameReturningReplacedIds(input);
+    return apiKey;
   }
 
   async updateApiKeyScopesByName(
@@ -1079,12 +1091,12 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     return rows.length > 0;
   }
 
-  async deleteApiKeysByName(
+  async deleteApiKeysByNameReturningIds(
     workspaceId: string,
     name: string,
-  ): Promise<number> {
+  ): Promise<string[]> {
     if (!isEntityId(workspaceId)) {
-      return 0;
+      return [];
     }
     const rows = await this.getDb()
       .delete(workspaceApiKeys)
@@ -1095,20 +1107,28 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         ),
       )
       .returning({ id: workspaceApiKeys.id });
-    return rows.length;
+    return rows.map(r => toWireId(r.id));
   }
 
-  async deleteApiKeysByCreator(
+  async deleteApiKeysByName(
+    workspaceId: string,
+    name: string,
+  ): Promise<number> {
+    return (await this.deleteApiKeysByNameReturningIds(workspaceId, name))
+      .length;
+  }
+
+  async deleteApiKeysByCreatorReturningIds(
     workspaceId: string,
     createdBy: string,
-  ): Promise<number> {
+  ): Promise<string[]> {
     if (!isEntityId(workspaceId) || !createdBy) {
-      return 0;
+      return [];
     }
     const db = this.getDb();
     const creatorUuid = await this.resolveReadUserUuid(createdBy, db);
     if (!creatorUuid) {
-      return 0;
+      return [];
     }
     const rows = await db
       .delete(workspaceApiKeys)
@@ -1119,16 +1139,25 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         ),
       )
       .returning({ id: workspaceApiKeys.id });
-    return rows.length;
+    return rows.map(r => toWireId(r.id));
   }
 
-  async pruneExpiredApiKeysByNamePrefix(
+  async deleteApiKeysByCreator(
+    workspaceId: string,
+    createdBy: string,
+  ): Promise<number> {
+    return (
+      await this.deleteApiKeysByCreatorReturningIds(workspaceId, createdBy)
+    ).length;
+  }
+
+  async pruneExpiredApiKeysByNamePrefixReturningIds(
     workspaceId: string,
     namePrefix: string,
     createdBefore: Date,
-  ): Promise<number> {
+  ): Promise<string[]> {
     if (!isEntityId(workspaceId)) {
-      return 0;
+      return [];
     }
     const pattern = `${escapeLikePrefix(namePrefix)}%`;
     const rows = await this.getDb()
@@ -1141,20 +1170,34 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         ),
       )
       .returning({ id: workspaceApiKeys.id });
-    return rows.length;
+    return rows.map(r => toWireId(r.id));
   }
 
-  async touchApiKeyLastUsed(
+  async pruneExpiredApiKeysByNamePrefix(
+    workspaceId: string,
+    namePrefix: string,
+    createdBefore: Date,
+  ): Promise<number> {
+    return (
+      await this.pruneExpiredApiKeysByNamePrefixReturningIds(
+        workspaceId,
+        namePrefix,
+        createdBefore,
+      )
+    ).length;
+  }
+
+  async touchApiKeyLastUsedReturningChanged(
     workspaceId: string,
     keyId: string,
     now: Date = new Date(),
     minIntervalMs: number = DEFAULT_LAST_USED_MIN_INTERVAL_MS,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!isEntityId(workspaceId) || !isEntityId(keyId)) {
-      return;
+      return false;
     }
     const cutoff = new Date(now.getTime() - minIntervalMs);
-    await this.getDb()
+    const rows = await this.getDb()
       .update(workspaceApiKeys)
       .set({ lastUsedAt: now })
       .where(
@@ -1166,7 +1209,23 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
             lt(workspaceApiKeys.lastUsedAt, cutoff),
           ),
         ),
-      );
+      )
+      .returning({ id: workspaceApiKeys.id });
+    return rows.length > 0;
+  }
+
+  async touchApiKeyLastUsed(
+    workspaceId: string,
+    keyId: string,
+    now: Date = new Date(),
+    minIntervalMs: number = DEFAULT_LAST_USED_MIN_INTERVAL_MS,
+  ): Promise<void> {
+    await this.touchApiKeyLastUsedReturningChanged(
+      workspaceId,
+      keyId,
+      now,
+      minIntervalMs,
+    );
   }
 
   // ── 3. Workspace members ─────────────────────────────────────────────
@@ -1453,14 +1512,17 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     };
   }
 
-  async removeMember(workspaceId: string, userId: string): Promise<boolean> {
+  async removeMemberReturningId(
+    workspaceId: string,
+    userId: string,
+  ): Promise<string | null> {
     if (!isEntityId(workspaceId) || !userId) {
-      return false;
+      return null;
     }
     const db = this.getDb();
     const pgUserUuid = await this.resolveReadUserUuid(userId, db);
     if (!pgUserUuid) {
-      return false;
+      return null;
     }
     const rows = await db
       .delete(workspaceMembers)
@@ -1471,7 +1533,11 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         ),
       )
       .returning({ id: workspaceMembers.id });
-    return rows.length > 0;
+    return rows[0] ? toWireId(rows[0].id) : null;
+  }
+
+  async removeMember(workspaceId: string, userId: string): Promise<boolean> {
+    return (await this.removeMemberReturningId(workspaceId, userId)) !== null;
   }
 
   // ── 4. Workspace invites ─────────────────────────────────────────────
@@ -1501,6 +1567,11 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     const db = this.getDb();
     const now = new Date();
     const id = input.id ? toPgUuid(input.id) : newDualId(now.getTime()).uuid;
+    // Match Mongo ObjectId second-precision timestamp so Stage 4 reverse-shadow
+    // compare and offline parity verification agree to the exact millisecond.
+    const createdAt =
+      objectIdUuidTimestamp(id) ??
+      new Date(Math.floor(now.getTime() / 1000) * 1000);
     const inviterUuid = await this.resolveNullableWriteUserUuid(
       input.invitedBy,
       db,
@@ -1516,8 +1587,8 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         invitedBy: inviterUuid,
         expiresAt: input.expiresAt,
         acceptedAt: null,
-        createdAt: now,
-        updatedAt: now,
+        createdAt,
+        updatedAt: createdAt,
       })
       .returning();
     return pgInviteToRecord(row);
@@ -2026,16 +2097,16 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     return rows[0] ? pgMcpTokenToRecord(rows[0]) : null;
   }
 
-  async touchMcpTokenLastUsed(
+  async touchMcpTokenLastUsedReturningChanged(
     tokenId: string,
     now: Date = new Date(),
     minIntervalMs: number = DEFAULT_LAST_USED_MIN_INTERVAL_MS,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!isEntityId(tokenId)) {
-      return;
+      return false;
     }
     const cutoff = new Date(now.getTime() - minIntervalMs);
-    await this.getDb()
+    const rows = await this.getDb()
       .update(mcpOAuthTokens)
       .set({ lastUsedAt: now, updatedAt: now })
       .where(
@@ -2046,7 +2117,21 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
             lt(mcpOAuthTokens.lastUsedAt, cutoff),
           ),
         ),
-      );
+      )
+      .returning({ id: mcpOAuthTokens.id });
+    return rows.length > 0;
+  }
+
+  async touchMcpTokenLastUsed(
+    tokenId: string,
+    now: Date = new Date(),
+    minIntervalMs: number = DEFAULT_LAST_USED_MIN_INTERVAL_MS,
+  ): Promise<void> {
+    await this.touchMcpTokenLastUsedReturningChanged(
+      tokenId,
+      now,
+      minIntervalMs,
+    );
   }
 
   async listMcpConnections(
@@ -2117,17 +2202,17 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     });
   }
 
-  async revokeMcpGrantsForMember(input: {
+  async revokeMcpGrantsForMemberReturningIds(input: {
     workspaceId: string;
     userId: string;
-  }): Promise<number> {
+  }): Promise<string[]> {
     if (!isEntityId(input.workspaceId) || !input.userId) {
-      return 0;
+      return [];
     }
     const db = this.getDb();
     const pgUserUuid = await this.resolveReadUserUuid(input.userId, db);
     if (!pgUserUuid) {
-      return 0;
+      return [];
     }
     const rows = await db
       .delete(mcpOAuthTokens)
@@ -2138,21 +2223,28 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         ),
       )
       .returning({ id: mcpOAuthTokens.id });
-    return rows.length;
+    return rows.map(r => toWireId(r.id));
   }
 
-  async revokeMcpConnection(input: {
+  async revokeMcpGrantsForMember(input: {
+    workspaceId: string;
+    userId: string;
+  }): Promise<number> {
+    return (await this.revokeMcpGrantsForMemberReturningIds(input)).length;
+  }
+
+  async revokeMcpConnectionReturningIds(input: {
     workspaceId: string;
     clientId: string;
     userId: string;
-  }): Promise<number> {
+  }): Promise<string[]> {
     if (!isEntityId(input.workspaceId) || !input.userId) {
-      return 0;
+      return [];
     }
     const db = this.getDb();
     const pgUserUuid = await this.resolveReadUserUuid(input.userId, db);
     if (!pgUserUuid) {
-      return 0;
+      return [];
     }
     const rows = await db
       .delete(mcpOAuthTokens)
@@ -2164,7 +2256,15 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         ),
       )
       .returning({ id: mcpOAuthTokens.id });
-    return rows.length;
+    return rows.map(r => toWireId(r.id));
+  }
+
+  async revokeMcpConnection(input: {
+    workspaceId: string;
+    clientId: string;
+    userId: string;
+  }): Promise<number> {
+    return (await this.revokeMcpConnectionReturningIds(input)).length;
   }
 
   // ── 9. ACP plan grants ───────────────────────────────────────────────
@@ -2347,12 +2447,12 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     return pgGitHubInstallationToRecord(row);
   }
 
-  async deleteGitHubInstallation(
+  async deleteGitHubInstallationReturningId(
     workspaceId: string,
     installationId: number,
-  ): Promise<boolean> {
+  ): Promise<string | null> {
     if (!isEntityId(workspaceId)) {
-      return false;
+      return null;
     }
     const rows = await this.getDb()
       .delete(githubInstallations)
@@ -2363,7 +2463,19 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         ),
       )
       .returning({ id: githubInstallations.id });
-    return rows.length > 0;
+    return rows[0] ? toWireId(rows[0].id) : null;
+  }
+
+  async deleteGitHubInstallation(
+    workspaceId: string,
+    installationId: number,
+  ): Promise<boolean> {
+    return (
+      (await this.deleteGitHubInstallationReturningId(
+        workspaceId,
+        installationId,
+      )) !== null
+    );
   }
 
   async deleteGitHubInstallationsByInstallationIdReturningIds(
@@ -2386,13 +2498,13 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
     return ids.length;
   }
 
-  async pruneStaleGitHubInstallations(
+  async pruneStaleGitHubInstallationsReturningIds(
     workspaceId: string,
     accountLogin: string,
     keepInstallationId: number,
-  ): Promise<number> {
+  ): Promise<string[]> {
     if (!isEntityId(workspaceId)) {
-      return 0;
+      return [];
     }
     const rows = await this.getDb()
       .delete(githubInstallations)
@@ -2404,6 +2516,20 @@ export class PgWorkspaceRepository implements WorkspaceRepository {
         ),
       )
       .returning({ id: githubInstallations.id });
-    return rows.length;
+    return rows.map(r => toWireId(r.id));
+  }
+
+  async pruneStaleGitHubInstallations(
+    workspaceId: string,
+    accountLogin: string,
+    keepInstallationId: number,
+  ): Promise<number> {
+    return (
+      await this.pruneStaleGitHubInstallationsReturningIds(
+        workspaceId,
+        accountLogin,
+        keepInstallationId,
+      )
+    ).length;
   }
 }

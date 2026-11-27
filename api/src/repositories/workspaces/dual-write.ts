@@ -15,12 +15,15 @@
  *     `migration/{pg,mongo}-sync-retry` with an ID-ONLY payload (zero raw secrets,
  *     hashes, tokens, or emails) that `replayWorkspacesRetry` replays idempotently.
  */
+import { Types } from "mongoose";
 import { getPgDb, type MakoPgDb } from "../../database/pg/client";
+import { Workspace } from "../../database/workspace-schema";
 import { migrationRouter, type MigrationRouter } from "../../migration/router";
 import type {
   ShadowCompareOptions,
   SyncRetryEventData,
 } from "../../migration/types";
+import { isEntityId, toWire } from "./mapper";
 import { resyncToMongo, resyncToPg, type ResyncScope } from "./sync";
 import {
   WORKSPACES_DOMAIN,
@@ -191,4 +194,22 @@ export async function replayWorkspacesRetry(
     });
   }
   await resyncAll(data.target, targets, ctx.getDb ?? getPgDb);
+  if (data.target === "mongo") {
+    const unsetPrompt = data.payload?.unsetLegacyCustomPrompt as
+      { workspaceId?: unknown; includeSelfDirective?: unknown } | undefined;
+    if (
+      unsetPrompt &&
+      typeof unsetPrompt.workspaceId === "string" &&
+      isEntityId(unsetPrompt.workspaceId)
+    ) {
+      const unset: Record<string, ""> = { "settings.customPrompt": "" };
+      if (unsetPrompt.includeSelfDirective === true) {
+        unset.selfDirective = "";
+      }
+      await Workspace.collection.updateOne(
+        { _id: new Types.ObjectId(toWire(unsetPrompt.workspaceId)) },
+        { $unset: unset },
+      );
+    }
+  }
 }

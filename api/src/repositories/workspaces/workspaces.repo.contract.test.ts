@@ -20,6 +20,8 @@ import {
   it,
   vi,
 } from "vitest";
+import { loadPeopleDirectory } from "../../apps/app-owner.service";
+import { OwnerDirectory } from "../../apps/user-handles";
 import { AcpPlanGrant } from "../../database/acp-plan-grant-schema";
 import {
   McpOAuthClient,
@@ -50,6 +52,7 @@ import {
 } from "../../database/workspace-schema";
 import {
   clearBackfillRegistryForTests,
+  getBackfillDomain,
   listBackfillDomains,
   runBackfill,
 } from "../../migration/backfill";
@@ -1582,6 +1585,822 @@ describe("Phase 1B WorkspaceRepository contract & migration lifecycle (10 tables
       expect(await workspaceService.removeMember(ws.id, dev.pgUuid)).toBe(true);
       expect(await wsPg.findApiKeyByHash(devKeyHash)).toBeNull();
       expect(await wsPg.findValidMcpTokenByAccessHash(devMcpHash)).toBeNull();
+    });
+  });
+
+  // ── 5. Audit Regressions (#61: stale backfill, throttle, cascade, tombstones, parity) ─
+
+  describe("Audit regressions: stale backfill, throttle, cascade, tombstones, parity & mixed-mode", () => {
+    it("1. protects live redeemed codes, accepted invites, revoked grants, rotated tokens, touched keys, and updated child rows from stale backfill overwrites", async () => {
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+      });
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+
+      const owner = await seedUser({
+        mongoId: "stale_owner_001",
+        email: "stale-owner@example.com",
+      });
+      const member = await seedUser({
+        mongoId: "stale_member_01",
+        email: "stale-member@example.com",
+      });
+      const invitee = await seedUser({
+        mongoId: "stale_inv_00001",
+        email: "stale-invitee@example.com",
+      });
+
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "Stale Guard WS",
+        slug: "stale-guard-ws",
+        userId: owner.mongoId,
+      });
+      await dualRepo.addMember({
+        workspaceId: ws.id,
+        userId: member.mongoId,
+        role: "viewer",
+      });
+      const apiKey = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Stale Key",
+        keyHash: makeHash("stale-k"),
+        prefix: "revops_stalek0",
+        scopes: ["mcp"],
+        createdBy: owner.mongoId,
+      });
+      const invite = await dualRepo.createInvite({
+        workspaceId: ws.id,
+        email: invitee.email,
+        token: "stale-invite-tok",
+        role: "member",
+        invitedBy: owner.mongoId,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+      await dualRepo.ensureMcpClient({
+        clientId: "mcpc_stale",
+        redirectUris: ["https://stale.example/cb"],
+      });
+      const codeHash = makeHash("stale-code");
+      const code = await dualRepo.createMcpCode({
+        codeHash,
+        clientId: "mcpc_stale",
+        userId: owner.mongoId,
+        workspaceId: ws.id,
+        redirectUri: "https://stale.example/cb",
+        codeChallenge: "chal_stale",
+        scopes: ["mcp"],
+        expiresAt: new Date(Date.now() + 600_000),
+      });
+      const origRefreshHash = makeHash("stale-rt-1");
+      const token = await dualRepo.createMcpToken({
+        accessTokenHash: makeHash("stale-at-1"),
+        refreshTokenHash: origRefreshHash,
+        clientId: "mcpc_stale",
+        userId: owner.mongoId,
+        workspaceId: ws.id,
+        scopes: ["mcp", "workflow:internal"],
+        accessExpiresAt: new Date(Date.now() + 3600_000),
+        refreshExpiresAt: new Date(Date.now() + 86_400_000),
+      });
+      const grant = await dualRepo.upsertAcpGrant({
+        workspaceId: ws.id,
+        userId: owner.mongoId,
+        agentSessionId: "acp-stale-1",
+        planDigest: sha256("stale-plan"),
+        grants: ["git-write"],
+        expiresAt: new Date(Date.now() + 3600_000),
+      });
+      const gh = await dualRepo.upsertGitHubInstallation({
+        workspaceId: ws.id,
+        installationId: 555001,
+        accountLogin: "stale-org",
+        accountType: "Organization",
+        repositorySelection: "all",
+        createdBy: owner.mongoId,
+      });
+
+      // Capture a STALE backfill snapshot BEFORE live Stage 2 mutations happen
+      const handler = getBackfillDomain(WORKSPACES_DOMAIN);
+      if (!handler) {
+        throw new Error("Expected workspaces_core backfill handler");
+      }
+      const staleSnapshot = await handler.fetchBatch({
+        afterCursor: null,
+        limit: 500,
+        workspaceId: null,
+      });
+      expect(staleSnapshot.length).toBeGreaterThanOrEqual(8);
+      // Validate each item against current PG state (same as backfill engine)
+      for (const item of staleSnapshot) {
+        if (handler.validate) {
+          const v = await handler.validate(item, db);
+          expect(v.ok).toBe(true);
+        }
+      }
+
+      // Live Stage 2 mutations advance PG past the stale snapshot
+      const futureTouch = new Date(Date.now() + 120_000);
+      await dualRepo.redeemMcpCodeOnce(codeHash, futureTouch);
+      await dualRepo.acceptInviteTransaction(
+        invite.token,
+        invitee.mongoId,
+        futureTouch,
+      );
+      await dualRepo.revokeAcpGrant({
+        workspaceId: ws.id,
+        userId: owner.mongoId,
+        agentSessionId: "acp-stale-1",
+        now: futureTouch,
+      });
+      const rotatedAccessHash = makeHash("stale-at-2");
+      await dualRepo.rotateMcpRefreshToken({
+        currentRefreshTokenHash: origRefreshHash,
+        clientId: "mcpc_stale",
+        newAccessTokenHash: rotatedAccessHash,
+        newRefreshTokenHash: makeHash("stale-rt-2"),
+        newAccessExpiresAt: new Date(Date.now() + 7200_000),
+        newRefreshExpiresAt: new Date(Date.now() + 172_800_000),
+        stripScopes: ["workflow:internal"],
+        now: futureTouch,
+      });
+      await dualRepo.touchApiKeyLastUsed(ws.id, apiKey.id, futureTouch);
+      await new Promise(resolve => setTimeout(resolve, 15));
+      await dualRepo.updateMemberRole(ws.id, member.mongoId, "admin");
+      await dualRepo.upsertGitHubInstallation({
+        workspaceId: ws.id,
+        installationId: 555001,
+        accountLogin: "stale-org",
+        accountType: "Organization",
+        repositorySelection: "selected",
+        createdBy: owner.mongoId,
+      });
+
+      // Replay the STALE backfill batch into PG — MUST NOT regress ANY live state!
+      await handler.upsertBatch(staleSnapshot, db);
+
+      const [pgCode] = await db
+        .select()
+        .from(pgSchema.mcpOAuthCodes)
+        .where(eq(pgSchema.mcpOAuthCodes.id, objectIdToUuid(code.id)));
+      expect(pgCode?.usedAt).not.toBeNull();
+      expect(await pgRepo.redeemMcpCodeOnce(codeHash)).toBeNull();
+
+      const [pgInv] = await db
+        .select()
+        .from(pgSchema.workspaceInvites)
+        .where(eq(pgSchema.workspaceInvites.id, objectIdToUuid(invite.id)));
+      expect(pgInv?.acceptedAt).not.toBeNull();
+
+      const [pgGrant] = await db
+        .select()
+        .from(pgSchema.acpPlanGrants)
+        .where(eq(pgSchema.acpPlanGrants.id, objectIdToUuid(grant.id)));
+      expect(pgGrant?.status).toBe("revoked");
+
+      const [pgTok] = await db
+        .select()
+        .from(pgSchema.mcpOAuthTokens)
+        .where(eq(pgSchema.mcpOAuthTokens.id, objectIdToUuid(token.id)));
+      expect(pgTok?.accessTokenHash).toBe(rotatedAccessHash);
+      expect(pgTok?.scopes).toEqual(["mcp"]);
+
+      const [pgKey] = await db
+        .select()
+        .from(pgSchema.workspaceApiKeys)
+        .where(eq(pgSchema.workspaceApiKeys.id, objectIdToUuid(apiKey.id)));
+      expect(pgKey?.lastUsedAt?.getTime()).toBe(futureTouch.getTime());
+
+      expect((await pgRepo.findMember(ws.id, member.mongoId))?.role).toBe(
+        "admin",
+      );
+      expect(
+        (await pgRepo.findGitHubInstallation(ws.id, gh.installationId))
+          ?.repositorySelection,
+      ).toBe("selected");
+    });
+
+    it("2. enforces 60s last_used_at throttle on secondary store in both Stage 2 and Stage 4 (0 secondary writes)", async () => {
+      const failures: SecondaryWriteFailureContext[] = [];
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+        onSecondaryFailure: async ctx => {
+          failures.push(ctx);
+        },
+      });
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      const mongoRepo = new MongoWorkspaceRepository();
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+      let failSecondaryPg = false;
+      const dualRepo = new DualWorkspaceRepository({
+        mongo: mongoRepo,
+        pg: pgRepo,
+        router,
+        getDb: () => {
+          if (failSecondaryPg) {
+            throw new Error("Secondary PG must not be called when throttled");
+          }
+          return db;
+        },
+      });
+
+      const owner = await seedUser({
+        mongoId: "thr_owner_00001",
+        email: "throttle@example.com",
+      });
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "Throttle WS",
+        slug: "throttle-ws",
+        userId: owner.mongoId,
+      });
+      const apiKey = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Throttle Key",
+        keyHash: makeHash("thr-k"),
+        prefix: "revops_thrk000",
+        scopes: ["mcp"],
+        createdBy: owner.mongoId,
+      });
+      await dualRepo.ensureMcpClient({
+        clientId: "mcpc_thr",
+        redirectUris: ["https://thr.example/cb"],
+      });
+      const tok = await dualRepo.createMcpToken({
+        accessTokenHash: makeHash("thr-at"),
+        refreshTokenHash: makeHash("thr-rt"),
+        clientId: "mcpc_thr",
+        userId: owner.mongoId,
+        workspaceId: ws.id,
+        scopes: ["mcp"],
+        accessExpiresAt: new Date(Date.now() + 3600_000),
+      });
+
+      // Stage 2: first touch writes both Mongo + PG
+      const t0 = new Date("2026-11-26T12:00:00.000Z");
+      await dualRepo.touchApiKeyLastUsed(ws.id, apiKey.id, t0);
+      await dualRepo.touchMcpTokenLastUsed(tok.id, t0);
+      expect((await pgRepo.listApiKeys(ws.id))[0]?.lastUsedAt?.getTime()).toBe(
+        t0.getTime(),
+      );
+
+      // Second touch 5s later is throttled by Mongo -> ZERO secondary PG calls!
+      failSecondaryPg = true;
+      await dualRepo.touchApiKeyLastUsed(
+        ws.id,
+        apiKey.id,
+        new Date(t0.getTime() + 5_000),
+      );
+      await dualRepo.touchMcpTokenLastUsed(
+        tok.id,
+        new Date(t0.getTime() + 5_000),
+      );
+      expect(failures).toEqual([]);
+      failSecondaryPg = false;
+
+      // Stage 4: touch 10s later is throttled by PG -> ZERO secondary Mongo writes!
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_pg_read",
+      });
+      const wsUpdateSpy = vi.spyOn(Workspace.collection, "updateOne");
+      const tokReplaceSpy = vi.spyOn(McpOAuthToken.collection, "replaceOne");
+      failSecondaryPg = true;
+      await dualRepo.touchApiKeyLastUsed(
+        ws.id,
+        apiKey.id,
+        new Date(t0.getTime() + 10_000),
+      );
+      await dualRepo.touchMcpTokenLastUsed(
+        tok.id,
+        new Date(t0.getTime() + 10_000),
+      );
+      failSecondaryPg = false;
+      expect(wsUpdateSpy).not.toHaveBeenCalled();
+      expect(tokReplaceSpy).not.toHaveBeenCalled();
+      expect(failures).toEqual([]);
+      wsUpdateSpy.mockRestore();
+      tokReplaceSpy.mockRestore();
+    });
+
+    it("3. cascades deleteWorkspaceCascade across all 8 Mongo collections, tombstones workspace_api_keys, passes parity verification, and skips no-op deletes", async () => {
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+      });
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+
+      const owner = await seedUser({
+        mongoId: "casc_owner_0001",
+        email: "cascade@example.com",
+      });
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "Cascade WS",
+        slug: "cascade-ws",
+        userId: owner.mongoId,
+      });
+      const key = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Cascade Key",
+        keyHash: makeHash("casc-k"),
+        prefix: "revops_casck00",
+        scopes: ["mcp"],
+        createdBy: owner.mongoId,
+      });
+      await dualRepo.createInvite({
+        workspaceId: ws.id,
+        email: "casc-inv@example.com",
+        token: "casc-inv-tok",
+        role: "member",
+        invitedBy: owner.mongoId,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+      await dualRepo.insertHandlesBestEffort(ws.id, [
+        {
+          userId: owner.mongoId,
+          handle: "cascalice",
+        },
+      ]);
+      await dualRepo.ensureMcpClient({
+        clientId: "mcpc_casc",
+        redirectUris: ["https://casc.example/cb"],
+      });
+      await dualRepo.createMcpCode({
+        codeHash: makeHash("casc-code"),
+        clientId: "mcpc_casc",
+        userId: owner.mongoId,
+        workspaceId: ws.id,
+        redirectUri: "https://casc.example/cb",
+        codeChallenge: "chal_casc",
+        scopes: ["mcp"],
+        expiresAt: new Date(Date.now() + 600_000),
+      });
+      await dualRepo.createMcpToken({
+        accessTokenHash: makeHash("casc-at"),
+        refreshTokenHash: makeHash("casc-rt"),
+        clientId: "mcpc_casc",
+        userId: owner.mongoId,
+        workspaceId: ws.id,
+        scopes: ["mcp"],
+        accessExpiresAt: new Date(Date.now() + 3600_000),
+      });
+      await dualRepo.upsertAcpGrant({
+        workspaceId: ws.id,
+        userId: owner.mongoId,
+        agentSessionId: "acp-casc-1",
+        planDigest: sha256("casc-plan"),
+        grants: ["git-write"],
+        expiresAt: new Date(Date.now() + 3600_000),
+      });
+      await dualRepo.upsertGitHubInstallation({
+        workspaceId: ws.id,
+        installationId: 666001,
+        accountLogin: "casc-org",
+        accountType: "Organization",
+        repositorySelection: "all",
+        createdBy: owner.mongoId,
+      });
+
+      // No-op delete on nonexistent workspace writes 0 tombstones
+      const ghostWsId = newDualId().oid;
+      expect(await dualRepo.deleteWorkspaceCascade(ghostWsId)).toBe(false);
+      expect(await db.select().from(pgSchema.migrationTombstones)).toHaveLength(
+        0,
+      );
+
+      // Real cascade delete removes ALL 8 child collections in Mongo & tombstones all child rows + workspace_api_keys in PG
+      expect(await dualRepo.deleteWorkspaceCascade(ws.id)).toBe(true);
+      const wsOid = new Types.ObjectId(ws.id);
+      expect(await Workspace.countDocuments({ _id: wsOid })).toBe(0);
+      expect(await WorkspaceMember.countDocuments({ workspaceId: wsOid })).toBe(
+        0,
+      );
+      expect(await WorkspaceInvite.countDocuments({ workspaceId: wsOid })).toBe(
+        0,
+      );
+      expect(
+        await WorkspaceUserHandle.countDocuments({ workspaceId: wsOid }),
+      ).toBe(0);
+      expect(
+        await GitHubInstallation.countDocuments({ workspaceId: wsOid }),
+      ).toBe(0);
+      expect(await McpOAuthCode.countDocuments({ workspaceId: ws.id })).toBe(0);
+      expect(await McpOAuthToken.countDocuments({ workspaceId: ws.id })).toBe(
+        0,
+      );
+      expect(await AcpPlanGrant.countDocuments({ workspaceId: ws.id })).toBe(0);
+
+      const tombstones = await db.select().from(pgSchema.migrationTombstones);
+      expect(
+        tombstones.some(
+          t =>
+            t.tableName === "workspace_api_keys" &&
+            t.entityId === objectIdToUuid(key.id),
+        ),
+      ).toBe(true);
+      expect(
+        tombstones.some(
+          t =>
+            t.tableName === "workspaces" &&
+            t.entityId === objectIdToUuid(ws.id),
+        ),
+      ).toBe(true);
+
+      const parity = await runParityVerification({
+        domain: WORKSPACES_DOMAIN,
+        db,
+      });
+      expect(parity.missingInPg).toBe(0);
+      expect(parity.extraInPg).toBe(0);
+      expect(parity.mismatched).toBe(0);
+    });
+
+    it("4. tombstones deleted not-yet-backfilled Stage 2 child rows (preventing backfill resurrection) and writes 0 tombstones on wrong-workspace no-op deletes", async () => {
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+      const pgRepo = new PgWorkspaceRepository({ getDb: () => db });
+
+      const owner = await seedUser({
+        mongoId: "tomb_owner_0001",
+        email: "tomb-owner@example.com",
+      });
+      const guest = await seedUser({
+        mongoId: "tomb_guest_0001",
+        email: "tomb-guest@example.com",
+      });
+
+      // Stage 1 (mongo_only): seed parent + child rows ONLY in Mongo (not yet backfilled into PG!)
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "mongo_only",
+      });
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "Tombstone WS",
+        slug: "tombstone-ws",
+        userId: owner.mongoId,
+      });
+      const { workspace: otherWs } = await dualRepo.createWorkspaceWithOwner({
+        name: "Other WS",
+        slug: "other-ws",
+        userId: owner.mongoId,
+      });
+      const guestMember = await dualRepo.addMember({
+        workspaceId: ws.id,
+        userId: guest.mongoId,
+        role: "member",
+      });
+      const keyById = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Key By Id",
+        keyHash: makeHash("tomb-k1"),
+        prefix: "revops_tombk10",
+        scopes: ["mcp"],
+        createdBy: owner.mongoId,
+      });
+      const keyByName = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Key By Name",
+        keyHash: makeHash("tomb-k2"),
+        prefix: "revops_tombk20",
+        scopes: ["mcp"],
+        createdBy: owner.mongoId,
+      });
+      const keyByCreator = await dualRepo.createApiKey({
+        workspaceId: ws.id,
+        name: "Key By Creator",
+        keyHash: makeHash("tomb-k3"),
+        prefix: "revops_tombk30",
+        scopes: ["mcp"],
+        createdBy: guest.mongoId,
+      });
+      const invite = await dualRepo.createInvite({
+        workspaceId: ws.id,
+        email: "tomb-inv@example.com",
+        token: "tomb-inv-tok",
+        role: "viewer",
+        invitedBy: owner.mongoId,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+      await dualRepo.ensureMcpClient({
+        clientId: "mcpc_tomb",
+        redirectUris: ["https://tomb.example/cb"],
+      });
+      const tokMember = await dualRepo.createMcpToken({
+        accessTokenHash: makeHash("tomb-at1"),
+        refreshTokenHash: makeHash("tomb-rt1"),
+        clientId: "mcpc_tomb",
+        userId: guest.mongoId,
+        workspaceId: ws.id,
+        scopes: ["mcp"],
+        accessExpiresAt: new Date(Date.now() + 3600_000),
+      });
+      const tokConn = await dualRepo.createMcpToken({
+        accessTokenHash: makeHash("tomb-at2"),
+        refreshTokenHash: makeHash("tomb-rt2"),
+        clientId: "mcpc_tomb",
+        userId: owner.mongoId,
+        workspaceId: ws.id,
+        scopes: ["mcp"],
+        accessExpiresAt: new Date(Date.now() + 3600_000),
+      });
+      const gh = await dualRepo.upsertGitHubInstallation({
+        workspaceId: ws.id,
+        installationId: 777999,
+        accountLogin: "tomb-org",
+        accountType: "Organization",
+        repositorySelection: "all",
+        createdBy: owner.mongoId,
+      });
+
+      // Capture an in-flight backfill batch BEFORE the Stage 2 deletes happen
+      const handler = getBackfillDomain(WORKSPACES_DOMAIN);
+      if (!handler) {
+        throw new Error("Expected workspaces_core backfill handler");
+      }
+      const inflightItems = await handler.fetchBatch({
+        afterCursor: null,
+        limit: 500,
+        workspaceId: null,
+      });
+
+      // Switch to Stage 2: PG still has ZERO of these child rows!
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+
+      // Wrong-workspace / nonexistent no-op deletes MUST write 0 tombstones!
+      expect(await dualRepo.deleteApiKey(otherWs.id, keyById.id)).toBe(false);
+      expect(await dualRepo.cancelInvite(newDualId().oid)).toBe(false);
+      expect(await dualRepo.removeMember(otherWs.id, guest.mongoId)).toBe(
+        false,
+      );
+      expect(await dualRepo.deleteGitHubInstallation(otherWs.id, 777999)).toBe(
+        false,
+      );
+      expect(await db.select().from(pgSchema.migrationTombstones)).toHaveLength(
+        0,
+      );
+
+      // Now delete all not-yet-backfilled child rows in Stage 2
+      expect(await dualRepo.deleteApiKey(ws.id, keyById.id)).toBe(true);
+      expect(await dualRepo.deleteApiKeysByName(ws.id, "Key By Name")).toBe(1);
+      expect(await dualRepo.deleteApiKeysByCreator(ws.id, guest.mongoId)).toBe(
+        1,
+      );
+      expect(await dualRepo.removeMember(ws.id, guest.mongoId)).toBe(true);
+      expect(await dualRepo.cancelInvite(invite.id)).toBe(true);
+      expect(
+        await dualRepo.revokeMcpGrantsForMember({
+          workspaceId: ws.id,
+          userId: guest.mongoId,
+        }),
+      ).toBe(1);
+      expect(
+        await dualRepo.revokeMcpConnection({
+          workspaceId: ws.id,
+          clientId: "mcpc_tomb",
+          userId: owner.mongoId,
+        }),
+      ).toBe(1);
+      expect(await dualRepo.deleteGitHubInstallation(ws.id, 777999)).toBe(true);
+
+      // Verify EVERY deleted row's PG UUID is tombstoned despite never existing in PG
+      const tombstones = await db.select().from(pgSchema.migrationTombstones);
+      const hasTomb = (table: string, wireId: string) =>
+        tombstones.some(
+          t => t.tableName === table && t.entityId === objectIdToUuid(wireId),
+        );
+      expect(hasTomb("workspace_api_keys", keyById.id)).toBe(true);
+      expect(hasTomb("workspace_api_keys", keyByName.id)).toBe(true);
+      expect(hasTomb("workspace_api_keys", keyByCreator.id)).toBe(true);
+      expect(hasTomb("workspace_members", guestMember.id)).toBe(true);
+      expect(hasTomb("workspace_invites", invite.id)).toBe(true);
+      expect(hasTomb("mcp_oauth_tokens", tokMember.id)).toBe(true);
+      expect(hasTomb("mcp_oauth_tokens", tokConn.id)).toBe(true);
+      expect(hasTomb("github_installations", gh.id)).toBe(true);
+
+      // Simulate an in-flight backfill running from the pre-delete snapshot:
+      // backfill MUST skip every tombstoned child and NEVER resurrect them in PG!
+      const summary = await runBackfill({
+        domain: WORKSPACES_DOMAIN,
+        db,
+        handler: {
+          ...handler,
+          fetchBatch: async ({ afterCursor }) =>
+            afterCursor ? [] : inflightItems,
+        },
+      });
+      expect(summary.rowsSkippedTombstone).toBe(8);
+      expect(await pgRepo.listApiKeys(ws.id)).toEqual([]);
+      expect(await pgRepo.findMember(ws.id, guest.mongoId)).toBeNull();
+      expect(await pgRepo.findPendingInviteByToken("tomb-inv-tok")).toBeNull();
+      expect(await pgRepo.listMcpConnections(ws.id)).toEqual([]);
+      expect(await pgRepo.findGitHubInstallation(ws.id, 777999)).toBeNull();
+    });
+
+    it("5. matches Stage 4 reverse-shadow on createInvite/findPendingInviteByToken and Stage 3 shadow on empty workflows:{}", async () => {
+      const shadowEvents: ShadowCompareEvent[] = [];
+      const shadowRunner = new ShadowCompareRunner({
+        onEvent: evt => {
+          shadowEvents.push(evt);
+        },
+      });
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        shadowRunner,
+        cacheTtlMs: 0,
+      });
+      const dualRepo = new DualWorkspaceRepository({
+        router,
+        getDb: () => db,
+      });
+
+      const owner = await seedUser({
+        mongoId: "par_owner_00001",
+        email: "parity-owner@example.com",
+      });
+
+      // Stage 3: set hatchetToken then clear -> Mongo leaves `workflows: {}`, PG has 5 NULLs -> MUST match!
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_shadow_compare",
+        shadowSampleRate: 1,
+      });
+      const { workspace: ws } = await dualRepo.createWorkspaceWithOwner({
+        name: "Parity WS",
+        slug: "parity-ws",
+        userId: owner.mongoId,
+      });
+      await dualRepo.setWorkflowHatchetToken(ws.id, "iv_x:cipher_x");
+      await dualRepo.setWorkflowHatchetToken(ws.id, null);
+      shadowEvents.length = 0;
+      const wsRead = await dualRepo.findById(ws.id);
+      expect(wsRead?.workflows).toBeUndefined();
+      await shadowRunner.flush();
+      expect(shadowEvents.length).toBeGreaterThanOrEqual(1);
+      for (const evt of shadowEvents) {
+        expect(
+          evt.result,
+          `empty workflows diff: ${JSON.stringify(evt.diffs)}`,
+        ).toBe("match");
+      }
+
+      // Stage 4 with reverse shadowSampleRate=1: createInvite + findPendingInviteByToken -> 0 ms drift!
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_pg_read",
+        shadowSampleRate: 1,
+      });
+      const inv = await dualRepo.createInvite({
+        workspaceId: ws.id,
+        email: "rev-shadow@example.com",
+        token: "rev-shadow-tok",
+        role: "member",
+        invitedBy: owner.pgUuid,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+      expect(inv.createdAt.getUTCMilliseconds()).toBe(0);
+      shadowEvents.length = 0;
+      const found = await dualRepo.findPendingInviteByToken("rev-shadow-tok");
+      expect(found?.id).toBe(inv.id);
+      await shadowRunner.flush();
+      expect(shadowEvents.length).toBeGreaterThanOrEqual(1);
+      for (const evt of shadowEvents) {
+        expect(
+          evt.result,
+          `invite createdAt diff: ${JSON.stringify(evt.diffs)}`,
+        ).toBe("match");
+      }
+    });
+
+    it("6. unsets legacy Mongo customPrompt in Stage 4, trims replaceApiKeyByName consistently, and preserves legacy member email domains in mixed-mode app-owner", async () => {
+      const router = new MigrationRouter({
+        getDb: () => db,
+        hasPg: () => true,
+        enablePubSub: false,
+        cacheTtlMs: 0,
+      });
+      const authDual = new DualAuthRepository({ router, getDb: () => db });
+      const wsDual = new DualWorkspaceRepository({ router, getDb: () => db });
+      setAuthRepoForTests(authDual);
+      setWorkspaceRepoForTests(wsDual);
+
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_mongo_read",
+      });
+      const owner = await seedUser({
+        mongoId: "mix_legacy_0001",
+        email: "alice@acme-corp.io",
+      });
+      const { workspace: ws } = await wsDual.createWorkspaceWithOwner({
+        name: "Minor Gaps WS",
+        slug: "minor-gaps-ws",
+        userId: owner.mongoId,
+      });
+
+      // (a) Stage 4 unsetLegacyCustomPrompt still clears Mongo legacy fields
+      await Workspace.collection.updateOne(
+        { _id: new Types.ObjectId(ws.id) },
+        {
+          $set: {
+            "settings.customPrompt": "old prompt",
+            selfDirective: "old directive",
+          },
+        },
+      );
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "dual_write_pg_read",
+      });
+      await wsDual.unsetLegacyCustomPrompt(ws.id, {
+        includeSelfDirective: true,
+      });
+      const rawMongoWs = await Workspace.collection.findOne({
+        _id: new Types.ObjectId(ws.id),
+      });
+      expect(
+        (rawMongoWs?.settings as Record<string, unknown> | undefined)
+          ?.customPrompt,
+      ).toBeUndefined();
+      expect(rawMongoWs?.selfDirective).toBeUndefined();
+
+      // (b) replaceApiKeyByName trims name consistently on delete & insert in both stores
+      const sp2Hash = makeHash("sp-2");
+      await wsDual.replaceApiKeyByName({
+        workspaceId: ws.id,
+        name: "  spaced-key  ",
+        keyHash: makeHash("sp-1"),
+        prefix: "revops_sp10000",
+        scopes: ["mcp"],
+        createdBy: owner.pgUuid,
+      });
+      await wsDual.replaceApiKeyByName({
+        workspaceId: ws.id,
+        name: "spaced-key",
+        keyHash: sp2Hash,
+        prefix: "revops_sp20000",
+        scopes: ["mcp"],
+        createdBy: owner.pgUuid,
+      });
+      const keysAfter = await wsDual.listApiKeys(ws.id);
+      expect(keysAfter).toHaveLength(1);
+      expect(keysAfter[0]?.name).toBe("spaced-key");
+      expect(keysAfter[0]?.keyHash).toBe(sp2Hash);
+
+      // (c) Mixed-mode app-owner: auth=pg_only (returns UUIDv7 + legacyId) + workspaces=mongo_only (member holds legacyId)
+      await router.setDomainState({ domain: "auth", mode: "pg_only" });
+      await router.setDomainState({
+        domain: WORKSPACES_DOMAIN,
+        mode: "mongo_only",
+      });
+      const peopleDir = await loadPeopleDirectory(
+        ws.id,
+        new OwnerDirectory([]),
+      );
+      expect(peopleDir.domains.has("acme-corp.io")).toBe(true);
+      expect(peopleDir.resolveEmail("alice@acme-corp.io")?.userId).toBe(
+        owner.pgUuid,
+      );
+      // Local-part fallback on a non-public external domain resolves via workspaceEmailDomains
+      expect(peopleDir.resolveEmail("alice@private-laptop.dev")?.userId).toBe(
+        owner.pgUuid,
+      );
     });
   });
 });

@@ -17,7 +17,7 @@
  */
 import { getPgDb, type MakoPgDb } from "../../database/pg/client";
 import { isUuidv7 } from "../../database/pg/id-codec";
-import type { MigrationRouter } from "../../migration/router";
+import { migrationRouter, type MigrationRouter } from "../../migration/router";
 import {
   dualRead,
   dualWrite,
@@ -28,37 +28,38 @@ import { sortById } from "./mapper";
 import { MongoWorkspaceRepository } from "./mongo.repo";
 import { PgWorkspaceRepository } from "./pg.repo";
 import { resolveMongoUserIdMap, resolvePgUserUuidMap } from "./sync";
-import type {
-  AcpPlanGrantRecord,
-  AddMemberInput,
-  CreateApiKeyInput,
-  CreateInviteInput,
-  CreateMcpClientInput,
-  CreateMcpCodeInput,
-  CreateMcpTokenInput,
-  CreateWorkspaceWithOwnerInput,
-  GitHubInstallationRecord,
-  McpConnectionSummary,
-  McpOAuthClientRecord,
-  McpOAuthCodeRecord,
-  McpOAuthTokenRecord,
-  RotateMcpRefreshTokenInput,
-  UpdateBillingPatch,
-  UpdateWorkspacePatch,
-  UpsertAcpGrantInput,
-  UpsertGitHubInstallationInput,
-  WorkspaceApiKeyRecord,
-  WorkspaceApiKeyScope,
-  WorkspaceAutoJoin,
-  WorkspaceInviteRecord,
-  WorkspaceInviteWithRefs,
-  WorkspaceMemberRecord,
-  WorkspaceMemberRole,
-  WorkspaceMemberWithUser,
-  WorkspaceRecord,
-  WorkspaceRepoBinding,
-  WorkspaceRepository,
-  WorkspaceUserHandleRecord,
+import {
+  WORKSPACES_DOMAIN,
+  type AcpPlanGrantRecord,
+  type AddMemberInput,
+  type CreateApiKeyInput,
+  type CreateInviteInput,
+  type CreateMcpClientInput,
+  type CreateMcpCodeInput,
+  type CreateMcpTokenInput,
+  type CreateWorkspaceWithOwnerInput,
+  type GitHubInstallationRecord,
+  type McpConnectionSummary,
+  type McpOAuthClientRecord,
+  type McpOAuthCodeRecord,
+  type McpOAuthTokenRecord,
+  type RotateMcpRefreshTokenInput,
+  type UpdateBillingPatch,
+  type UpdateWorkspacePatch,
+  type UpsertAcpGrantInput,
+  type UpsertGitHubInstallationInput,
+  type WorkspaceApiKeyRecord,
+  type WorkspaceApiKeyScope,
+  type WorkspaceAutoJoin,
+  type WorkspaceInviteRecord,
+  type WorkspaceInviteWithRefs,
+  type WorkspaceMemberRecord,
+  type WorkspaceMemberRole,
+  type WorkspaceMemberWithUser,
+  type WorkspaceRecord,
+  type WorkspaceRepoBinding,
+  type WorkspaceRepository,
+  type WorkspaceUserHandleRecord,
 } from "./types";
 
 export interface DualWorkspaceRepositoryDeps {
@@ -448,7 +449,8 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
   }
 
   deleteWorkspaceCascade(workspaceId: string): Promise<boolean> {
-    const targets: ResyncTarget[] = [
+    const cascadeTargets: ResyncTarget[] = [
+      { table: "workspace_api_keys", scope: { workspaceId } },
       { table: "workspace_members", scope: { workspaceId } },
       { table: "workspace_invites", scope: { workspaceId } },
       { table: "workspace_user_handles", scope: { workspaceId } },
@@ -464,7 +466,7 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
         entityId: workspaceId,
         mongo: () => this.mongo.deleteWorkspaceCascade(workspaceId),
         pg: () => this.pg.deleteWorkspaceCascade(workspaceId),
-        targets,
+        targets: deleted => (deleted ? cascadeTargets : []),
       },
       this.ctx,
     );
@@ -536,15 +538,26 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
     workspaceId: string,
     options?: { includeSelfDirective?: boolean },
   ): Promise<void> {
-    return dualWrite(
+    // Stage 4 must still unset legacy Mongo fields on the secondary store so an
+    // emergency Stage 4 -> Stage 2 rollback never resurrects stale prompt text.
+    const router = this.ctx.router ?? migrationRouter;
+    return router.executeWrite(
       {
+        domain: WORKSPACES_DOMAIN,
         operation: "unsetLegacyCustomPrompt",
         entityId: workspaceId,
+        retryPayload: {
+          targets: [],
+          unsetLegacyCustomPrompt: {
+            workspaceId,
+            includeSelfDirective: Boolean(options?.includeSelfDirective),
+          },
+        },
+      },
+      {
         mongo: () => this.mongo.unsetLegacyCustomPrompt(workspaceId, options),
         pg: () => this.pg.unsetLegacyCustomPrompt(),
-        targets: [],
       },
-      this.ctx,
     );
   }
 
@@ -788,9 +801,7 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
 
   // ── 2. Workspace API keys ────────────────────────────────────────────
 
-  findApiKeyByHash(
-    keyHash: string,
-  ): Promise<{
+  findApiKeyByHash(keyHash: string): Promise<{
     workspace: WorkspaceRecord;
     apiKey: WorkspaceApiKeyRecord;
   } | null> {
@@ -900,24 +911,25 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
     );
   }
 
-  replaceApiKeyByName(
+  async replaceApiKeyByName(
     input: CreateApiKeyInput,
   ): Promise<WorkspaceApiKeyRecord> {
-    return dualWrite(
+    const { apiKey } = await dualWrite(
       {
         operation: "replaceApiKeyByName",
         entityId: input.workspaceId,
-        mongo: () => this.mongo.replaceApiKeyByName(input),
-        pg: () => this.pg.replaceApiKeyByName(input),
-        targets: [
+        mongo: () => this.mongo.replaceApiKeyByNameReturningReplacedIds(input),
+        pg: () => this.pg.replaceApiKeyByNameReturningReplacedIds(input),
+        targets: ({ apiKey: created, replacedIds }) => [
           {
             table: "workspace_api_keys",
-            scope: { workspaceId: input.workspaceId },
+            scope: { entityIds: [...replacedIds, created.id] },
           },
         ],
       },
       this.ctx,
     );
+    return apiKey;
   }
 
   updateApiKeyScopesByName(
@@ -948,95 +960,117 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
         entityId: keyId,
         mongo: () => this.mongo.deleteApiKey(workspaceId, keyId),
         pg: () => this.pg.deleteApiKey(workspaceId, keyId),
-        targets: [
-          { table: "workspace_api_keys", scope: { entityIds: [keyId] } },
-        ],
-      },
-      this.ctx,
-    );
-  }
-
-  deleteApiKeysByName(workspaceId: string, name: string): Promise<number> {
-    return dualWrite(
-      {
-        operation: "deleteApiKeysByName",
-        entityId: workspaceId,
-        mongo: () => this.mongo.deleteApiKeysByName(workspaceId, name),
-        pg: () => this.pg.deleteApiKeysByName(workspaceId, name),
-        targets: [{ table: "workspace_api_keys", scope: { workspaceId } }],
-      },
-      this.ctx,
-    );
-  }
-
-  deleteApiKeysByCreator(
-    workspaceId: string,
-    createdBy: string,
-  ): Promise<number> {
-    return dualWrite(
-      {
-        operation: "deleteApiKeysByCreator",
-        entityId: workspaceId,
-        mongo: () => this.mongo.deleteApiKeysByCreator(workspaceId, createdBy),
-        pg: () => this.pg.deleteApiKeysByCreator(workspaceId, createdBy),
-        targets: [{ table: "workspace_api_keys", scope: { workspaceId } }],
-      },
-      this.ctx,
-    );
-  }
-
-  pruneExpiredApiKeysByNamePrefix(
-    workspaceId: string,
-    namePrefix: string,
-    createdBefore: Date,
-  ): Promise<number> {
-    return dualWrite(
-      {
-        operation: "pruneExpiredApiKeysByNamePrefix",
-        entityId: workspaceId,
-        mongo: () =>
-          this.mongo.pruneExpiredApiKeysByNamePrefix(
-            workspaceId,
-            namePrefix,
-            createdBefore,
-          ),
-        pg: () =>
-          this.pg.pruneExpiredApiKeysByNamePrefix(
-            workspaceId,
-            namePrefix,
-            createdBefore,
-          ),
-        targets: count =>
-          count > 0
-            ? [{ table: "workspace_api_keys", scope: { workspaceId } }]
+        targets: deleted =>
+          deleted
+            ? [{ table: "workspace_api_keys", scope: { entityIds: [keyId] } }]
             : [],
       },
       this.ctx,
     );
   }
 
-  touchApiKeyLastUsed(
+  async deleteApiKeysByName(
+    workspaceId: string,
+    name: string,
+  ): Promise<number> {
+    const deletedIds = await dualWrite(
+      {
+        operation: "deleteApiKeysByName",
+        entityId: workspaceId,
+        mongo: () =>
+          this.mongo.deleteApiKeysByNameReturningIds(workspaceId, name),
+        pg: () => this.pg.deleteApiKeysByNameReturningIds(workspaceId, name),
+        targets: ids =>
+          ids.length > 0
+            ? [{ table: "workspace_api_keys", scope: { entityIds: ids } }]
+            : [],
+      },
+      this.ctx,
+    );
+    return deletedIds.length;
+  }
+
+  async deleteApiKeysByCreator(
+    workspaceId: string,
+    createdBy: string,
+  ): Promise<number> {
+    const deletedIds = await dualWrite(
+      {
+        operation: "deleteApiKeysByCreator",
+        entityId: workspaceId,
+        mongo: () =>
+          this.mongo.deleteApiKeysByCreatorReturningIds(workspaceId, createdBy),
+        pg: () =>
+          this.pg.deleteApiKeysByCreatorReturningIds(workspaceId, createdBy),
+        targets: ids =>
+          ids.length > 0
+            ? [{ table: "workspace_api_keys", scope: { entityIds: ids } }]
+            : [],
+      },
+      this.ctx,
+    );
+    return deletedIds.length;
+  }
+
+  async pruneExpiredApiKeysByNamePrefix(
+    workspaceId: string,
+    namePrefix: string,
+    createdBefore: Date,
+  ): Promise<number> {
+    const deletedIds = await dualWrite(
+      {
+        operation: "pruneExpiredApiKeysByNamePrefix",
+        entityId: workspaceId,
+        mongo: () =>
+          this.mongo.pruneExpiredApiKeysByNamePrefixReturningIds(
+            workspaceId,
+            namePrefix,
+            createdBefore,
+          ),
+        pg: () =>
+          this.pg.pruneExpiredApiKeysByNamePrefixReturningIds(
+            workspaceId,
+            namePrefix,
+            createdBefore,
+          ),
+        targets: ids =>
+          ids.length > 0
+            ? [{ table: "workspace_api_keys", scope: { entityIds: ids } }]
+            : [],
+      },
+      this.ctx,
+    );
+    return deletedIds.length;
+  }
+
+  async touchApiKeyLastUsed(
     workspaceId: string,
     keyId: string,
     now?: Date,
     minIntervalMs?: number,
   ): Promise<void> {
-    return dualWrite(
+    await dualWrite(
       {
         operation: "touchApiKeyLastUsed",
         entityId: keyId,
         mongo: () =>
-          this.mongo.touchApiKeyLastUsed(
+          this.mongo.touchApiKeyLastUsedReturningChanged(
             workspaceId,
             keyId,
             now,
             minIntervalMs,
           ),
         pg: () =>
-          this.pg.touchApiKeyLastUsed(workspaceId, keyId, now, minIntervalMs),
-        targets: [
-          { table: "workspace_api_keys", scope: { entityIds: [keyId] } },
-        ],
+          this.pg.touchApiKeyLastUsedReturningChanged(
+            workspaceId,
+            keyId,
+            now,
+            minIntervalMs,
+          ),
+        targets: changed =>
+          changed
+            ? [{ table: "workspace_api_keys", scope: { entityIds: [keyId] } }]
+            : [],
       },
       this.ctx,
     );
@@ -1323,17 +1357,21 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
     );
   }
 
-  removeMember(workspaceId: string, userId: string): Promise<boolean> {
-    return dualWrite(
+  async removeMember(workspaceId: string, userId: string): Promise<boolean> {
+    const deletedId = await dualWrite(
       {
         operation: "removeMember",
         entityId: `${workspaceId}:${userId}`,
-        mongo: () => this.mongo.removeMember(workspaceId, userId),
-        pg: () => this.pg.removeMember(workspaceId, userId),
-        targets: [{ table: "workspace_members", scope: { workspaceId } }],
+        mongo: () => this.mongo.removeMemberReturningId(workspaceId, userId),
+        pg: () => this.pg.removeMemberReturningId(workspaceId, userId),
+        targets: id =>
+          id
+            ? [{ table: "workspace_members", scope: { entityIds: [id] } }]
+            : [],
       },
       this.ctx,
     );
+    return deletedId !== null;
   }
 
   // ── 4. Workspace invites ─────────────────────────────────────────────
@@ -1587,9 +1625,10 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
         entityId: inviteId,
         mongo: () => this.mongo.cancelInvite(inviteId),
         pg: () => this.pg.cancelInvite(inviteId),
-        targets: [
-          { table: "workspace_invites", scope: { entityIds: [inviteId] } },
-        ],
+        targets: deleted =>
+          deleted
+            ? [{ table: "workspace_invites", scope: { entityIds: [inviteId] } }]
+            : [],
       },
       this.ctx,
     );
@@ -1886,21 +1925,31 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
     );
   }
 
-  touchMcpTokenLastUsed(
+  async touchMcpTokenLastUsed(
     tokenId: string,
     now?: Date,
     minIntervalMs?: number,
   ): Promise<void> {
-    return dualWrite(
+    await dualWrite(
       {
         operation: "touchMcpTokenLastUsed",
         entityId: tokenId,
         mongo: () =>
-          this.mongo.touchMcpTokenLastUsed(tokenId, now, minIntervalMs),
-        pg: () => this.pg.touchMcpTokenLastUsed(tokenId, now, minIntervalMs),
-        targets: [
-          { table: "mcp_oauth_tokens", scope: { entityIds: [tokenId] } },
-        ],
+          this.mongo.touchMcpTokenLastUsedReturningChanged(
+            tokenId,
+            now,
+            minIntervalMs,
+          ),
+        pg: () =>
+          this.pg.touchMcpTokenLastUsedReturningChanged(
+            tokenId,
+            now,
+            minIntervalMs,
+          ),
+        targets: changed =>
+          changed
+            ? [{ table: "mcp_oauth_tokens", scope: { entityIds: [tokenId] } }]
+            : [],
       },
       this.ctx,
     );
@@ -1953,47 +2002,45 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
     );
   }
 
-  revokeMcpGrantsForMember(input: {
+  async revokeMcpGrantsForMember(input: {
     workspaceId: string;
     userId: string;
   }): Promise<number> {
-    return dualWrite(
+    const deletedIds = await dualWrite(
       {
         operation: "revokeMcpGrantsForMember",
         entityId: `${input.workspaceId}:${input.userId}`,
-        mongo: () => this.mongo.revokeMcpGrantsForMember(input),
-        pg: () => this.pg.revokeMcpGrantsForMember(input),
-        targets: [
-          {
-            table: "mcp_oauth_tokens",
-            scope: { workspaceId: input.workspaceId },
-          },
-        ],
+        mongo: () => this.mongo.revokeMcpGrantsForMemberReturningIds(input),
+        pg: () => this.pg.revokeMcpGrantsForMemberReturningIds(input),
+        targets: ids =>
+          ids.length > 0
+            ? [{ table: "mcp_oauth_tokens", scope: { entityIds: ids } }]
+            : [],
       },
       this.ctx,
     );
+    return deletedIds.length;
   }
 
-  revokeMcpConnection(input: {
+  async revokeMcpConnection(input: {
     workspaceId: string;
     clientId: string;
     userId: string;
   }): Promise<number> {
-    return dualWrite(
+    const deletedIds = await dualWrite(
       {
         operation: "revokeMcpConnection",
         entityId: `${input.workspaceId}:${input.clientId}:${input.userId}`,
-        mongo: () => this.mongo.revokeMcpConnection(input),
-        pg: () => this.pg.revokeMcpConnection(input),
-        targets: [
-          {
-            table: "mcp_oauth_tokens",
-            scope: { workspaceId: input.workspaceId },
-          },
-        ],
+        mongo: () => this.mongo.revokeMcpConnectionReturningIds(input),
+        pg: () => this.pg.revokeMcpConnectionReturningIds(input),
+        targets: ids =>
+          ids.length > 0
+            ? [{ table: "mcp_oauth_tokens", scope: { entityIds: ids } }]
+            : [],
       },
       this.ctx,
     );
+    return deletedIds.length;
   }
 
   // ── 9. ACP plan grants ───────────────────────────────────────────────
@@ -2025,12 +2072,15 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
         entityId: input.agentSessionId,
         mongo: () => this.mongo.revokeAcpGrant(input),
         pg: () => this.pg.revokeAcpGrant(input),
-        targets: [
-          {
-            table: "acp_plan_grants",
-            scope: { workspaceId: input.workspaceId },
-          },
-        ],
+        targets: revoked =>
+          revoked
+            ? [
+                {
+                  table: "acp_plan_grants",
+                  scope: { workspaceId: input.workspaceId },
+                },
+              ]
+            : [],
       },
       this.ctx,
     );
@@ -2174,21 +2224,32 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
     );
   }
 
-  deleteGitHubInstallation(
+  async deleteGitHubInstallation(
     workspaceId: string,
     installationId: number,
   ): Promise<boolean> {
-    return dualWrite(
+    const deletedId = await dualWrite(
       {
         operation: "deleteGitHubInstallation",
         entityId: `${workspaceId}:${installationId}`,
         mongo: () =>
-          this.mongo.deleteGitHubInstallation(workspaceId, installationId),
-        pg: () => this.pg.deleteGitHubInstallation(workspaceId, installationId),
-        targets: [{ table: "github_installations", scope: { workspaceId } }],
+          this.mongo.deleteGitHubInstallationReturningId(
+            workspaceId,
+            installationId,
+          ),
+        pg: () =>
+          this.pg.deleteGitHubInstallationReturningId(
+            workspaceId,
+            installationId,
+          ),
+        targets: id =>
+          id
+            ? [{ table: "github_installations", scope: { entityIds: [id] } }]
+            : [],
       },
       this.ctx,
     );
+    return deletedId !== null;
   }
 
   async deleteGitHubInstallationsByInstallationId(
@@ -2216,33 +2277,34 @@ export class DualWorkspaceRepository implements WorkspaceRepository {
     return deletedIds.length;
   }
 
-  pruneStaleGitHubInstallations(
+  async pruneStaleGitHubInstallations(
     workspaceId: string,
     accountLogin: string,
     keepInstallationId: number,
   ): Promise<number> {
-    return dualWrite(
+    const deletedIds = await dualWrite(
       {
         operation: "pruneStaleGitHubInstallations",
         entityId: `${workspaceId}:${accountLogin}`,
         mongo: () =>
-          this.mongo.pruneStaleGitHubInstallations(
+          this.mongo.pruneStaleGitHubInstallationsReturningIds(
             workspaceId,
             accountLogin,
             keepInstallationId,
           ),
         pg: () =>
-          this.pg.pruneStaleGitHubInstallations(
+          this.pg.pruneStaleGitHubInstallationsReturningIds(
             workspaceId,
             accountLogin,
             keepInstallationId,
           ),
-        targets: count =>
-          count > 0
-            ? [{ table: "github_installations", scope: { workspaceId } }]
+        targets: ids =>
+          ids.length > 0
+            ? [{ table: "github_installations", scope: { entityIds: ids } }]
             : [],
       },
       this.ctx,
     );
+    return deletedIds.length;
   }
 }

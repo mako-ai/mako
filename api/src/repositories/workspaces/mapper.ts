@@ -405,7 +405,7 @@ export function normalizeWorkflows(
   if (lastNeededAt) {
     out.lastNeededAt = lastNeededAt;
   }
-  return out;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export function mongoWorkspaceToRecord(
@@ -887,6 +887,7 @@ export function mongoInviteToRecord(
 export function inviteRecordToPgRow(
   record: WorkspaceInviteRecord,
   mapUserUuid: NullableUserUuidMapper = defaultNullableUserUuid,
+  updatedAt: Date = record.acceptedAt ?? record.createdAt,
 ): NewWorkspaceInviteRow {
   return {
     id: toPgUuid(record.id),
@@ -898,7 +899,7 @@ export function inviteRecordToPgRow(
     expiresAt: record.expiresAt,
     acceptedAt: record.acceptedAt ?? null,
     createdAt: record.createdAt,
-    updatedAt: record.acceptedAt ?? record.createdAt,
+    updatedAt,
   };
 }
 

@@ -1156,10 +1156,17 @@ async function upsertWorkspacesBackfillItems(
         );
         const { id: _id, ...rest } = row;
         void _id;
-        await db.insert(workspaceApiKeys).values(row).onConflictDoUpdate({
-          target: workspaceApiKeys.id,
-          set: rest,
-        });
+        await db
+          .insert(workspaceApiKeys)
+          .values(row)
+          .onConflictDoUpdate({
+            target: workspaceApiKeys.id,
+            set: {
+              ...rest,
+              lastUsedAt: sql`GREATEST(${workspaceApiKeys.lastUsedAt}, excluded.last_used_at)`,
+            },
+            setWhere: sql`${workspaceApiKeys.lastUsedAt} IS NULL OR (excluded.last_used_at IS NOT NULL AND ${workspaceApiKeys.lastUsedAt} <= excluded.last_used_at)`,
+          });
         upserted += 1;
         break;
       }
@@ -1172,10 +1179,14 @@ async function upsertWorkspacesBackfillItems(
         const row = memberRecordToPgRow(doc.record, () => userUuid);
         const { id: _id, ...rest } = row;
         void _id;
-        await db.insert(workspaceMembers).values(row).onConflictDoUpdate({
-          target: workspaceMembers.id,
-          set: rest,
-        });
+        await db
+          .insert(workspaceMembers)
+          .values(row)
+          .onConflictDoUpdate({
+            target: workspaceMembers.id,
+            set: rest,
+            setWhere: sql`${workspaceMembers.updatedAt} <= excluded.updated_at`,
+          });
         upserted += 1;
         break;
       }
@@ -1187,10 +1198,17 @@ async function upsertWorkspacesBackfillItems(
         );
         const { id: _id, ...rest } = row;
         void _id;
-        await db.insert(workspaceInvites).values(row).onConflictDoUpdate({
-          target: workspaceInvites.id,
-          set: rest,
-        });
+        await db
+          .insert(workspaceInvites)
+          .values(row)
+          .onConflictDoUpdate({
+            target: workspaceInvites.id,
+            set: {
+              ...rest,
+              acceptedAt: sql`COALESCE(${workspaceInvites.acceptedAt}, excluded.accepted_at)`,
+            },
+            setWhere: sql`${workspaceInvites.acceptedAt} IS NULL AND ${workspaceInvites.updatedAt} <= excluded.updated_at AND ${workspaceInvites.expiresAt} <= excluded.expires_at`,
+          });
         upserted += 1;
         break;
       }
@@ -1202,10 +1220,14 @@ async function upsertWorkspacesBackfillItems(
         );
         const { id: _id, ...rest } = row;
         void _id;
-        await db.insert(workspaceUserHandles).values(row).onConflictDoUpdate({
-          target: workspaceUserHandles.id,
-          set: rest,
-        });
+        await db
+          .insert(workspaceUserHandles)
+          .values(row)
+          .onConflictDoUpdate({
+            target: workspaceUserHandles.id,
+            set: rest,
+            setWhere: sql`${workspaceUserHandles.updatedAt} <= excluded.updated_at`,
+          });
         upserted += 1;
         break;
       }
@@ -1217,26 +1239,23 @@ async function upsertWorkspacesBackfillItems(
         );
         const { id: _id, ...rest } = row;
         void _id;
-        await db.insert(githubInstallations).values(row).onConflictDoUpdate({
-          target: githubInstallations.id,
-          set: rest,
-        });
+        await db
+          .insert(githubInstallations)
+          .values(row)
+          .onConflictDoUpdate({
+            target: githubInstallations.id,
+            set: rest,
+            setWhere: sql`${githubInstallations.updatedAt} <= excluded.updated_at`,
+          });
         upserted += 1;
         break;
       }
 
       case "mcp_oauth_clients": {
         const row = mcpClientRecordToPgRow(doc.record);
-        await db
-          .insert(mcpOAuthClients)
-          .values(row)
-          .onConflictDoUpdate({
-            target: mcpOAuthClients.clientId,
-            set: {
-              clientName: row.clientName,
-              redirectUris: row.redirectUris,
-            },
-          });
+        await db.insert(mcpOAuthClients).values(row).onConflictDoNothing({
+          target: mcpOAuthClients.clientId,
+        });
         upserted += 1;
         break;
       }
@@ -1249,10 +1268,17 @@ async function upsertWorkspacesBackfillItems(
         const row = mcpCodeRecordToPgRow(doc.record, () => userUuid);
         const { id: _id, ...rest } = row;
         void _id;
-        await db.insert(mcpOAuthCodes).values(row).onConflictDoUpdate({
-          target: mcpOAuthCodes.id,
-          set: rest,
-        });
+        await db
+          .insert(mcpOAuthCodes)
+          .values(row)
+          .onConflictDoUpdate({
+            target: mcpOAuthCodes.id,
+            set: {
+              ...rest,
+              usedAt: sql`COALESCE(${mcpOAuthCodes.usedAt}, excluded.used_at)`,
+            },
+            setWhere: sql`${mcpOAuthCodes.usedAt} IS NULL`,
+          });
         upserted += 1;
         break;
       }
@@ -1265,10 +1291,17 @@ async function upsertWorkspacesBackfillItems(
         const row = mcpTokenRecordToPgRow(doc.record, () => userUuid);
         const { id: _id, ...rest } = row;
         void _id;
-        await db.insert(mcpOAuthTokens).values(row).onConflictDoUpdate({
-          target: mcpOAuthTokens.id,
-          set: rest,
-        });
+        await db
+          .insert(mcpOAuthTokens)
+          .values(row)
+          .onConflictDoUpdate({
+            target: mcpOAuthTokens.id,
+            set: {
+              ...rest,
+              lastUsedAt: sql`GREATEST(${mcpOAuthTokens.lastUsedAt}, excluded.last_used_at)`,
+            },
+            setWhere: sql`${mcpOAuthTokens.updatedAt} <= excluded.updated_at AND ${mcpOAuthTokens.accessExpiresAt} <= excluded.access_expires_at AND (${mcpOAuthTokens.lastUsedAt} IS NULL OR (excluded.last_used_at IS NOT NULL AND ${mcpOAuthTokens.lastUsedAt} <= excluded.last_used_at))`,
+          });
         upserted += 1;
         break;
       }
@@ -1281,10 +1314,14 @@ async function upsertWorkspacesBackfillItems(
         const row = acpGrantRecordToPgRow(doc.record, () => userUuid);
         const { id: _id, ...rest } = row;
         void _id;
-        await db.insert(acpPlanGrants).values(row).onConflictDoUpdate({
-          target: acpPlanGrants.id,
-          set: rest,
-        });
+        await db
+          .insert(acpPlanGrants)
+          .values(row)
+          .onConflictDoUpdate({
+            target: acpPlanGrants.id,
+            set: rest,
+            setWhere: sql`${acpPlanGrants.updatedAt} <= excluded.updated_at AND (${acpPlanGrants.status} <> 'revoked' OR excluded.status = 'revoked' OR ${acpPlanGrants.updatedAt} < excluded.updated_at)`,
+          });
         upserted += 1;
         break;
       }
