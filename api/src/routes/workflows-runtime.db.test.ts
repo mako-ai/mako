@@ -1,18 +1,23 @@
 /**
- * The worker's routes against a real (in-memory) Mongo: which commit to run,
+ * The worker's routes against PGlite: which commit to run,
  * and what the worker reports back. These three calls are the whole deploy
  * protocol between Mako and a worker, so they are tested as the worker uses
  * them.
  */
 import assert from "node:assert/strict";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
+import { and, eq } from "drizzle-orm";
+import { workspaces, llmUsage } from "../database/pg/schema";
+import { workspaceRepo } from "../repositories/workspaces";
+import type { WorkspaceApiKeyScope } from "../auth/api-key-scopes";
+import { ensureTestWorkspace, setupPgTestDb } from "../test-support/pg-test";
+import {
+  pgLlmUsageToRecord,
+  usageStatsRepo,
+} from "../repositories/usage-stats";
 import { OpenAPIHono } from "@hono/zod-openapi";
 
 import { hashApiKey } from "../auth/api-key.middleware";
-import { LlmUsage, User } from "../database/schema";
 import { loggingMiddleware } from "../logging";
-import { Workspace } from "../database/workspace-schema";
 import { encryptString } from "../services/crypto.service";
 import { keyIdOf } from "../workflows/pass";
 import { setFirstReadRetryForTests } from "../workflows/runs";
@@ -51,15 +56,19 @@ const call = (path: string, key: string, body?: unknown) =>
   });
 
 async function main() {
-  const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  const h = await setupPgTestDb();
   process.env.HATCHET_CLIENT_TOKEN = HATCHET_TOKEN;
   process.env.ENCRYPTION_KEY ??= "0".repeat(64);
   try {
-    const id = new Types.ObjectId();
-    await User.create({ _id: "tester", email: "tester@example.com" });
-    const key = (name: string, value: string, scopes: string[]) => ({
-      _id: new Types.ObjectId(),
+    const workspace = await ensureTestWorkspace(h.db, {
+      ownerUserId: "tester",
+    });
+    const id = workspace.id;
+    const key = (
+      name: string,
+      value: string,
+      scopes: WorkspaceApiKeyScope[],
+    ) => ({
       name,
       keyHash: hashApiKey(value),
       prefix: value.slice(0, 14),
@@ -67,31 +76,29 @@ async function main() {
       createdAt: new Date(),
       createdBy: "tester",
     });
-    await Workspace.collection.insertOne({
-      _id: id,
-      name: "t",
-      slug: `t-${id}`,
-      createdBy: "tester",
-      apiKeys: [
-        key(workerKeyName(), WORKER_KEY, [
-          "mcp",
-          "query:read",
-          "workflows:runtime",
-        ]),
-        key("ordinary", OTHER_KEY, ["mcp", "query:read"]),
-      ],
-      workflows: {
-        hatchetToken: encryptString(HATCHET_TOKEN),
-        live: {
+    for (const apiKey of [
+      key(workerKeyName(), WORKER_KEY, [
+        "mcp",
+        "query:read",
+        "workflows:runtime",
+      ]),
+      key("ordinary", OTHER_KEY, ["mcp", "query:read"]),
+    ]) {
+      await workspaceRepo.createApiKey({ workspaceId: id, ...apiKey });
+    }
+    await h.db
+      .update(workspaces)
+      .set({
+        workflowsHatchetTokenEncrypted: encryptString(HATCHET_TOKEN),
+        workflowsLive: {
           sha: SHA_A,
           tree: "tree-a",
           names: ["digest", "crm-chat-classifier"],
         },
-        active: ["digest"],
-      },
-    });
-    const state = async () =>
-      (await Workspace.findById(id).select("workflows").lean())?.workflows;
+        workflowsActive: ["digest"],
+      })
+      .where(eq(workspaces.id, workspace.uuid));
+    const state = async () => (await workspaceRepo.findById(id))?.workflows;
 
     // Only the worker's key gets in: no key, an ordinary key, a wrong key.
     assert.equal((await call("/head", "")).status, 401);
@@ -129,12 +136,11 @@ async function main() {
 
     // A new commit is wanted; its build error is recorded and leaves the
     // running commit alone.
-    await Workspace.updateOne(
-      { _id: id },
-      {
-        $set: { "workflows.live.sha": SHA_B, "workflows.live.tree": "tree-b" },
-      },
-    );
+    await workspaceRepo.setWorkflowLiveTarget(id, {
+      sha: SHA_B,
+      tree: "tree-b",
+      names: ["digest", "crm-chat-classifier"],
+    });
     assert.equal(
       (await call("/status", WORKER_KEY, { sha: SHA_B, error: "TS2322" }))
         .status,
@@ -218,14 +224,29 @@ async function main() {
           questions: [{ name: "intent" }],
         }),
       });
+    const findUsage = async (modelId: string) => {
+      const [row] = await h.db
+        .select()
+        .from(llmUsage)
+        .where(
+          and(
+            eq(llmUsage.workspaceId, workspace.uuid),
+            eq(llmUsage.modelId, modelId),
+          ),
+        );
+      return row && pgLlmUsageToRecord(row);
+    };
     const usageRows = async (expected: number) => {
       // trackUsage is not awaited by the route.
       for (let i = 0; i < 50; i++) {
-        const n = await LlmUsage.countDocuments({ workspaceId: id });
+        const n = await h.db.$count(
+          llmUsage,
+          eq(llmUsage.workspaceId, workspace.uuid),
+        );
         if (n >= expected) return n;
         await new Promise(resolve => setTimeout(resolve, 20));
       }
-      return LlmUsage.countDocuments({ workspaceId: id });
+      return h.db.$count(llmUsage, eq(llmUsage.workspaceId, workspace.uuid));
     };
     try {
       // The dispatcher asks for a pass per step: the worker key only, for a
@@ -331,13 +352,14 @@ async function main() {
         },
       );
       assert.equal(await usageRows(1), 1);
-      const row = await LlmUsage.findOne({ workspaceId: id }).lean();
+      const row = await findUsage("typesafe-ai/jev");
       assert.equal(row?.invocationType, "workflow");
       assert.equal(row?.modelId, "typesafe-ai/jev");
       assert.equal(row?.inputTokens, 120);
       assert.equal(row?.outputTokens, 4);
       assert.equal(row?.totalTokens, 124);
-      assert.equal(row?.costUsd, 0.000031374);
+      // The Postgres numeric column stores eight decimal places.
+      assert.equal(row?.costUsd, 0.00003137);
       // Counted against the run and step it came from, the workflow being
       // the deployed one Mako checked.
       assert.deepEqual(row?.workflowRun, {
@@ -356,7 +378,10 @@ async function main() {
       assert.equal(missing.status, 404);
       assert.deepEqual(await missing.json(), { error: "model not found" });
       await new Promise(resolve => setTimeout(resolve, 100));
-      assert.equal(await LlmUsage.countDocuments({ workspaceId: id }), 1);
+      assert.equal(
+        await h.db.$count(llmUsage, eq(llmUsage.workspaceId, workspace.uuid)),
+        1,
+      );
 
       // A language model goes to the gateway path of the spec version the
       // client states. `@ai-sdk/gateway` 3 (ai@6, the runtime's) passes the
@@ -408,10 +433,7 @@ async function main() {
       };
       assert.equal(generatedBody.usage.inputTokens.total, 13);
       assert.equal(await usageRows(2), 2);
-      const lmRow = await LlmUsage.findOne({
-        workspaceId: id,
-        modelId: "openai/gpt-4o-mini",
-      }).lean();
+      const lmRow = await findUsage("openai/gpt-4o-mini");
       assert.equal(lmRow?.inputTokens, 13);
       assert.equal(lmRow?.outputTokens, 3);
       // A client stating ai@7's spec goes to /v4/ai; one stating none keeps
@@ -430,11 +452,8 @@ async function main() {
 
       // Over its plan's limit, the call is refused before the gateway.
       process.env.BILLING_ENABLED = "true";
-      await Workspace.updateOne(
-        { _id: id },
-        { $set: { billing: { plan: "pro", hardLimitUsd: 1 } } },
-      );
-      await LlmUsage.create({
+      await workspaceRepo.updateBilling(id, { plan: "pro", hardLimitUsd: 1 });
+      await usageStatsRepo.createLlmUsage({
         workspaceId: id,
         userId: "tester",
         invocationType: "workflow",
@@ -456,8 +475,7 @@ async function main() {
     console.log("workflows runtime route tests passed");
   } finally {
     delete process.env.HATCHET_CLIENT_TOKEN;
-    await mongoose.disconnect();
-    await mongo.stop();
+    await h.close();
   }
 }
 

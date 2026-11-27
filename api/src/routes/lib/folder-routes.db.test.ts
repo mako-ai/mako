@@ -1,51 +1,42 @@
 /**
- * createModelFolderBackend against real Mongoose models (in-memory Mongo).
- *
- * The registrar's shell has its own test (folder-routes.test.ts, fake
- * backend); this one proves the model-backed backend's semantics with the
- * real NotebookFolder/NotebookIndex models behind the real routes: the
- * canWriteResource ACL matrix (owner / admin / member, private / workspace
- * — including the "admins cannot touch others' private folders" privacy
- * guarantee), cascade delete with item unlinking, and cycle-safe moves.
+ * Notebook folder routes backed by PGlite. Exercise ownership, the
+ * owner/admin/member ACL matrix, subtree delete with item unlinking, and
+ * cycle-safe moves through the production registrar and notebook backend.
  *
  * Run: npx tsx src/routes/lib/folder-routes.db.test.ts
  */
 import assert from "node:assert/strict";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
 import { OpenAPIHono } from "@hono/zod-openapi";
 
-import { NotebookFolder, NotebookIndex } from "../../database/workspace-schema";
-import { createRouter } from "../../openapi/core";
+import { sessionManager } from "../../auth/session";
+import { generateObjectIdHex } from "../../database/pg/id-codec";
+import { consolesChartsRepo } from "../../repositories/consoles-charts";
 import {
-  createModelFolderBackend,
-  registerFolderRoutes,
-} from "./folder-routes";
+  ensureTestMember,
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+} from "../../test-support/pg-test";
+import { notebookRoutes } from "../notebooks";
 
-const WS = new Types.ObjectId();
-const base = `/api/workspaces/${WS.toString()}/things`;
+const WS = generateObjectIdHex();
+const base = `/api/workspaces/${WS}/notebooks`;
+const app = new OpenAPIHono();
+app.route("/api/workspaces/:workspaceId/notebooks", notebookRoutes);
 
-function makeApp(user: { id: string }, role: string): OpenAPIHono {
-  const router = createRouter();
-  router.use("*", async (c, next) => {
-    c.set("user", user as never);
-    c.set("memberRole", role as never);
-    await next();
-  });
-  registerFolderRoutes(router, {
-    tag: "Test",
-    schemaPrefix: `Db${schemaCounter++}`,
-    backend: createModelFolderBackend({
-      folderModel: NotebookFolder,
-      itemModel: NotebookIndex,
-      moveItem: async () => ({ ok: true }),
-    }),
-  });
-  const app = new OpenAPIHono();
-  app.route("/api/workspaces/:workspaceId/things", router);
-  return app;
+async function asUser(userId: string) {
+  const session = await sessionManager.createSession(userId);
+  const { name, value } = sessionManager.createSessionCookie(session.id);
+  return {
+    request: (path: string, init: RequestInit) => {
+      const headers = new Headers(init.headers);
+      headers.set("cookie", `${name}=${value}`);
+      return app.request(path, { ...init, headers });
+    },
+  };
 }
-let schemaCounter = 0;
+
+type Actor = Awaited<ReturnType<typeof asUser>>;
 
 const json = (method: string, body: unknown): RequestInit => ({
   method,
@@ -54,7 +45,7 @@ const json = (method: string, body: unknown): RequestInit => ({
 });
 
 async function createVia(
-  app: OpenAPIHono,
+  app: Actor,
   body: Record<string, unknown>,
 ): Promise<string> {
   const res = await app.request(`${base}/folders`, json("POST", body));
@@ -64,14 +55,25 @@ async function createVia(
 }
 
 async function main(): Promise<void> {
-  const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-
-  const owner = makeApp({ id: "owner-1" }, "member");
-  const member = makeApp({ id: "member-2" }, "member");
-  const admin = makeApp({ id: "admin-3" }, "admin");
-
+  const h = await setupPgTestDb();
   try {
+    await ensureTestWorkspace(h.db, { id: WS });
+    const ownerUser = await ensureTestUser(h.db, { id: "owner-1" });
+    const memberUser = await ensureTestUser(h.db, { id: "member-2" });
+    const adminUser = await ensureTestUser(h.db, { id: "admin-3" });
+    await ensureTestMember(h.db, { workspaceId: WS, userId: ownerUser.id });
+    await ensureTestMember(h.db, { workspaceId: WS, userId: memberUser.id });
+    await ensureTestMember(h.db, {
+      workspaceId: WS,
+      userId: adminUser.id,
+      role: "admin",
+    });
+    const owner = await asUser(ownerUser.id);
+    const member = await asUser(memberUser.id);
+    const admin = await asUser(adminUser.id);
+    const findFolder = (id: string) =>
+      consolesChartsRepo.findNotebookFolderById(WS, id);
+
     // ── create persists ownership, access, and parent ──
     const privateId = await createVia(owner, { name: "Private stuff" });
     const workspaceId = await createVia(owner, {
@@ -83,15 +85,15 @@ async function main(): Promise<void> {
       parentId: privateId,
     });
     {
-      const doc = await NotebookFolder.findById(privateId).lean();
-      assert.equal(doc?.ownerId, "owner-1");
+      const doc = await findFolder(privateId);
+      assert.equal(doc?.ownerId, ownerUser.id);
       assert.equal(doc?.access, "private");
-      const child = await NotebookFolder.findById(childId).lean();
+      const child = await findFolder(childId);
       assert.equal(child?.parentId?.toString(), privateId);
     }
 
     // ── ACL matrix on rename ──
-    const rename = (app: OpenAPIHono, id: string, name: string) =>
+    const rename = (app: Actor, id: string, name: string) =>
       app.request(`${base}/folders/${id}/rename`, json("PATCH", { name }));
 
     assert.equal((await rename(owner, privateId, "Mine")).status, 200);
@@ -103,13 +105,10 @@ async function main(): Promise<void> {
     assert.equal((await rename(member, workspaceId, "Nope")).status, 403);
     // … while admins are editors on workspace-visible resources.
     assert.equal((await rename(admin, workspaceId, "Team")).status, 200);
-    assert.equal(
-      (await NotebookFolder.findById(workspaceId).lean())?.name,
-      "Team",
-    );
+    assert.equal((await findFolder(workspaceId))?.name, "Team");
 
     // ── move: cycle rejected, reparent + access change applied ──
-    const move = (app: OpenAPIHono, id: string, body: unknown) =>
+    const move = (app: Actor, id: string, body: unknown) =>
       app.request(`${base}/folders/${id}/move`, json("PATCH", body));
 
     const cycle = await move(owner, privateId, { parentId: childId });
@@ -130,7 +129,7 @@ async function main(): Promise<void> {
       200,
     );
     {
-      const doc = await NotebookFolder.findById(childId).lean();
+      const doc = await findFolder(childId);
       assert.equal(doc?.parentId ?? null, null);
       assert.equal(doc?.access, "workspace");
     }
@@ -139,35 +138,29 @@ async function main(): Promise<void> {
       (await move(owner, childId, { access: "private" })).status,
       200,
     );
-    assert.equal(
-      (await NotebookFolder.findById(childId).lean())?.parentId ?? null,
-      null,
-    );
+    assert.equal((await findFolder(childId))?.parentId ?? null, null);
     // Unknown folder id (valid ObjectId) is a 404.
-    assert.equal(
-      (await move(owner, new Types.ObjectId().toString(), {})).status,
-      404,
-    );
+    assert.equal((await move(owner, generateObjectIdHex(), {})).status, 404);
 
     // ── delete: cascades descendants, unlinks items, keeps the items ──
     const top = await createVia(owner, { name: "Tree" });
     const mid = await createVia(owner, { name: "Mid", parentId: top });
     const leaf = await createVia(owner, { name: "Leaf", parentId: mid });
-    const inLeaf = await NotebookIndex.create({
+    const inLeaf = await consolesChartsRepo.createNotebookIndex({
       workspaceId: WS,
       notebookId: "nb-1",
       name: "Doc in leaf",
-      ownerId: "owner-1",
+      ownerId: ownerUser.id,
       access: "private",
-      folderId: new Types.ObjectId(leaf),
+      folderId: leaf,
     });
-    const elsewhere = await NotebookIndex.create({
+    const elsewhere = await consolesChartsRepo.createNotebookIndex({
       workspaceId: WS,
       notebookId: "nb-2",
       name: "Unrelated",
-      ownerId: "owner-1",
+      ownerId: ownerUser.id,
       access: "private",
-      folderId: new Types.ObjectId(privateId),
+      folderId: privateId,
     });
 
     assert.equal(
@@ -181,36 +174,37 @@ async function main(): Promise<void> {
       200,
     );
     assert.equal(
-      await NotebookFolder.countDocuments({ _id: { $in: [top, mid, leaf] } }),
+      (await Promise.all([top, mid, leaf].map(findFolder))).filter(Boolean)
+        .length,
       0,
     );
-    const orphan = await NotebookIndex.findById(inLeaf._id).lean();
+    const orphan = await consolesChartsRepo.findNotebookIndex(
+      WS,
+      inLeaf.notebookId,
+    );
     assert.ok(orphan, "item under deleted folder must survive");
     assert.equal(orphan.folderId ?? null, null);
     assert.equal(
       (
-        await NotebookIndex.findById(elsewhere._id).lean()
+        await consolesChartsRepo.findNotebookIndex(WS, elsewhere.notebookId)
       )?.folderId?.toString(),
       privateId,
       "items in other folders keep their folder",
     );
 
     // ── workspace scoping: another workspace's folder is invisible ──
-    const foreign = await NotebookFolder.create({
-      workspaceId: new Types.ObjectId(),
+    const other = await ensureTestWorkspace(h.db);
+    const foreign = await consolesChartsRepo.createNotebookFolder({
+      workspaceId: other.id,
       name: "Other tenant",
-      ownerId: "owner-1",
+      ownerId: ownerUser.id,
       access: "private",
     });
-    assert.equal(
-      (await rename(owner, foreign._id.toString(), "X")).status,
-      404,
-    );
+    assert.equal((await rename(owner, foreign.id, "X")).status, 404);
 
     console.log("folder-routes db tests passed");
   } finally {
-    await mongoose.disconnect();
-    await mongo.stop();
+    await h.close();
   }
 }
 

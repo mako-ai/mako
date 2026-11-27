@@ -5,23 +5,26 @@
  * Run with: pnpm --filter api exec tsx src/workflows/costs.db.test.ts
  */
 import assert from "node:assert/strict";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
+import {
+  ensureTestWorkspace,
+  ensureTestUser,
+  setupPgTestDb,
+} from "../test-support/pg-test";
+import { usageStatsRepo } from "../repositories/usage-stats";
 
-import { LlmUsage } from "../database/schema";
 import { readRunCosts, readWorkflowCost } from "./costs";
 
 const RUN_A = "11111111-1111-1111-1111-111111111111";
 const RUN_B = "22222222-2222-2222-2222-222222222222";
 
 async function main() {
-  const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  const h = await setupPgTestDb();
   try {
-    const workspaceId = new Types.ObjectId();
-    const other = new Types.ObjectId();
+    const { id: workspaceId } = await ensureTestWorkspace(h.db);
+    const { id: other } = await ensureTestWorkspace(h.db);
+    await ensureTestUser(h.db, { id: "worker" });
     const call = (
-      ws: Types.ObjectId,
+      ws: string,
       costUsd: number,
       run?: { runId: string; step: string; backfilled?: boolean },
       workflowId = "classifier",
@@ -36,7 +39,7 @@ async function main() {
       costUsd,
       ...(run ? { workflowRun: { workflowId, ...run } } : {}),
     });
-    await LlmUsage.create([
+    for (const usage of [
       call(workspaceId, 0.1, { runId: RUN_A, step: "label" }),
       call(workspaceId, 0.2, { runId: RUN_A, step: "label" }),
       call(workspaceId, 0.05, { runId: RUN_A, step: "report" }),
@@ -46,7 +49,9 @@ async function main() {
       call(other, 9, { runId: RUN_A, step: "label" }),
       // Another workflow in the same workspace.
       call(workspaceId, 1, { runId: "33", step: "x" }, "other-flow"),
-    ]);
+    ]) {
+      await usageStatsRepo.createLlmUsage(usage);
+    }
 
     const costs = await readRunCosts(String(workspaceId), [
       RUN_A,
@@ -83,8 +88,7 @@ async function main() {
     );
     console.info("workflow costs tests passed");
   } finally {
-    await mongoose.disconnect();
-    await mongo.stop();
+    await h.close();
   }
 }
 

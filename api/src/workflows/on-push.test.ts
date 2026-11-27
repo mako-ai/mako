@@ -1,16 +1,16 @@
 /**
  * What a push deploys: the workspace's slot follows `workflows/` on main.
- * What leaves the repository leaves the worker. Real git, in-memory Mongo,
+ * What leaves the repository leaves the worker. Real git, PGlite,
  * a stored Hatchet token so no Hatchet is asked anything.
  *
  * Run with: pnpm --filter api exec tsx src/workflows/on-push.test.ts
  */
 import assert from "node:assert/strict";
+import { ensureTestWorkspace, setupPgTestDb } from "../test-support/pg-test";
+import { workspaceRepo } from "../repositories/workspaces";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
 
 const TOKEN = `x.${Buffer.from(
   JSON.stringify({ sub: "t", server_url: "https://hatchet.test" }),
@@ -21,28 +21,20 @@ async function main() {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "mako-wf-push-"));
   process.env.APPS_GIT_ROOT = path.join(tmp, "repos");
   delete process.env.WORKFLOWS_WORKER_KEY;
-  const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  const { Workspace } = await import("../database/workspace-schema");
+  const h = await setupPgTestDb();
   const { runGit } = await import("../apps/git");
   const { initRepo, repoDirFor } = await import("../apps/repository.service");
   const { deployCarries, deployWorkflowsFromRepo, hasWorkflowsToDeploy } =
     await import("./on-push");
   try {
-    const id = new Types.ObjectId();
-    const ws = id.toString();
-    await Workspace.collection.insertOne({
-      _id: id,
-      name: "t",
-      slug: `t-${ws}`,
-      createdBy: "owner",
-      workflows: { hatchetToken: TOKEN },
+    const { id: ws } = await ensureTestWorkspace(h.db, {
+      ownerUserId: "owner",
     });
+    await workspaceRepo.setWorkflowHatchetToken(ws, TOKEN);
     const repo = repoDirFor(ws);
     await initRepo(repo, { "README.md": "hi\n" });
     const git = (...args: string[]) => runGit(["-C", repo, ...args]);
-    const slots = async () =>
-      (await Workspace.findById(id).select("workflows").lean())?.workflows;
+    const slots = async () => (await workspaceRepo.findById(ws))?.workflows;
 
     // A commit on `branch`, from `parent`, with these files on top of it.
     const commit = async (
@@ -88,28 +80,20 @@ async function main() {
     // workflows:runtime and query:write.
     const { hashApiKey } = await import("../auth/api-key.middleware");
     const staticKey = "revops_static_worker_key_tests_only";
-    await Workspace.updateOne(
-      { _id: id },
-      {
-        $push: {
-          apiKeys: {
-            _id: new Types.ObjectId(),
-            name: "Workflows worker",
-            keyHash: hashApiKey(staticKey),
-            prefix: staticKey.slice(0, 14),
-            scopes: ["mcp", "query:read"],
-            createdAt: new Date(),
-            createdBy: "owner",
-          },
-        },
-      },
-    );
+    await workspaceRepo.createApiKey({
+      workspaceId: ws,
+      name: "Workflows worker",
+      keyHash: hashApiKey(staticKey),
+      prefix: staticKey.slice(0, 14),
+      scopes: ["mcp", "query:read"],
+      createdBy: "owner",
+    });
     process.env.WORKFLOWS_WORKER_KEY = staticKey;
     await deployWorkflowsFromRepo(ws);
     delete process.env.WORKFLOWS_WORKER_KEY;
-    const workerKey = (
-      await Workspace.findById(id).select("apiKeys").lean()
-    )?.apiKeys?.find(k => k.name === "Workflows worker");
+    const workerKey = (await workspaceRepo.listApiKeys(ws)).find(
+      key => key.name === "Workflows worker",
+    );
     assert.deepEqual(workerKey?.scopes, [
       "mcp",
       "query:write",
@@ -127,7 +111,8 @@ async function main() {
     // is, though the target never becomes that commit.
     const live = async () => {
       const slot = (await slots())?.live;
-      return { sha: slot!.sha, tree: slot!.tree };
+      assert.ok(slot?.sha && slot.tree);
+      return { sha: slot.sha, tree: slot.tree };
     };
     const readme = (await git("rev-parse", "refs/heads/main")).stdout.trim();
     assert.equal(await deployCarries(ws, readme, await live()), true);
@@ -164,8 +149,7 @@ async function main() {
 
     console.log("workflows on-push tests passed");
   } finally {
-    await mongoose.disconnect();
-    await mongo.stop();
+    await h.close();
     await fs.rm(tmp, {
       recursive: true,
       force: true,

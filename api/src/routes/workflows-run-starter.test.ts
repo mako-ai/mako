@@ -6,7 +6,7 @@
  * trigger "api"). A dry run records its writes (`recordWrites` on the key,
  * `dryRun` in the metadata).
  *
- * Real routes and the real sandbox start (its key in in-memory Mongo); the
+ * Real routes and the real sandbox start (its key in PGlite); the
  * box, Hatchet and auth are stand-ins.
  */
 import {
@@ -19,8 +19,16 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
+import { eq } from "drizzle-orm";
+import { objectIdToUuid } from "../database/pg/id-codec";
+import { workspaceApiKeys } from "../database/pg/schema";
+import { workspaceRepo } from "../repositories/workspaces";
+import {
+  ensureTestWorkspace,
+  setupPgTestDb,
+  type PgTestDb,
+} from "../test-support/pg-test";
 
 const who = vi.hoisted(() => ({
   authType: "session" as string,
@@ -97,9 +105,8 @@ vi.mock("../apps/worktree.service", async importOriginal => ({
 
 import { workflowRoutes } from "./workflows";
 import { createWorkflowTools } from "../agent-lib/tools/workflow-tools";
-import { Workspace } from "../database/workspace-schema";
 
-let mongo: MongoMemoryServer;
+let h: PgTestDb;
 const WS = new Types.ObjectId();
 who.workspaceId = String(WS);
 
@@ -115,39 +122,33 @@ const run = (body: object) =>
 
 /** The sandbox run keys in the workspace, newest last. */
 async function runKeys() {
-  const workspace = await Workspace.findById(WS).lean();
-  return (workspace?.apiKeys ?? []).filter(k =>
+  return (await workspaceRepo.listApiKeys(String(WS))).filter(k =>
     k.name.startsWith("Workflows sandbox member1 sandbox-"),
-  ) as Array<{ name: string; agentRun?: boolean; recordWrites?: boolean }>;
+  );
 }
 
+const clearKeys = () =>
+  h.db
+    .delete(workspaceApiKeys)
+    .where(eq(workspaceApiKeys.workspaceId, objectIdToUuid(String(WS))));
+
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  await Workspace.collection.insertOne({
-    _id: WS,
-    name: "t",
-    slug: `t-${WS}`,
-    createdBy: "member1",
-    apiKeys: [],
-  });
+  h = await setupPgTestDb();
+  await ensureTestWorkspace(h.db, { id: String(WS), ownerUserId: "member1" });
 });
 
-afterAll(async () => {
-  await mongoose.disconnect();
-  await mongo.stop();
-});
+afterAll(() => h.close());
 
 beforeEach(async () => {
   started.length = 0;
-  await Workspace.updateOne({ _id: WS }, { $set: { apiKeys: [] } });
+  await clearKeys();
 });
 
 describe("POST /{name}/run", () => {
   it("a sandbox run from the app or an MCP login gets a key that writes", async () => {
     for (const authType of ["session", "mcpOAuth"] as const) {
       who.authType = authType;
-      await Workspace.updateOne({ _id: WS }, { $set: { apiKeys: [] } });
+      await clearKeys();
       expect((await run({ sandbox: true })).status).toBe(200);
       const keys = await runKeys();
       expect(
@@ -168,7 +169,7 @@ describe("POST /{name}/run", () => {
   it("a sandbox dry run gets recordWrites, whoever starts it", async () => {
     for (const authType of ["session", "apiKey", "mcpOAuth"] as const) {
       who.authType = authType;
-      await Workspace.updateOne({ _id: WS }, { $set: { apiKeys: [] } });
+      await clearKeys();
       expect((await run({ sandbox: true, dryRun: true })).status).toBe(200);
       expect(
         (await runKeys()).map(k => [k.agentRun, k.recordWrites]),

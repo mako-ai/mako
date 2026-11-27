@@ -1,5 +1,5 @@
 /**
- * Favourites service — against real Mongoose models (in-memory Mongo).
+ * Favourites service — against PGlite.
  *
  * What matters: isolation (a favourite is unreachable by anyone but its
  * author), idempotent starring, ordered moves that keep sibling positions
@@ -8,9 +8,12 @@
  * Run: npx tsx src/services/favourites.service.test.ts
  */
 import assert from "node:assert/strict";
-import { MongoMemoryServer } from "mongodb-memory-server";
-import mongoose, { Types } from "mongoose";
-import { Favourite } from "../database/workspace-schema";
+import {
+  ensureTestUser,
+  ensureTestWorkspace,
+  setupPgTestDb,
+} from "../test-support/pg-test";
+import { generateObjectIdHex } from "../database/pg/id-codec";
 import {
   addFavourite,
   createFavouriteFolder,
@@ -20,7 +23,7 @@ import {
   updateFavourite,
 } from "./favourites.service";
 
-const WS = new Types.ObjectId().toString();
+const WS = generateObjectIdHex();
 const ALICE = { workspaceId: WS, userId: "alice" };
 const BOB = { workspaceId: WS, userId: "bob" };
 
@@ -32,10 +35,12 @@ function ok<T>(
 }
 
 async function main(): Promise<void> {
-  const mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
-  await Favourite.syncIndexes();
+  const h = await setupPgTestDb();
   try {
+    const ws = await ensureTestWorkspace(h.db, { id: WS });
+    const alice = await ensureTestUser(h.db, { id: ALICE.userId });
+    await ensureTestUser(h.db, { id: BOB.userId });
+
     // Star twice: one row. Unstar: gone. Unstar again: not an error.
     const star = ok(await addFavourite(ALICE, { kind: "app", refId: "a1" }));
     const again = ok(await addFavourite(ALICE, { kind: "app", refId: "a1" }));
@@ -170,7 +175,7 @@ async function main(): Promise<void> {
     const badParent = await addFavourite(ALICE, {
       kind: "app",
       refId: "z",
-      parentId: new Types.ObjectId().toString(),
+      parentId: generateObjectIdHex(),
     });
     assert.equal(badParent.ok, false);
     const badKind = await addFavourite(ALICE, {
@@ -182,19 +187,18 @@ async function main(): Promise<void> {
     // Stars on a kind that no longer exists (the removed dashboards) stay
     // in the table but are never listed.
     const before = (await listFavourites(ALICE)).length;
-    await Favourite.collection.insertOne({
-      workspaceId: new Types.ObjectId(WS),
-      userId: "alice",
-      parentId: null,
-      type: "item",
-      kind: "dashboard",
-      refId: "legacy",
-      position: 99,
-    });
+    // The migrated schema rejects this retired kind. Allow the historical
+    // row only within this isolated database to exercise defensive listing.
+    await h.pg.exec(
+      "ALTER TABLE favourites DROP CONSTRAINT favourites_kind_check",
+    );
+    await h.pg.query(
+      "INSERT INTO favourites (workspace_id, user_id, type, kind, ref_id, position) VALUES ($1, $2, 'item', 'dashboard', 'legacy', 99)",
+      [ws.uuid, alice.id],
+    );
     assert.equal((await listFavourites(ALICE)).length, before);
   } finally {
-    await mongoose.disconnect();
-    await mongo.stop();
+    await h.close();
   }
   console.log("favourites.service: ok");
 }
