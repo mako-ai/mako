@@ -10,6 +10,8 @@ export { PgDbtRepository, type PgDbtRepositoryDeps } from "./pg.repo";
 
 const pg = new PgDbtRepository();
 export const dbtRepo: DbtRepository =
+  process.env.NODE_ENV === "production" ||
+  process.env.K_SERVICE ||
   process.env.MAKO_DBT_FENCE_V1 === "1"
     ? createDbtCutoverRepo(pg, new MongoDbtRepository())
     : pg;

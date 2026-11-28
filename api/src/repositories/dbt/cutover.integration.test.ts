@@ -21,7 +21,11 @@ import {
   dbtParityComplete,
 } from "../../database/pg/cli/backfill-dbt";
 import { newDualId } from "../../database/pg/id-codec";
-import type { MakoPgDb } from "../../database/pg/client";
+import {
+  resetPgTestDb,
+  setPgTestDb,
+  type MakoPgDb,
+} from "../../database/pg/client";
 import { runPgMigrations } from "../../database/pg/migrate";
 import * as schema from "../../database/pg/schema";
 import {
@@ -59,6 +63,8 @@ describe.skipIf(process.env.RUN_DBT_CUTOVER_INTEGRATION !== "1")(
     }, 120_000);
     afterEach(async () => {
       vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      resetPgTestDb();
       await client`delete from migration_domain_state where domain='dbt'`;
       await source().collection("migration_writer_fences").deleteMany({});
     });
@@ -122,6 +128,34 @@ describe.skipIf(process.env.RUN_DBT_CUTOVER_INTEGRATION !== "1")(
       const writerDb = drizzle(writer, { schema }) as unknown as MakoPgDb;
       const pg = new PgDbtRepository({ getDb: () => db });
       const bridge = createDbtCutoverRepo(pg, mongo, () => writerDb);
+      const completedAt = new Date("2020-01-01T00:00:00Z");
+      const oldLine = { ts: completedAt, level: "info", line: "completed" };
+      const historical = await mongo.createRun({
+        workspaceId: ws.oid,
+        projectId: project._id,
+        status: "success",
+        completedAt,
+        environment: "dev",
+        commands: ["build"],
+        trigger: "schedule",
+        triggeredBy: user.id,
+        logs: [oldLine],
+      });
+      const scope = { workspaceId: ws.oid, projectId: project._id };
+      // An unmarked production process must also read from the serving store.
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("MAKO_DBT_FENCE_V1", undefined);
+      setPgTestDb(db);
+      const { dbtRepo } = await import("./index");
+      const readHistory = () => dbtRepo.findRunWithLogs(historical._id, scope);
+      const before = await readHistory();
+      expect(before).toMatchObject({
+        _id: historical._id,
+        status: "success",
+        completedAt,
+        logTotal: 1,
+        logs: [oldLine],
+      });
       const gates = new EventEmitter();
       const dispatched = once(gates, "dispatched");
       const release = once(gates, "release");
@@ -144,13 +178,30 @@ describe.skipIf(process.env.RUN_DBT_CUTOVER_INTEGRATION !== "1")(
         () => "ok",
         () => "lost PG",
       );
-      const scan = (tx: MakoPgDb) =>
-        backfillDbt(source(), tx, new Date(0), {
+      const nextLine = { ...line, line: "first line after handoff" };
+      let arriving: Promise<void> | undefined;
+      const scan = async (tx: MakoPgDb) => {
+        // Observe the real writer's first admission attempt while this
+        // transaction owns the exclusive lock. The append retries on commit.
+        const admission = vi.spyOn(writerDb, "transaction");
+        try {
+          arriving = bridge.appendRunLogs(run._id, [nextLine]);
+          await vi.waitFor(() => {
+            expect(admission.mock.settledResults).toContainEqual({
+              type: "fulfilled",
+              value: "wait",
+            });
+          });
+        } finally {
+          admission.mockRestore();
+        }
+        return backfillDbt(source(), tx, new Date("2020-02-01T00:00:00Z"), {
           apply: true,
           async onException() {
             throw new Error("Unexpected orphan");
           },
         });
+      };
       try {
         await dispatched;
         const [terminated] =
@@ -184,22 +235,49 @@ describe.skipIf(process.env.RUN_DBT_CUTOVER_INTEGRATION !== "1")(
         }
         expect(await writing).toBe("ok");
         expect(await firstActivator).toMatch(/lost its parity check/);
-        expect(dbtParityComplete(await secondActivator!)).toBe(true);
+        const result = await secondActivator!;
+        expect(dbtParityComplete(result)).toBe(true);
+        expect(result.history.olderTerminal).toMatchObject({
+          sourceRuns: 1,
+          verifiedRuns: 1,
+          sourceLines: 1,
+          verifiedLines: 1,
+        });
         expect((await mongo.findRunWithLogs(run._id))?.logs).toEqual([line]);
         const delayed = await withDbtWriteFence(admittedGeneration, repo =>
           repo.appendRunLogs(run._id, [{ ...line, line: "too late" }]),
         );
         expect(delayed).toBe(generationChanged);
-        expect((await mongo.findRunWithLogs(run._id))?.logTotal).toBe(1);
-        expect(await pg.findRunWithLogs(run._id)).toMatchObject({
+        await arriving;
+        expect(await readHistory()).toEqual(before);
+        const finished = await bridge.finishRun(
+          run._id,
+          { status: "success", completedAt: new Date() },
+          "running",
+        );
+        expect(finished?.run.status).toBe("success");
+        expect(await bridge.findRunWithLogs(run._id, scope, 1)).toMatchObject({
+          status: "success",
+          logTotal: 2,
+          logs: [nextLine],
+        });
+        expect((await pg.findRunWithLogs(run._id))?.logs).toEqual([
+          line,
+          nextLine,
+        ]);
+        expect(await mongo.findRunWithLogs(run._id)).toMatchObject({
+          status: "running",
           logTotal: 1,
           logs: [line],
         });
         expect(await dbtUsesPostgres(db)).toBe(true);
       } finally {
         gates.emit("release");
-        await writing;
-        await writer.end();
+        try {
+          await Promise.all([writing, arriving]);
+        } finally {
+          await writer.end();
+        }
       }
     }, 60_000);
   },

@@ -577,10 +577,14 @@ async function main() {
       });
     const db = getPgDirectDb();
     let switched = false;
-    const result =
+    // Verify both production services before changing even the Mongo fence.
+    const services =
       apply && !(await dbtUsesPostgres(db))
+        ? await verifyServingWriters()
+        : null;
+    const result =
+      services !== null
         ? await activateDbtStore(db, source.db(), async tx => {
-            const services = await verifyServingWriters();
             const audited = await scan(tx, true);
             await archive?.sync();
             if (!dbtParityComplete(audited)) {
