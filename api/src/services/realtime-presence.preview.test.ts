@@ -1,0 +1,179 @@
+import assert from "node:assert/strict";
+import { fork, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import { serve } from "@hono/node-server";
+import { OpenAPIHono } from "@hono/zod-openapi";
+import { MongoClient, ObjectId } from "mongodb";
+import { MongoMemoryServer } from "mongodb-memory-server";
+import mongoose from "mongoose";
+import { sessionManager } from "../auth/session";
+import { loggingMiddleware } from "../logging";
+import { realtimeRoutes } from "../routes/realtime";
+import { ensureTestWorkspace, setupPgTestDb } from "../test-support/pg-test";
+import { hasAttachedClients } from "./realtime-presence.service";
+
+interface ApiInstance {
+  origin: string;
+  cookie: string;
+}
+
+async function runApiInstance(workspaceId: string) {
+  const mongoUrl = process.env.DATABASE_URL;
+  assert.ok(mongoUrl && mongoUrl.startsWith("mongodb://127.0.0.1:"));
+  await mongoose.connect(mongoUrl);
+  const pg = await setupPgTestDb();
+  const workspace = await ensureTestWorkspace(pg.db, {
+    id: workspaceId,
+    ownerUserId: "preview-presence-owner",
+  });
+  assert.ok(workspace.ownerUserId);
+  const session = await sessionManager.createSession(workspace.ownerUserId);
+  const app = new OpenAPIHono();
+  app.use("*", loggingMiddleware({}));
+  app.route("/api/workspaces/:workspaceId/realtime", realtimeRoutes);
+  app.get("/fixture/attached/:workspaceId", async c =>
+    c.json(await hasAttachedClients(c.req.param("workspaceId"))),
+  );
+  serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 }, address => {
+    process.send?.({
+      origin: `http://127.0.0.1:${address.port}`,
+      cookie: `${sessionManager.sessionCookieName}=${session.id}`,
+    } satisfies ApiInstance);
+  });
+}
+
+async function waitFor(check: () => Promise<boolean>, failure: string) {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (await check()) return;
+    await delay(40);
+  }
+  assert.fail(failure);
+}
+
+function eventReader(stream: ReadableStreamDefaultReader<Uint8Array>) {
+  const decoder = new TextDecoder();
+  let pending = "";
+  return async (event: string) => {
+    const marker = `event: ${event}\n`;
+    while (!pending.includes(marker)) {
+      const { done, value } = await stream.read();
+      assert.equal(done, false, `Stream ended before ${event}`);
+      pending += decoder.decode(value, { stream: true });
+    }
+    pending = pending.slice(pending.indexOf(marker) + marker.length);
+  };
+}
+
+async function startInstance(
+  mongoUrl: string,
+  workspaceId: string,
+  children: ChildProcess[],
+  signal: AbortSignal,
+): Promise<ApiInstance> {
+  const child = fork(__filename, ["--preview-api", workspaceId], {
+    execArgv: ["--max-old-space-size=4096", "--import", "tsx"],
+    env: {
+      ...process.env,
+      K_SERVICE: "mako-pr-1580",
+      DATABASE_URL: mongoUrl,
+      REDIS_URL: "",
+      POSTGRES_URL: "",
+      ENCRYPTION_KEY: "0".repeat(64),
+    },
+  });
+  children.push(child);
+  const [instance] = await Promise.race([
+    once(child, "message", { signal }),
+    once(child, "exit", { signal }).then(([code]) => {
+      throw new Error(`Preview API fixture exited before listening (${code})`);
+    }),
+  ]);
+  return instance as ApiInstance;
+}
+
+if (process.argv[2] === "--preview-api") {
+  void runApiInstance(process.argv[3]);
+} else {
+  void test(
+    "Redis-less preview instances share authenticated SSE presence through Mongo",
+    { timeout: 75_000 },
+    async ({ signal }) => {
+      const mongo = await MongoMemoryServer.create();
+      const mongoUrl = mongo.getUri("staging");
+      const inspector = new MongoClient(mongoUrl);
+      const database = inspector.db();
+      const presence = database.collection<{
+        workspaceId: ObjectId;
+        clientId: string;
+        lastSeenAt: Date;
+      }>("realtime_presence");
+      const children: ChildProcess[] = [];
+      try {
+        const workspaceId = new ObjectId();
+        const id = workspaceId.toHexString();
+        const filter = { workspaceId, clientId: "fixture" };
+        const [writer, reader] = await Promise.all([
+          startInstance(mongoUrl, id, children, signal),
+          startInstance(mongoUrl, id, children, signal),
+        ]);
+        assert.notEqual(writer.origin, reader.origin);
+        const attached = async (workspace = id) => {
+          const response = await fetch(
+            `${reader.origin}/fixture/attached/${workspace}`,
+            { signal: AbortSignal.timeout(5000) },
+          );
+          assert.equal(response.status, 200);
+          return (await response.json()) === true;
+        };
+        assert.equal(await attached(), false);
+
+        const response = await fetch(
+          `${writer.origin}/api/workspaces/${id}/realtime?clientId=fixture`,
+          { headers: { cookie: writer.cookie }, signal },
+        );
+        assert.equal(response.status, 200);
+        assert.match(
+          response.headers.get("content-type") ?? "",
+          /^text\/event-stream/,
+        );
+        assert.ok(response.body);
+        const stream = response.body.getReader();
+        const waitForEvent = eventReader(stream);
+        try {
+          await waitForEvent("hello");
+          await waitFor(() => attached(), "Second instance never saw the tab");
+          assert.equal(await attached(new ObjectId().toHexString()), false);
+          const initial = await presence.findOne(filter);
+          assert.ok(initial);
+
+          await waitForEvent("ping");
+          await waitFor(async () => {
+            const row = await presence.findOne(filter);
+            return row !== null && row.lastSeenAt > initial.lastSeenAt;
+          }, "Heartbeat never renewed the shared Mongo row");
+          assert.equal(await attached(), true);
+        } finally {
+          await stream.cancel();
+        }
+        await waitFor(
+          async () => !(await attached()),
+          "Second instance still saw the disconnected tab",
+        );
+        assert.equal(await presence.findOne(filter), null);
+      } finally {
+        await Promise.all(
+          children.map(async child => {
+            if (child.exitCode !== null || child.signalCode !== null) return;
+            const exited = once(child, "exit");
+            child.kill();
+            await exited;
+          }),
+        );
+        await inspector.close();
+        await mongo.stop();
+      }
+    },
+  );
+}

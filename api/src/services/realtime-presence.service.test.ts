@@ -247,53 +247,95 @@ describe("realtime presence (Redis sorted set)", () => {
   });
 });
 
-it("sends no Mongo commands during the Redis presence lifecycle", async () => {
-  const mongo = await MongoMemoryServer.create();
-  try {
-    vi.stubEnv("DATABASE_URL", mongo.getUri());
-    vi.stubEnv("REDIS_URL", "redis://presence.test:6379");
-    await mongoose.connect(mongo.getUri(), { monitorCommands: true });
-    const client = mongoose.connection.getClient();
-    const commands: string[] = [];
-    client.on("commandStarted", e => {
-      if (e.command[e.commandName] === "realtime_presence") {
-        commands.push(e.commandName);
-      }
-    });
+it.each(["mako", "mako-canary"])(
+  "sends no Mongo presence commands on %s",
+  async service => {
+    const mongo = await MongoMemoryServer.create();
+    try {
+      vi.stubEnv("K_SERVICE", service);
+      vi.stubEnv("DATABASE_URL", mongo.getUri());
+      vi.stubEnv("REDIS_URL", "redis://presence.test:6379");
+      await mongoose.connect(mongo.getUri(), { monitorCommands: true });
+      const client = mongoose.connection.getClient();
+      const commands: string[] = [];
+      client.on("commandStarted", e => {
+        if (e.command[e.commandName] === "realtime_presence") {
+          commands.push(e.commandName);
+        }
+      });
 
-    const workspaceId = new Types.ObjectId();
-    const id = workspaceId.toHexString();
-    await client.db().collection("realtime_presence").insertOne({
-      workspaceId,
-      clientId: "legacy-tab",
-      userId: "user",
-      lastSeenAt: new Date(),
-    });
-    // Positive control for the monitor, and a fresh legacy row that would
-    // make an accidental Mongo fallback report a client after disconnect.
-    expect(commands).toEqual(["insert"]);
-    commands.length = 0;
-    resetRealtimePresenceForTests();
-    redisMock.state.execError = null;
-    redisMock.state.execResults = [];
-    redisMock.state.zremError = null;
-    vi.useFakeTimers({ toFake: ["Date"] });
-    await touchRealtimePresence(id, "tab", "user");
-    vi.setSystemTime(Date.now() + 31_000);
-    await touchRealtimePresence(id, "tab", "user");
-    redisMock.state.execResults.push([
-      [null, 0],
-      [null, 1],
-    ]);
-    expect(await hasAttachedClients(id)).toBe(true);
-    await clearRealtimePresence(id, "tab");
-    expect(await hasAttachedClients(id)).toBe(false);
-    expect(commands).toEqual([]);
-  } finally {
-    vi.useRealTimers();
-    vi.unstubAllEnvs();
-    resetRealtimePresenceForTests();
-    await mongoose.disconnect();
-    await mongo.stop();
-  }
-});
+      const workspaceId = new Types.ObjectId();
+      const id = workspaceId.toHexString();
+      await client.db().collection("realtime_presence").insertOne({
+        workspaceId,
+        clientId: "legacy-tab",
+        userId: "user",
+        lastSeenAt: new Date(),
+      });
+      // Positive control for the monitor, and a fresh legacy row that would
+      // make an accidental Mongo fallback report a client after disconnect.
+      expect(commands).toEqual(["insert"]);
+      commands.length = 0;
+      resetRealtimePresenceForTests();
+      redisMock.state.execError = null;
+      redisMock.state.execResults = [];
+      redisMock.state.zremError = null;
+      vi.useFakeTimers({ toFake: ["Date"] });
+      await touchRealtimePresence(id, "tab", "user");
+      vi.setSystemTime(Date.now() + 31_000);
+      await touchRealtimePresence(id, "tab", "user");
+      redisMock.state.execResults.push([
+        [null, 0],
+        [null, 1],
+      ]);
+      expect(await hasAttachedClients(id)).toBe(true);
+      await clearRealtimePresence(id, "tab");
+      expect(await hasAttachedClients(id)).toBe(false);
+
+      // Losing the Redis setting must not enable Mongo on production services.
+      vi.stubEnv("REDIS_URL", undefined);
+      resetRealtimePresenceForTests();
+      await touchRealtimePresence(id, "tab", "user");
+      expect(await hasAttachedClients(id)).toBe(true);
+      await clearRealtimePresence(id, "tab");
+      expect(await hasAttachedClients(id)).toBe(false);
+      expect(commands).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+      resetRealtimePresenceForTests();
+      await mongoose.disconnect();
+      await mongo.stop();
+    }
+  },
+);
+
+it.each(["production", "staging_pr_1581"])(
+  "refuses to access preview presence in %s",
+  async dbName => {
+    const mongo = await MongoMemoryServer.create();
+    try {
+      vi.stubEnv("K_SERVICE", "mako-pr-1580");
+      vi.stubEnv("REDIS_URL", undefined);
+      resetRealtimePresenceForTests();
+      await mongoose.connect(mongo.getUri(dbName), { monitorCommands: true });
+      const commands: string[] = [];
+      mongoose.connection.getClient().on("commandStarted", e => {
+        if (e.command[e.commandName] === "realtime_presence") {
+          commands.push(e.commandName);
+        }
+      });
+      const workspaceId = new Types.ObjectId().toHexString();
+      await touchRealtimePresence(workspaceId, "tab", "user");
+      await clearRealtimePresence(workspaceId, "tab");
+      // An unavailable or misconfigured store must not imply the tab is gone.
+      expect(await hasAttachedClients(workspaceId)).toBe(true);
+      expect(commands).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+      resetRealtimePresenceForTests();
+      await mongoose.disconnect();
+      await mongo.stop();
+    }
+  },
+);
