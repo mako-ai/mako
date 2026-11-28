@@ -154,8 +154,7 @@ async function slotHolder(db: MakoPgDb, subject: DbtRunSlotSubject) {
 }
 
 /** Absolute, half-open line ranges. Bound chunk size even for a large backfill. */
-export async function insertLogChunks(
-  db: MakoPgDb,
+export function dbtLogChunks(
   runId: string,
   total: number,
   lines: readonly DbtRunLogLine[],
@@ -180,6 +179,17 @@ export async function insertLogChunks(
       lines: batch,
     });
   }
+  return chunks;
+}
+
+export async function insertLogChunks(
+  db: MakoPgDb,
+  runId: string,
+  total: number,
+  lines: readonly DbtRunLogLine[],
+  options: { historical?: boolean } = {},
+) {
+  const chunks = dbtLogChunks(runId, total, lines, options);
   if (chunks.length) await db.insert(logs).values(chunks);
 }
 

@@ -397,6 +397,56 @@ describe("dbt persistence", () => {
     expect(await retained()).toEqual(0);
   });
 
+  it("rejects distinct Mongo records that map to one Postgres ID in each collection", async () => {
+    const src = source.db("dbt_id_aliases");
+    const id = new mongoose.Types.ObjectId();
+    const at = new Date("2026-10-01T00:00:00Z");
+    const base = {
+      workspaceId: new mongoose.Types.ObjectId(workspace.oid),
+      createdAt: at,
+      updatedAt: at,
+    };
+    const records = {
+      dbt_projects: { name: "Mixed IDs", createdBy: userId },
+      dbt_env_preferences: { projectId: id, userId, environment: "dev" },
+      dbt_jobs: {
+        projectId: id,
+        name: "Mixed IDs",
+        createdBy: userId,
+        environment: "dev",
+      },
+      dbt_runs: {
+        projectId: id,
+        jobId: id,
+        status: "success",
+        environment: "dev",
+        trigger: "schedule",
+        triggeredBy: userId,
+        logs: [],
+      },
+    };
+    for (const [name, record] of Object.entries(records)) {
+      await src.collection(name).insertOne({ ...base, ...record, _id: id });
+      await src.collection<{ _id: string } & Document>(name).insertOne({
+        ...base,
+        ...record,
+        _id: id.toHexString(),
+        updatedAt: new Date(at.getTime() + 1),
+      });
+    }
+    const result = await backfillDbt(src, db, at, {
+      apply: true,
+      onException: async () => {},
+    });
+    for (const table of ["projects", "preferences", "jobs", "runs"] as const) {
+      expect(result.counts[table]).toBe(2);
+      expect(result.inserted[table]).toBe(1);
+      expect(result.skipped[table]).toBe(1);
+      expect(result.reasons[`${table}.duplicateSourceId`]).toBe(1);
+    }
+    expect(result.logs.verifiedRuns).toBe(1);
+  });
+
   it("copies every run and reconciles mutable rows, even when a run finishes without a new log", async () => {
     const src = source.db("dbt_backfill");
     const p = new mongoose.Types.ObjectId();
@@ -548,6 +598,92 @@ describe("dbt persistence", () => {
     expect((await pgRepo.findRunById(String(r)))?.error).toBe("later PG write");
     expect((await pgRepo.findJobById(String(j)))?.name).toBe("newer in PG");
   });
+  it("verifies persisted chunks across run batches and rolls earlier writes back on a late mismatch", async () => {
+    const src = source.db("dbt_bulk_parity");
+    const project = new mongoose.Types.ObjectId();
+    const base = {
+      workspaceId: new mongoose.Types.ObjectId(workspace.oid),
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    };
+    await src.collection("dbt_projects").insertOne({
+      ...base,
+      _id: project,
+      name: "Bulk parity",
+      createdBy: userId,
+    });
+    const runs = Array.from({ length: 130 }, (_, index) => ({
+      ...base,
+      _id: new mongoose.Types.ObjectId(),
+      projectId: project,
+      environment: "prod",
+      trigger: "manual",
+      triggeredBy: userId,
+      commands: ["build"],
+      status: "success",
+      logTotal: 42,
+      logs: [{ ts: base.createdAt, level: "info", line: "original " + index }],
+    }));
+    await src.collection("dbt_runs").insertMany(runs);
+    const last = runs[runs.length - 1];
+    const copy = (tx: MakoPgDb) =>
+      backfillDbt(src, tx, new Date(), {
+        apply: true,
+        onException: async () => {},
+      });
+    // Preserve count and cursor but damage one persisted historical line.
+    await pg.exec(`
+      create function corrupt_dbt_fixture() returns trigger language plpgsql as $$
+        begin
+          if new.run_id = '${dbtUuid(String(last._id))}'::uuid then
+            new.lines = jsonb_set(new.lines, '{0,line}', '"changed"'::jsonb);
+          end if;
+          return new;
+        end $$;
+      create trigger corrupt_fixture before insert on dbt_run_logs
+        for each row execute function corrupt_dbt_fixture();
+    `);
+    try {
+      await expect(db.transaction(copy)).rejects.toThrow(
+        "dbt row or retained log verification failed",
+      );
+      expect(await pgRepo.findProjectById(String(project))).toBeNull();
+      expect(await pgRepo.findRunById(String(runs[0]._id))).toBeNull();
+    } finally {
+      await pg.exec(
+        "drop trigger corrupt_fixture on dbt_run_logs; drop function corrupt_dbt_fixture()",
+      );
+    }
+    expect((await db.transaction(copy)).inserted.runs).toBe(runs.length);
+    await src
+      .collection("dbt_runs")
+      .updateOne(
+        { _id: last._id },
+        { $set: { "logs.0.line": "updated source" } },
+      );
+    await pgRepo.updateRun(String(runs[0]._id), { error: "later PG edit" });
+    const staged = await db.transaction(copy);
+    expect(staged).toMatchObject({
+      existing: { runs: 128 },
+      reconciled: { runs: 1 },
+      skipped: { runs: 1 },
+      reasons: { "runs.targetChanged": 1 },
+    });
+    expect(
+      (await pgRepo.findRunWithLogs(String(last._id), undefined, 41))?.logs[0]
+        .line,
+    ).toBe("updated source");
+    expect((await pgRepo.findRunById(String(runs[0]._id)))?.error).toBe(
+      "later PG edit",
+    );
+    await src.collection("dbt_runs").deleteOne({ _id: last._id });
+    const verify = await backfillDbt(src, db, new Date(), {
+      apply: false,
+      onException: async () => {},
+    });
+    expect(verify.targetOnly.runs).toContain(dbtUuid(String(last._id)));
+  });
+
   it("reconciles orphaned and colliding source rows without overwriting replacements", async () => {
     const src = source.db("dbt_exceptions");
     const oid = () => new mongoose.Types.ObjectId();
