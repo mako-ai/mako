@@ -598,6 +598,92 @@ describe("dbt persistence", () => {
     expect((await pgRepo.findRunById(String(r)))?.error).toBe("later PG write");
     expect((await pgRepo.findJobById(String(j)))?.name).toBe("newer in PG");
   });
+  it("verifies persisted chunks across run batches and rolls earlier writes back on a late mismatch", async () => {
+    const src = source.db("dbt_bulk_parity");
+    const project = new mongoose.Types.ObjectId();
+    const base = {
+      workspaceId: new mongoose.Types.ObjectId(workspace.oid),
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    };
+    await src.collection("dbt_projects").insertOne({
+      ...base,
+      _id: project,
+      name: "Bulk parity",
+      createdBy: userId,
+    });
+    const runs = Array.from({ length: 130 }, (_, index) => ({
+      ...base,
+      _id: new mongoose.Types.ObjectId(),
+      projectId: project,
+      environment: "prod",
+      trigger: "manual",
+      triggeredBy: userId,
+      commands: ["build"],
+      status: "success",
+      logTotal: 42,
+      logs: [{ ts: base.createdAt, level: "info", line: "original " + index }],
+    }));
+    await src.collection("dbt_runs").insertMany(runs);
+    const last = runs[runs.length - 1];
+    const copy = (tx: MakoPgDb) =>
+      backfillDbt(src, tx, new Date(), {
+        apply: true,
+        onException: async () => {},
+      });
+    // Preserve count and cursor but damage one persisted historical line.
+    await pg.exec(`
+      create function corrupt_dbt_fixture() returns trigger language plpgsql as $$
+        begin
+          if new.run_id = '${dbtUuid(String(last._id))}'::uuid then
+            new.lines = jsonb_set(new.lines, '{0,line}', '"changed"'::jsonb);
+          end if;
+          return new;
+        end $$;
+      create trigger corrupt_fixture before insert on dbt_run_logs
+        for each row execute function corrupt_dbt_fixture();
+    `);
+    try {
+      await expect(db.transaction(copy)).rejects.toThrow(
+        "dbt row or retained log verification failed",
+      );
+      expect(await pgRepo.findProjectById(String(project))).toBeNull();
+      expect(await pgRepo.findRunById(String(runs[0]._id))).toBeNull();
+    } finally {
+      await pg.exec(
+        "drop trigger corrupt_fixture on dbt_run_logs; drop function corrupt_dbt_fixture()",
+      );
+    }
+    expect((await db.transaction(copy)).inserted.runs).toBe(runs.length);
+    await src
+      .collection("dbt_runs")
+      .updateOne(
+        { _id: last._id },
+        { $set: { "logs.0.line": "updated source" } },
+      );
+    await pgRepo.updateRun(String(runs[0]._id), { error: "later PG edit" });
+    const staged = await db.transaction(copy);
+    expect(staged).toMatchObject({
+      existing: { runs: 128 },
+      reconciled: { runs: 1 },
+      skipped: { runs: 1 },
+      reasons: { "runs.targetChanged": 1 },
+    });
+    expect(
+      (await pgRepo.findRunWithLogs(String(last._id), undefined, 41))?.logs[0]
+        .line,
+    ).toBe("updated source");
+    expect((await pgRepo.findRunById(String(runs[0]._id)))?.error).toBe(
+      "later PG edit",
+    );
+    await src.collection("dbt_runs").deleteOne({ _id: last._id });
+    const verify = await backfillDbt(src, db, new Date(), {
+      apply: false,
+      onException: async () => {},
+    });
+    expect(verify.targetOnly.runs).toContain(dbtUuid(String(last._id)));
+  });
+
   it("reconciles orphaned and colliding source rows without overwriting replacements", async () => {
     const src = source.db("dbt_exceptions");
     const oid = () => new mongoose.Types.ObjectId();

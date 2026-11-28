@@ -26,11 +26,12 @@ import {
   precopyDbtStore,
   dbtUsesPostgres,
 } from "../../../repositories/dbt/cutover";
-import { reconcileDbtRow } from "./dbt-row-parity";
 import {
-  DBT_RUN_MAX_LOG_LINES,
-  type DbtRunLogLine,
-} from "../../../repositories/dbt/types";
+  reconcileDbtRows,
+  type DbtImportRow,
+  type DbtRowOutcome,
+} from "./dbt-row-parity";
+import { DBT_RUN_MAX_LOG_LINES } from "../../../repositories/dbt/types";
 import { closePgConnections, getPgDirectDb, type MakoPgDb } from "../client";
 import { parseEntityId } from "../id-codec";
 import {
@@ -98,6 +99,34 @@ function keyIndex(rows: KeyRow[]) {
   }
   rows.forEach(add);
   return { ids, unique, add };
+}
+
+// Mongo also caps each wire batch at 16 MiB. A single oversized source
+// document is processed on its own, including its complete retained window.
+const maxBatchRows = 128;
+const maxBatchBytes = 4 * 1024 * 1024;
+
+async function* runBatches(source: Db) {
+  const runs = source
+    .collection(collections.runs)
+    .find()
+    .batchSize(maxBatchRows);
+  let docs: Document[] = [];
+  let bytes = 0;
+  for await (const doc of runs) {
+    const size = BSON.calculateObjectSize(doc);
+    if (
+      docs.length &&
+      (docs.length >= maxBatchRows || bytes + size > maxBatchBytes)
+    ) {
+      yield docs;
+      docs = [];
+      bytes = 0;
+    }
+    docs.push(doc);
+    bytes += size;
+  }
+  if (docs.length) yield docs;
 }
 
 export async function backfillDbt(
@@ -227,20 +256,13 @@ export async function backfillDbt(
   }
   // Keep the same projected parent keys during dry-run as apply would insert.
   // Never attach children to a replacement project or job with a different ID.
-  async function copy(
+  function recordOutcome(
     table: Table,
     doc: Document,
-    values: Record<string, unknown>,
+    id: string,
     issues: Issue[],
-    lines?: DbtRunLogLine[],
+    outcome: DbtRowOutcome,
   ) {
-    const outcome = await reconcileDbtRow(
-      target,
-      table,
-      values,
-      options.apply,
-      lines,
-    );
     switch (outcome.status) {
       case "inserted":
         inserted[table]++;
@@ -272,7 +294,7 @@ export async function backfillDbt(
         }
         issues.push({
           reason: outcome.status,
-          targetId: String(values.id),
+          targetId: id,
           fields:
             "differentFields" in outcome ? outcome.differentFields : undefined,
         });
@@ -304,7 +326,13 @@ export async function backfillDbt(
     }
     if (issues.length) skipped[table]++;
     else {
-      await copy(table, doc, values(), issues);
+      const [outcome] = await reconcileDbtRows(
+        target,
+        table,
+        [{ values: values() }],
+        options.apply,
+      );
+      recordOutcome(table, doc, row.id, issues, outcome);
       if (!issues.length) index.add(row);
     }
     await report(table, doc, issues);
@@ -413,42 +441,74 @@ export async function backfillDbt(
     }
     return { issues, blocked, detached };
   }
-  for await (const doc of source
-    .collection(collections.runs)
-    .find()
-    .batchSize(8)) {
-    counts.runs++;
-    const r = mongoRunToRecordWithLogs(doc);
-    const older =
-      r.status !== "running" &&
-      r.status !== "queued" &&
-      (r.completedAt ?? r.createdAt) < cutoff;
-    const cohort = older ? history.olderTerminal : history.recentOrActive;
-    const size = Math.min(r.logs.length, DBT_RUN_MAX_LOG_LINES);
-    cohort.sourceRuns++;
-    cohort.sourceLines += size;
-    const { issues, blocked, detached } = runReferences(doc);
-    const prefixLines = r.logs.length - size;
-    if (prefixLines > 0) {
-      cohort.sourceLinesOutsideWindow += prefixLines;
-      issues.push({ reason: "logPrefixOutsideRetainedWindow", prefixLines });
-    }
-    targetIds.runs.delete(uuid(doc._id) ?? "");
-    if (blocked) skipped.runs++;
-    else {
+  for await (const batch of runBatches(source)) {
+    const eligible: {
+      doc: Document;
+      issues: Issue[];
+      input: DbtImportRow;
+      size: number;
+      cohort: ReturnType<typeof group>;
+    }[] = [];
+    for (const doc of batch) {
+      counts.runs++;
+      const r = mongoRunToRecordWithLogs(doc);
+      const older =
+        r.status !== "running" &&
+        r.status !== "queued" &&
+        (r.completedAt ?? r.createdAt) < cutoff;
+      const cohort = older ? history.olderTerminal : history.recentOrActive;
+      const size = Math.min(r.logs.length, DBT_RUN_MAX_LOG_LINES);
+      cohort.sourceRuns++;
+      cohort.sourceLines += size;
+      const { issues, blocked, detached } = runReferences(doc);
+      const prefixLines = r.logs.length - size;
+      if (prefixLines > 0) {
+        cohort.sourceLinesOutsideWindow += prefixLines;
+        issues.push({ reason: "logPrefixOutsideRetainedWindow", prefixLines });
+      }
+      targetIds.runs.delete(uuid(doc._id) ?? "");
+      if (blocked) {
+        skipped.runs++;
+        await report("runs", doc, issues);
+        continue;
+      }
       const values = {
         ...runValues({ ...r, jobId: detached ? undefined : r.jobId }),
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
       };
-      if (await copy("runs", doc, values, issues, r.logs)) {
+      eligible.push({
+        doc,
+        issues,
+        input: { values, logs: r.logs },
+        size,
+        cohort,
+      });
+    }
+    const outcomes = await reconcileDbtRows(
+      target,
+      "runs",
+      eligible.map(entry => entry.input),
+      options.apply,
+    );
+    for (const [index, entry] of eligible.entries()) {
+      const { doc, issues, input, size, cohort } = entry;
+      if (
+        recordOutcome(
+          "runs",
+          doc,
+          String(input.values.id),
+          issues,
+          outcomes[index],
+        )
+      ) {
         cohort.verifiedRuns++;
         cohort.verifiedLines += size;
         logs.verifiedRuns++;
         logs.verifiedLines += size;
       }
+      await report("runs", doc, issues);
     }
-    await report("runs", doc, issues);
   }
   const targetOnly = Object.fromEntries(
     Object.entries(targetIds).map(([name, ids]) => [name, Array.from(ids)]),
