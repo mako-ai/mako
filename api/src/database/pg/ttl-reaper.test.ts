@@ -46,7 +46,7 @@ describe("ttl-reaper (batched ctid expiration)", () => {
     await pg.close();
   });
 
-  it("registers all 15 default platform Postgres TTL rules and executes cleanly against migrated schema", async () => {
+  it("registers all 18 default platform Postgres TTL rules and executes cleanly against migrated schema", async () => {
     registerDefaultPgTtlRules();
     const rules = listTtlRules();
     expect(rules).toHaveLength(DEFAULT_PG_TTL_RULES.length);
@@ -57,6 +57,10 @@ describe("ttl-reaper (batched ctid expiration)", () => {
     expect(names.has("llm_usage")).toBe(false);
     expect(names.has("app_usage_daily")).toBe(false);
     expect(names.has("connection_access_events")).toBe(false);
+    expect(rules).toHaveLength(18);
+    expect(names.has("notification_deliveries")).toBe(true);
+    expect(names.has("workflow_recorded_writes")).toBe(true);
+    expect(names.has("workflow_recorded_runs")).toBe(true);
 
     const outcome = await reapAllRegisteredTablesOrThrow({ db });
     expect(outcome.errors).toEqual({});

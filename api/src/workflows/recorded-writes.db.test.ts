@@ -34,6 +34,11 @@ const post = (text: string) => ({
 });
 
 async function main() {
+  // Legacy Mongo suite: the repo proxy falls back to Mongo only without
+  // Postgres. The Postgres path is covered by
+  // repositories/control-plane-app/control-plane-app.repo.contract.test.ts.
+  delete process.env.POSTGRES_URL;
+  process.env.MAKO_TEST_MONGO_FALLBACK = "1";
   const mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
   await WorkflowRecordedWrite.init();
@@ -146,7 +151,7 @@ async function main() {
     );
     assert.equal((await recordedWritesOf(ws, SANDBOX_RUN)).total, 0);
 
-    console.log("recorded writes tests passed");
+    console.info("recorded writes tests passed");
   } finally {
     await mongoose.disconnect();
     await mongo.stop();

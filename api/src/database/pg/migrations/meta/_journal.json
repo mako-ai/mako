@@ -85,6 +85,13 @@
       "when": 1795797406777,
       "tag": "0011_native_uuidv7_defaults",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795803016383,
+      "tag": "0012_control_plane_notifications_workflows_config",
+      "breakpoints": true
     }
   ]
 }

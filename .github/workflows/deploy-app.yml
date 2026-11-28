@@ -1078,6 +1078,10 @@ jobs:
   # Production Deployment
   deploy-production:
     name: Deploy Production
+    # Both serving services can write to the same production control plane.
+    concurrency:
+      group: production-control-plane-writers
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     # Only deploy to production from master branch - workflow_dispatch must also be on master
     if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.pr_number == '' && github.ref == 'refs/heads/master')
@@ -1422,6 +1426,7 @@ jobs:
             --subnet=mako-subnet \
             --vpc-egress=all-traffic \
             --set-env-vars BASE_URL=${BASE_URL} \
+            --set-env-vars MAKO_CONTROL_PLANE_FENCE_V1=1 \
             --set-env-vars API_RATE_LIMIT_MODE=enforce \
             --set-env-vars "APPS_LIFECYCLE_ENFORCE=${APPS_LIFECYCLE_ENFORCE}" \
             --set-env-vars BCRYPT_ROUNDS=${BCRYPT_ROUNDS} \

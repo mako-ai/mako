@@ -17,7 +17,7 @@
 
 import { z } from "zod";
 import { loggers } from "../logging";
-import { ModelCatalogSnapshot } from "../database/schema";
+import { modelCatalogSnapshotsRepo } from "../repositories/control-plane-app";
 import { warmModelsCache } from "./gateway-models.service";
 import {
   hasExplicitThinkingMode,
@@ -212,12 +212,9 @@ type ProbedThinkingModes = Record<
   Exclude<AnthropicThinkingMode, "none">
 >;
 
-async function loadProbedThinkingModes(): Promise<ProbedThinkingModes> {
-  const doc = await ModelCatalogSnapshot.findOne({
-    _id: "capabilities",
-  }).lean();
-  const data = doc?.data as { thinkingModes?: unknown } | undefined;
-  const raw = data?.thinkingModes;
+function parseProbedThinkingModes(data: unknown): ProbedThinkingModes {
+  const raw = (data as { thinkingModes?: unknown } | null | undefined)
+    ?.thinkingModes;
   if (!raw || typeof raw !== "object") return {};
   const out: ProbedThinkingModes = {};
   for (const [modelId, mode] of Object.entries(
@@ -228,22 +225,31 @@ async function loadProbedThinkingModes(): Promise<ProbedThinkingModes> {
   return out;
 }
 
+async function loadProbedThinkingModes(): Promise<ProbedThinkingModes> {
+  const doc = await modelCatalogSnapshotsRepo.findSnapshot("capabilities");
+  return parseProbedThinkingModes(doc?.data);
+}
+
 export async function saveProbedThinkingMode(
   modelId: string,
   mode: Exclude<AnthropicThinkingMode, "none">,
 ): Promise<void> {
-  const existing = await loadProbedThinkingModes();
-  if (existing[modelId] === mode) return;
-  const thinkingModes = { ...existing, [modelId]: mode };
-  await ModelCatalogSnapshot.findOneAndUpdate(
-    { _id: "capabilities" },
-    {
-      data: { thinkingModes },
-      fetchedAt: new Date(),
-      itemCount: Object.keys(thinkingModes).length,
+  // Read-modify-write under one lock: two probes saving different models at
+  // once both land.
+  const wrote = await modelCatalogSnapshotsRepo.mutateSnapshot(
+    "capabilities",
+    current => {
+      const existing = parseProbedThinkingModes(current?.data);
+      if (existing[modelId] === mode) return null;
+      const thinkingModes = { ...existing, [modelId]: mode };
+      return {
+        data: { thinkingModes },
+        fetchedAt: new Date(),
+        itemCount: Object.keys(thinkingModes).length,
+      };
     },
-    { upsert: true },
   );
+  if (!wrote) return;
   invalidateCatalog();
   logger.info("Persisted probed thinking mode", { modelId, mode });
 }
@@ -370,27 +376,23 @@ async function persistLanguageSnapshot(
   const now = new Date();
 
   await Promise.all([
-    ModelCatalogSnapshot.findOneAndUpdate(
-      { _id: "gateway" },
-      { data: gatewayDocs, fetchedAt: now, itemCount: gatewayDocs.length },
-      { upsert: true },
-    ),
-    ModelCatalogSnapshot.findOneAndUpdate(
-      { _id: "pricing" },
-      { data: pricingDocs, fetchedAt: now, itemCount: pricingDocs.length },
-      { upsert: true },
-    ),
+    modelCatalogSnapshotsRepo.upsertSnapshot("gateway", {
+      data: gatewayDocs,
+      fetchedAt: now,
+      itemCount: gatewayDocs.length,
+    }),
+    modelCatalogSnapshotsRepo.upsertSnapshot("pricing", {
+      data: pricingDocs,
+      fetchedAt: now,
+      itemCount: pricingDocs.length,
+    }),
     ...(rawEntries
       ? [
-          ModelCatalogSnapshot.findOneAndUpdate(
-            { _id: "gateway-raw" },
-            {
-              data: rawEntries,
-              fetchedAt: now,
-              itemCount: rawEntries.length,
-            },
-            { upsert: true },
-          ),
+          modelCatalogSnapshotsRepo.upsertSnapshot("gateway-raw", {
+            data: rawEntries,
+            fetchedAt: now,
+            itemCount: rawEntries.length,
+          }),
         ]
       : []),
   ]);
@@ -511,7 +513,7 @@ const EMPTY_CURATION: CurationDoc = {
 };
 
 async function loadCuration(): Promise<CurationDoc> {
-  const doc = await ModelCatalogSnapshot.findOne({ _id: "curation" }).lean();
+  const doc = await modelCatalogSnapshotsRepo.findSnapshot("curation");
   if (!doc || !doc.data) return { ...EMPTY_CURATION };
   const data = doc.data as Partial<CurationDoc>;
   return {
@@ -524,15 +526,11 @@ async function loadCuration(): Promise<CurationDoc> {
 }
 
 async function saveCuration(curation: CurationDoc): Promise<void> {
-  await ModelCatalogSnapshot.findOneAndUpdate(
-    { _id: "curation" },
-    {
-      data: curation,
-      fetchedAt: new Date(),
-      itemCount: curation.models.length,
-    },
-    { upsert: true },
-  );
+  await modelCatalogSnapshotsRepo.upsertSnapshot("curation", {
+    data: curation,
+    fetchedAt: new Date(),
+    itemCount: curation.models.length,
+  });
   invalidateCatalog();
 }
 
@@ -759,30 +757,26 @@ async function loadFromDb(): Promise<{
     utilityModelId: string | null;
   };
 } | null> {
-  const docs = await ModelCatalogSnapshot.find({
-    _id: { $in: ["gateway", "pricing", "curation", "capabilities"] },
-  }).lean();
+  const docs = await modelCatalogSnapshotsRepo.findSnapshots([
+    "gateway",
+    "pricing",
+    "curation",
+    "capabilities",
+  ]);
   if (docs.length === 0) return null;
 
-  const gatewayDoc = docs.find(d => d._id === "gateway");
-  const pricingDoc = docs.find(d => d._id === "pricing");
-  const curationDoc = docs.find(d => d._id === "curation");
-  const capabilitiesDoc = docs.find(d => d._id === "capabilities");
+  const gatewayDoc = docs.find(d => d.id === "gateway");
+  const pricingDoc = docs.find(d => d.id === "pricing");
+  const curationDoc = docs.find(d => d.id === "curation");
+  const capabilitiesDoc = docs.find(d => d.id === "capabilities");
 
-  const probedModes: ProbedThinkingModes = {};
-  const rawModes = (capabilitiesDoc?.data as { thinkingModes?: unknown })
-    ?.thinkingModes;
-  if (rawModes && typeof rawModes === "object") {
-    for (const [modelId, mode] of Object.entries(
-      rawModes as Record<string, unknown>,
-    )) {
-      if (mode === "adaptive" || mode === "manual") {
-        probedModes[modelId] = mode;
-      }
-    }
-  }
+  const probedModes = parseProbedThinkingModes(capabilitiesDoc?.data);
 
-  if (!gatewayDoc || !gatewayDoc.data || gatewayDoc.data.length === 0) {
+  if (
+    !gatewayDoc ||
+    !Array.isArray(gatewayDoc.data) ||
+    gatewayDoc.data.length === 0
+  ) {
     return null;
   }
 
@@ -941,7 +935,7 @@ function catalogToWorkspaceListing(
 async function getPersistedGatewaySnapshotListings(): Promise<
   WorkspaceGatewayModelListing[]
 > {
-  const doc = await ModelCatalogSnapshot.findOne({ _id: "gateway" }).lean();
+  const doc = await modelCatalogSnapshotsRepo.findSnapshot("gateway");
   if (!doc?.data || !Array.isArray(doc.data) || doc.data.length === 0) {
     return [];
   }
@@ -1058,15 +1052,13 @@ export async function getUtilityModelIds(count = 3): Promise<string[]> {
 
 export async function getAdminCatalogView(): Promise<AdminCatalogView> {
   const [docs, curation] = await Promise.all([
-    ModelCatalogSnapshot.find({
-      _id: { $in: ["gateway", "pricing", "curation"] },
-    }).lean(),
+    modelCatalogSnapshotsRepo.findSnapshots(["gateway", "pricing", "curation"]),
     loadCuration(),
   ]);
 
-  const gatewayDoc = docs.find(d => d._id === "gateway");
-  const pricingDoc = docs.find(d => d._id === "pricing");
-  const curationDoc = docs.find(d => d._id === "curation");
+  const gatewayDoc = docs.find(d => d.id === "gateway");
+  const pricingDoc = docs.find(d => d.id === "pricing");
+  const curationDoc = docs.find(d => d.id === "curation");
 
   const gateway = (gatewayDoc?.data ??
     []) as unknown as GatewayModelNormalized[];

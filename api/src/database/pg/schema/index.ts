@@ -13,3 +13,4 @@ export * from "./apps-metadata";
 export * from "./usage-stats";
 export * from "./mcp";
 export * from "./chat";
+export * from "./control-plane-app";
