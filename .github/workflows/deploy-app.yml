@@ -238,9 +238,9 @@ jobs:
       LANGFUSE_TRACING_ENVIRONMENT: pr-${{ needs.detect-changes.outputs.pr_number }}
       RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
       RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
-      # No REDIS_URL for previews: the prod Memorystore instance lives in the
-      # prod project's VPC and is unreachable from mako-ai-dev. The API falls
-      # back to in-process pub/sub when REDIS_URL is unset (fine for previews).
+      # Previews cannot reach production Memorystore. The API uses in-process
+      # pub/sub and shares realtime presence within each PR through staging
+      # Mongo when Cloud Run sets K_SERVICE to mako-pr-<PR>.
       SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
       SENDGRID_FROM_EMAIL: ${{ vars.SENDGRID_FROM_EMAIL }}
       SENDGRID_INVITATION_TEMPLATE_ID: ${{ vars.SENDGRID_INVITATION_TEMPLATE_ID }}

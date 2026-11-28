@@ -102,7 +102,13 @@ HHHHHHHH-HHHH-86dP0-aP1P2P3-P4P5P6P7P8P9P10P11P12P13P14P15
 
 ### Bucket 2 — EXCLUDED: Already Retired / Dropped (Git Workspace) or Moved to Redis
 - Dropped from MongoDB on `origin/master`: `skills` (`skills_retired_20260904`), `dbt_files`, `dbt_file_drafts`, `dbt_checkouts`, `dashboards`, `dashboardfolders`, `makoapps`, `v1_artifact_purge_backlog`, `materialization_runs`, `cdc_locks`, `cdc_checkpoints`.
-- Moved to **Redis** (not Postgres): `realtime_presence` (90s ephemeral presence TTL).
+- Production realtime presence uses a Redis sorted set per workspace with a 90-second TTL. Redis-less Cloud Run PR previews share presence across instances through the existing `realtime_presence` collection in staging Mongo. Writes and clears match the workspace and a `clientId` stored as `pr:<PR>:<tabId>`. Reads match the workspace and the same PR prefix. Mongo expires idle rows after 90 seconds, and lookups count only heartbeats from the last 60 seconds.
+
+**Retiring the Mongo presence bridge.** The primary service and `mako-canary` serve separate endpoints and share production Mongo. The canary revision `mako-canary-00001-lgj` runs code that upserts `realtime_presence` on SSE connect and heartbeat, deletes on disconnect, and reads it for stranded chats. [Canary deployment](https://github.com/mako-ai/mako/actions/runs/29111508624) · [Deployed presence code](https://github.com/mako-ai/mako/blob/3bd909afeb47c25fbcd5b0e89f7347e80def7fb4/api/src/services/realtime-presence.service.ts#L26)
+
+1. Run the [bridge release](https://github.com/mako-ai/mako/pull/1570) with its default Mongo compatibility enabled on every serving endpoint, or retire the endpoint. Verify that both services have drained all Mongo-only requests, including existing SSE streams, before allowing Redis-only requests. A Mongo-only revision and a Redis-only revision can each miss the other's attached tabs.
+2. Roll out the Redis-only release to each remaining endpoint using the same Redis database. Bridge and Redis-only revisions can read each other's Redis heartbeats. A rollback during this rollout must use the bridge release.
+3. After the bridge revisions drain, exercise connect, heartbeat, attached and absent lookups, and disconnect on each serving endpoint. Verify zero application reads and writes on `realtime_presence` in namespace telemetry. Mongo's TTL monitor may still expire old rows. The collection remains on the cleanup denylist.
 
 ### Bucket 3 — Phase 1: Auth, Workspaces, GitHub Installations, & Connections
 - **Phase 1A — Domain `auth` (Global Rollout)**:

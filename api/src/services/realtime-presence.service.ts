@@ -8,20 +8,16 @@
  *
  * Storage: one Redis sorted set per workspace when REDIS_URL is set
  * (member = clientId, score = last heartbeat in ms), shared across API
- * instances like the chat stream state. Without REDIS_URL it lives in
- * process memory with the same freshness rules — correct for a single API
- * instance (local dev, tests). Presence is ephemeral by nature: a lost
- * entry heals on the next 15s heartbeat, so nothing here needs durability.
+ * instances like the chat stream state. Redis-less Cloud Run PR previews
+ * share presence through their staging Mongo database. Local development
+ * and tests can use process memory. A lost entry heals on the next heartbeat.
  *
  * Consumers:
  *   - agent.routes.ts "no client attached" fallback for client-only tools.
  */
-import {
-  touchLegacyPresence,
-  clearLegacyPresence,
-  hasFreshLegacyPresence,
-} from "./realtime-presence-compat";
 import { Redis } from "ioredis";
+import mongoose, { Schema, type Model, type Types } from "mongoose";
+import { isObjectIdHex } from "../database/pg/id-codec";
 import { BASE_REDIS_OPTIONS } from "../utils/redis";
 import { loggers } from "../logging";
 
@@ -45,14 +41,99 @@ function presenceKey(workspaceId: string): string {
 }
 
 // --------------------------------------------------------------------------
-// Storage: Redis when configured, else in-process with the same windows.
+// Storage: Redis, shared preview Mongo, or single-process memory.
 // --------------------------------------------------------------------------
 
 interface PresenceStore {
   disconnect?(): void;
-  touch(workspaceId: string, clientId: string, now: number): Promise<void>;
+  touch(
+    workspaceId: string,
+    clientId: string,
+    now: number,
+    userId: string,
+  ): Promise<void>;
   clear(workspaceId: string, clientId: string): Promise<void>;
   hasFresh(workspaceId: string, now: number): Promise<boolean>;
+}
+
+interface PreviewPresence {
+  workspaceId: Types.ObjectId;
+  clientId: string;
+  userId: string;
+  lastSeenAt: Date;
+}
+
+function previewMongoStore(prNumber: string): PresenceStore {
+  const modelName = "PreviewRealtimePresence";
+  const previewDatabase = `staging_pr_${prNumber}`;
+  // Several PRs may serve the same workspace from the shared staging DB.
+  const clientPrefix = `pr:${prNumber}:`;
+  const previewClients = new RegExp(`^${clientPrefix}`);
+
+  function getModel(): Model<PreviewPresence> {
+    const connection = mongoose.connection;
+    // Check the actual connection before registering a model or accessing
+    // the collection. Even a misconfigured preview must never write to prod.
+    if (
+      connection.readyState !== 1 ||
+      (connection.name !== "staging" && connection.name !== previewDatabase)
+    ) {
+      throw new Error("Realtime presence requires the preview Mongo database");
+    }
+    if (connection.models[modelName]) {
+      return connection.model<PreviewPresence>(modelName);
+    }
+    const schema = new Schema<PreviewPresence>(
+      {
+        workspaceId: { type: Schema.Types.ObjectId, required: true },
+        clientId: { type: String, required: true },
+        userId: { type: String, required: true },
+        lastSeenAt: { type: Date, required: true },
+      },
+      { collection: "realtime_presence", bufferCommands: false },
+    );
+    schema.index({ workspaceId: 1, clientId: 1 }, { unique: true });
+    schema.index(
+      { lastSeenAt: 1 },
+      { expireAfterSeconds: PRESENCE_TTL_SECONDS },
+    );
+    return connection.model<PreviewPresence>(modelName, schema);
+  }
+
+  return {
+    async touch(workspaceId, clientId, now, userId) {
+      if (!isObjectIdHex(workspaceId)) return;
+      await getModel()
+        .updateOne(
+          { workspaceId, clientId: clientPrefix + clientId },
+          { $max: { lastSeenAt: new Date(now) }, $set: { userId } },
+          { upsert: true, timeoutMS: 2000 },
+        )
+        .exec();
+    },
+    async clear(workspaceId, clientId) {
+      if (!isObjectIdHex(workspaceId)) return;
+      await getModel()
+        .deleteOne(
+          { workspaceId, clientId: clientPrefix + clientId },
+          { timeoutMS: 2000 },
+        )
+        .exec();
+    },
+    async hasFresh(workspaceId, now) {
+      if (!isObjectIdHex(workspaceId)) return false;
+      return Boolean(
+        await getModel()
+          .exists({
+            workspaceId,
+            clientId: previewClients,
+            lastSeenAt: { $gte: new Date(now - PRESENCE_FRESHNESS_MS) },
+          })
+          .setOptions({ timeoutMS: 2000 })
+          .exec(),
+      );
+    },
+  };
 }
 
 function memoryStore(): PresenceStore {
@@ -173,15 +254,20 @@ function throwOnMultiError(
 
 let store: PresenceStore | null = null;
 function getStore(): PresenceStore {
-  if (!store) {
-    store = process.env.REDIS_URL
-      ? redisStore(process.env.REDIS_URL)
-      : memoryStore();
+  if (store) return store;
+  if (process.env.REDIS_URL) {
+    store = redisStore(process.env.REDIS_URL);
+    return store;
   }
+
+  // Cloud Run supplies K_SERVICE. The preview workflow deploys mako-pr-<PR>
+  // services, while the production services are mako and mako-canary.
+  const preview = /^mako-pr-([1-9]\d*)$/.exec(process.env.K_SERVICE ?? "");
+  store = preview ? previewMongoStore(preview[1]) : memoryStore();
   return store;
 }
 
-/** Test seam: drop the store so the next call rebuilds it from REDIS_URL. */
+/** Test seam: drop the store so the next call uses the current environment. */
 export function resetRealtimePresenceForTests(): void {
   store?.disconnect?.();
   store = null;
@@ -191,14 +277,6 @@ export function resetRealtimePresenceForTests(): void {
 // API
 // --------------------------------------------------------------------------
 
-// A failed write on one revision's store must not cut short the other write.
-async function finishPresenceWrites(writes: Promise<void>[]): Promise<void> {
-  const results = await Promise.allSettled(writes);
-  for (const result of results) {
-    if (result.status === "rejected") throw result.reason;
-  }
-}
-
 /** Refresh a client's presence. Best-effort, never throws. */
 export async function touchRealtimePresence(
   workspaceId: string,
@@ -207,11 +285,7 @@ export async function touchRealtimePresence(
 ): Promise<void> {
   if (!clientId) return;
   try {
-    const now = Date.now();
-    await finishPresenceWrites([
-      touchLegacyPresence(workspaceId, clientId, userId, now),
-      getStore().touch(workspaceId, clientId, now),
-    ]);
+    await getStore().touch(workspaceId, clientId, Date.now(), userId);
   } catch (error) {
     logger.debug("Failed to touch realtime presence", {
       error,
@@ -228,10 +302,7 @@ export async function clearRealtimePresence(
 ): Promise<void> {
   if (!clientId) return;
   try {
-    await finishPresenceWrites([
-      clearLegacyPresence(workspaceId, clientId),
-      getStore().clear(workspaceId, clientId),
-    ]);
+    await getStore().clear(workspaceId, clientId);
   } catch (error) {
     logger.debug("Failed to clear realtime presence", {
       error,
@@ -246,11 +317,7 @@ export async function hasAttachedClients(
   workspaceId: string,
 ): Promise<boolean> {
   try {
-    const now = Date.now();
-    return (
-      (await getStore().hasFresh(workspaceId, now)) ||
-      (await hasFreshLegacyPresence(workspaceId, now - PRESENCE_FRESHNESS_MS))
-    );
+    return await getStore().hasFresh(workspaceId, Date.now());
   } catch (error) {
     // Fail open: assuming a client is attached preserves today's behavior
     // (client-driven tool loop) rather than risking a wrong synthetic result.

@@ -259,16 +259,12 @@ KERNEL_PROVIDER=static
 KERNEL_GATEWAY_URL=http://localhost:8888
 NOTEBOOK_KERNEL_API_URL=http://host.docker.internal:8080
 
-# Redis (optional — resumable chat streams + kernel session registry)
+# Redis (optional — resumable chat streams, kernel session registry, SSE presence)
 # Unset: in-process buffers (local dev / single API instance).
-# Set when running multiple API instances so chat stream resume
-# (GET /api/agent/chat/:chatId/stream) and the shared kernel-session
-# registry (notebook kernels visible to every instance) work.
+# Point all serving API instances at the same Redis database so they share
+# chat stream resume state, the notebook kernel registry, and SSE presence.
+# On Cloud Run PR previews without Redis, SSE presence is scoped by PR in staging Mongo.
 REDIS_URL=redis://localhost:6379
-
-# Realtime SSE presence reads and writes the legacy Mongo collection during
-# the rolling cutover. Set false once all Mongo-only revisions have drained.
-REALTIME_PRESENCE_MONGO_COMPAT=true
 ```
 
 ## Technology Stack
