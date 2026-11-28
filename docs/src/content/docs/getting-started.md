@@ -28,6 +28,7 @@ Edit `.env` with your configuration. Required:
 | Variable             | Default                          | Purpose                                                    |
 | -------------------- | -------------------------------- | ---------------------------------------------------------- |
 | `DATABASE_URL`       | `mongodb://localhost:27017/mako` | Application database                                       |
+| `POSTGRES_URL`       | `postgresql://mako:mako@localhost:5433/mako` | Platform Postgres for control-plane data (the `postgres-platform` service in `docker-compose.yml`, started by `pnpm run docker:up`) |
 | `ENCRYPTION_KEY`     | —                                | Encryption for stored credentials (`openssl rand -hex 32`) |
 | `SESSION_SECRET`     | —                                | Session security                                           |
 | `AI_GATEWAY_API_KEY` | —                                | AI features (Vercel AI Gateway — required)                 |
@@ -39,8 +40,11 @@ For OAuth login, set `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` and/or `GH_CLIENT
 ## Start Development
 
 ```bash
-# Start MongoDB
+# Start MongoDB and the local platform Postgres
 pnpm run docker:up
+
+# Apply the platform Postgres schema (Drizzle migrations)
+pnpm run pg:migrate
 
 # Start everything (API + App + Inngest dev server)
 pnpm run dev
