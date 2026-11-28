@@ -69,6 +69,7 @@ function eventReader(stream: ReadableStreamDefaultReader<Uint8Array>) {
 async function startInstance(
   mongoUrl: string,
   workspaceId: string,
+  serviceName: string,
   children: ChildProcess[],
   signal: AbortSignal,
 ): Promise<ApiInstance> {
@@ -76,7 +77,7 @@ async function startInstance(
     execArgv: ["--max-old-space-size=4096", "--import", "tsx"],
     env: {
       ...process.env,
-      K_SERVICE: "mako-pr-1580",
+      K_SERVICE: serviceName,
       DATABASE_URL: mongoUrl,
       REDIS_URL: "",
       POSTGRES_URL: "",
@@ -93,11 +94,29 @@ async function startInstance(
   return instance as ApiInstance;
 }
 
+async function openStream(
+  instance: ApiInstance,
+  workspaceId: string,
+  signal: AbortSignal,
+) {
+  const response = await fetch(
+    `${instance.origin}/api/workspaces/${workspaceId}/realtime?clientId=fixture`,
+    { headers: { cookie: instance.cookie }, signal },
+  );
+  assert.equal(response.status, 200);
+  assert.match(
+    response.headers.get("content-type") ?? "",
+    /^text\/event-stream/,
+  );
+  assert.ok(response.body);
+  return response.body.getReader();
+}
+
 if (process.argv[2] === "--preview-api") {
   void runApiInstance(process.argv[3]);
 } else {
   void test(
-    "Redis-less preview instances share authenticated SSE presence through Mongo",
+    "Redis-less API instances share SSE presence only with their own PR",
     { timeout: 75_000 },
     async ({ signal }) => {
       const mongo = await MongoMemoryServer.create();
@@ -107,61 +126,90 @@ if (process.argv[2] === "--preview-api") {
       const presence = database.collection<{
         workspaceId: ObjectId;
         clientId: string;
+        userId: string;
         lastSeenAt: Date;
       }>("realtime_presence");
       const children: ChildProcess[] = [];
       try {
         const workspaceId = new ObjectId();
         const id = workspaceId.toHexString();
-        const filter = { workspaceId, clientId: "fixture" };
-        const [writer, reader] = await Promise.all([
-          startInstance(mongoUrl, id, children, signal),
-          startInstance(mongoUrl, id, children, signal),
+        const filter = { workspaceId, clientId: "pr:1580:fixture" };
+        const otherFilter = { workspaceId, clientId: "pr:1581:fixture" };
+        await presence.insertOne({
+          workspaceId,
+          clientId: "unscoped-legacy-tab",
+          userId: "fixture",
+          lastSeenAt: new Date(),
+        });
+        const [writer, reader, otherPreview] = await Promise.all([
+          startInstance(mongoUrl, id, "mako-pr-1580", children, signal),
+          startInstance(mongoUrl, id, "mako-pr-1580", children, signal),
+          startInstance(mongoUrl, id, "mako-pr-1581", children, signal),
         ]);
-        assert.notEqual(writer.origin, reader.origin);
-        const attached = async (workspace = id) => {
+        assert.equal(
+          new Set([writer.origin, reader.origin, otherPreview.origin]).size,
+          3,
+        );
+        const attached = async (instance = reader, workspace = id) => {
           const response = await fetch(
-            `${reader.origin}/fixture/attached/${workspace}`,
+            `${instance.origin}/fixture/attached/${workspace}`,
             { signal: AbortSignal.timeout(5000) },
           );
           assert.equal(response.status, 200);
           return (await response.json()) === true;
         };
         assert.equal(await attached(), false);
+        assert.equal(await attached(otherPreview), false);
 
-        const response = await fetch(
-          `${writer.origin}/api/workspaces/${id}/realtime?clientId=fixture`,
-          { headers: { cookie: writer.cookie }, signal },
-        );
-        assert.equal(response.status, 200);
-        assert.match(
-          response.headers.get("content-type") ?? "",
-          /^text\/event-stream/,
-        );
-        assert.ok(response.body);
-        const stream = response.body.getReader();
+        const stream = await openStream(writer, id, signal);
         const waitForEvent = eventReader(stream);
+        let otherStream: typeof stream | undefined;
         try {
-          await waitForEvent("hello");
-          await waitFor(() => attached(), "Second instance never saw the tab");
-          assert.equal(await attached(new ObjectId().toHexString()), false);
-          const initial = await presence.findOne(filter);
-          assert.ok(initial);
+          try {
+            await waitForEvent("hello");
+            await waitFor(
+              () => attached(),
+              "Second instance never saw the tab",
+            );
+            assert.equal(
+              await attached(reader, new ObjectId().toHexString()),
+              false,
+            );
+            assert.equal(await attached(otherPreview), false);
+            const initial = await presence.findOne(filter);
+            assert.ok(initial);
 
-          await waitForEvent("ping");
-          await waitFor(async () => {
-            const row = await presence.findOne(filter);
-            return row !== null && row.lastSeenAt > initial.lastSeenAt;
-          }, "Heartbeat never renewed the shared Mongo row");
-          assert.equal(await attached(), true);
+            otherStream = await openStream(otherPreview, id, signal);
+            await eventReader(otherStream)("hello");
+            await waitFor(
+              () => attached(otherPreview),
+              "Other PR never saw its own tab",
+            );
+            assert.ok(await presence.findOne(otherFilter));
+
+            await waitForEvent("ping");
+            await waitFor(async () => {
+              const row = await presence.findOne(filter);
+              return row !== null && row.lastSeenAt > initial.lastSeenAt;
+            }, "Heartbeat never renewed the shared Mongo row");
+            assert.equal(await attached(), true);
+          } finally {
+            await stream.cancel();
+          }
+          await waitFor(
+            async () => !(await attached()),
+            "Second instance still saw the disconnected tab",
+          );
+          assert.equal(await presence.findOne(filter), null);
+          assert.equal(await attached(otherPreview), true);
         } finally {
-          await stream.cancel();
+          await otherStream?.cancel();
         }
         await waitFor(
-          async () => !(await attached()),
-          "Second instance still saw the disconnected tab",
+          async () => !(await attached(otherPreview)),
+          "Other PR still saw its disconnected tab",
         );
-        assert.equal(await presence.findOne(filter), null);
+        assert.equal(await presence.findOne(otherFilter), null);
       } finally {
         await Promise.all(
           children.map(async child => {

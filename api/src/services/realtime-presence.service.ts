@@ -66,6 +66,9 @@ interface PreviewPresence {
 function previewMongoStore(prNumber: string): PresenceStore {
   const modelName = "PreviewRealtimePresence";
   const previewDatabase = `staging_pr_${prNumber}`;
+  // Several PRs may serve the same workspace from the shared staging DB.
+  const clientPrefix = `pr:${prNumber}:`;
+  const previewClients = new RegExp(`^${clientPrefix}`);
 
   function getModel(): Model<PreviewPresence> {
     const connection = mongoose.connection;
@@ -102,7 +105,7 @@ function previewMongoStore(prNumber: string): PresenceStore {
       if (!isObjectIdHex(workspaceId)) return;
       await getModel()
         .updateOne(
-          { workspaceId, clientId },
+          { workspaceId, clientId: clientPrefix + clientId },
           { $max: { lastSeenAt: new Date(now) }, $set: { userId } },
           { upsert: true, timeoutMS: 2000 },
         )
@@ -111,7 +114,10 @@ function previewMongoStore(prNumber: string): PresenceStore {
     async clear(workspaceId, clientId) {
       if (!isObjectIdHex(workspaceId)) return;
       await getModel()
-        .deleteOne({ workspaceId, clientId }, { timeoutMS: 2000 })
+        .deleteOne(
+          { workspaceId, clientId: clientPrefix + clientId },
+          { timeoutMS: 2000 },
+        )
         .exec();
     },
     async hasFresh(workspaceId, now) {
@@ -120,6 +126,7 @@ function previewMongoStore(prNumber: string): PresenceStore {
         await getModel()
           .exists({
             workspaceId,
+            clientId: previewClients,
             lastSeenAt: { $gte: new Date(now - PRESENCE_FRESHNESS_MS) },
           })
           .setOptions({ timeoutMS: 2000 })
