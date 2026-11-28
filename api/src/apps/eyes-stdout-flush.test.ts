@@ -1,10 +1,9 @@
 /**
  * The eyes runner must flush its result line before exiting.
  *
- * `console.log(line)` followed by `process.exit(0)` in the same tick discards
- * whatever has not drained, so a line past the pipe buffer reaches the reader
- * cut mid-string and `JSON.parse` fails — surfacing as the useless
- * "Unparseable eyes result.".
+ * `console.log(line)` followed by `process.exit(0)` in the same tick can drop
+ * queued stdout bytes. A partial result fails to parse and the service reports
+ * "Unparseable eyes result."
  *
  * The screenshot no longer travels in that line (it is written to a file and
  * read back as bytes), which removes the ~100KB of base64 that made this easy
@@ -13,81 +12,91 @@
  * ~72KB of console output before any page text. A chatty app still overruns
  * the buffer, so the flush stays, and so does this test.
  *
- * WHERE the cut lands varies and is NOT worth asserting:
- *     macOS / node 24     300,000 B payload ->  65,536 B  (cut)
- *     Linux CI / node 20  300,000 B payload -> 219,264 B  (cut)
- * An earlier version asserted macOS's 65,536, passed locally and failed on CI
- * — and the mismatch read like "Linux does not truncate" when Linux truncates
- * too, just at a different boundary. Assert the property, not the number.
+ * Keep the reader paused until the child has confirmed stdout is backlogged.
+ * A reader that drains concurrently can pick up even the unflushed line in full.
  *
  * Run: tsx src/apps/eyes-stdout-flush.test.ts
  */
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-/** Comfortably past any buffer, and realistic: a dense-page JPEG in base64. */
-const PAYLOAD_BYTES = 300_000;
+const MARK = "MAKO_EYES_RESULT:";
+const PAYLOAD_BYTES = 4 * 1024 * 1024;
 
-/** Run a snippet with stdout as a pipe (execFileSync pipes by default). */
-function stdoutOf(source: string): string {
-  return execFileSync(process.execPath, ["--input-type=module", "-e", source], {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
+function stdoutOf(exit: "immediate" | "after-write"): Promise<string> {
+  const source = `
+    import assert from "node:assert/strict";
+
+    const line = ${JSON.stringify(MARK)} + JSON.stringify({
+      screenshotBase64: "x".repeat(${PAYLOAD_BYTES}),
+    });
+    const exitAfterWrite = ${exit === "after-write"};
+    if (exitAfterWrite) {
+      process.stdout.write(line + "\\n", () => process.exit(0));
+    } else {
+      console.log(line);
+    }
+    assert.ok(process.stdout.writableLength > 0, "stdout must have queued bytes");
+    if (exitAfterWrite) {
+      process.send("stdout queued");
+    } else {
+      process.exit(0);
+    }
+  `;
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      ["--input-type=module", "-e", source],
+      {
+        stdio: ["ignore", "pipe", "inherit", "ipc"],
+        timeout: 30_000,
+      },
+    );
+    child.once("error", reject);
+    const { stdout } = child;
+    assert.ok(stdout);
+    const chunks: Buffer[] = [];
+    stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    stdout.pause();
+    // The flushing child asks the reader to drain via IPC once its write is
+    // pending. The immediate-exit child keeps the reader paused until it exits.
+    child.once("message", () => stdout.resume());
+    child.once("exit", () => stdout.resume());
+    child.once("close", (code, signal) => {
+      if (code !== 0) {
+        reject(new Error(`stdout fixture child exited with ${signal ?? code}`));
+        return;
+      }
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
   });
 }
 
-const emit = (body: string) => `
-  const big = "x".repeat(${PAYLOAD_BYTES});
-  const line = "MAKO_EYES_RESULT:" + JSON.stringify({ screenshotBase64: big });
-  ${body}
-`;
-
-const payloadOf = (stdout: string): string =>
-  (
-    JSON.parse(stdout.trim().slice("MAKO_EYES_RESULT:".length)) as {
-      screenshotBase64: string;
-    }
-  ).screenshotBase64;
-
-function main() {
-  // 1. The hazard. Assert the PROPERTY — the line is cut and will not parse —
-  //    never a byte count. The cut-off differs by platform (65,536 on macOS,
-  //    219,264 on a Linux CI runner), and an earlier version of this test
-  //    asserted macOS's number, passed locally, and failed on CI. Worse, the
-  //    mismatch read like "Linux does not truncate" when Linux truncates too,
-  //    just elsewhere. The number is the accident; the truncation is the bug.
-  const broken = stdoutOf(emit(`console.log(line); process.exit(0);`));
+async function main() {
+  const broken = await stdoutOf("immediate");
+  assert.ok(broken.startsWith(MARK), "the truncated line keeps its marker");
   assert.ok(
     broken.length < PAYLOAD_BYTES,
-    `the unflushed pattern must lose data (got ${broken.length} of ` +
-      `${PAYLOAD_BYTES}+ bytes) — if it ever delivers the lot, node's ` +
-      `stdout behaviour changed and the runner's guarantee needs re-deriving`,
+    `immediate exit must lose queued data (read ${broken.length} bytes)`,
   );
   assert.throws(
-    () => JSON.parse(broken.slice("MAKO_EYES_RESULT:".length)),
-    "a cut line must fail to parse — that is the production symptom, " +
-      '"Unparseable eyes result."',
+    () => JSON.parse(broken.slice(MARK.length)),
+    SyntaxError,
+    "the truncated result must fail to parse",
   );
 
-  // 2. The shipped form is correct on EVERY platform. This is the assertion
-  //    that actually protects the runner.
-  const fixed = stdoutOf(
-    emit(`process.stdout.write(line + "\\n", () => process.exit(0));`),
-  );
-  assert.ok(
-    fixed.length > broken.length,
-    `flushing must deliver more than not flushing (${fixed.length} vs ` +
-      `${broken.length}) — same payload, same pipe, only the exit differs`,
-  );
+  const fixed = await stdoutOf("after-write");
   assert.equal(
-    payloadOf(fixed).length,
-    PAYLOAD_BYTES,
-    "the whole payload must survive, not just the part that fit the buffer",
+    fixed,
+    MARK +
+      JSON.stringify({ screenshotBase64: "x".repeat(PAYLOAD_BYTES) }) +
+      "\n",
+    "waiting for the write callback must deliver the whole result line",
   );
 
-  // 3. The shipped runner: flushing form, and no image in the line.
+  // The shipped runner flushes the result line and writes the image to a file.
   const service = readFileSync(path.join(__dirname, "eyes.service.ts"), "utf8");
   const runnerStart = service.indexOf("function runnerSource()");
   // End at the template literal's terminator, not the first `\n}\n` — the
@@ -130,4 +139,7 @@ function main() {
   console.log(`eyes runner stdout-flush tests passed (${process.platform})`);
 }
 
-main();
+main().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
