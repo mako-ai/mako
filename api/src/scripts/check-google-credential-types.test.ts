@@ -16,7 +16,9 @@ import mongoose from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
 
 const TEST_KEY = crypto.randomBytes(32).toString("hex");
-const OTHER_KEY = crypto.randomBytes(32).toString("hex");
+// The envelope has a complete IV and a partial ciphertext block. Decryption
+// always rejects it before padding or JSON parsing can decide the outcome.
+const TRUNCATED_CIPHERTEXT = `${"00".repeat(16)}:00`;
 process.env.ENCRYPTION_KEY = TEST_KEY;
 
 import { encryptString } from "../services/crypto.service";
@@ -221,19 +223,10 @@ async function main(): Promise<void> {
         project_id: "p",
         service_account_json: "{ not json SENTINEL_PRIVATE_KEY_BODY",
       }),
-      // Encrypted under another key: cannot be read here.
-      {
-        ...db("bigquery", { project_id: "p" }),
-        connection: {
-          project_id: "p",
-          service_account_json: (() => {
-            process.env.ENCRYPTION_KEY = OTHER_KEY;
-            const v = encryptString(JSON.stringify(goodKey));
-            process.env.ENCRYPTION_KEY = TEST_KEY;
-            return v;
-          })(),
-        },
-      },
+      db("bigquery", {
+        project_id: "p",
+        service_account_json: TRUNCATED_CIPHERTEXT,
+      }),
       // Legacy rows: the whole `connection` stored as a string.
       {
         ...db("bigquery", {}),
@@ -422,17 +415,7 @@ async function main(): Promise<void> {
         api_base_url: "https://evil.example/path",
       }),
       { ...mk("bigquery", "connection", {}), connection: "not json at all" },
-      {
-        ...mk("bigquery", "connection", {}),
-        connection: {
-          api_base_url: (() => {
-            process.env.ENCRYPTION_KEY = OTHER_KEY;
-            const v = encryptString("https://evil.example/path");
-            process.env.ENCRYPTION_KEY = TEST_KEY;
-            return v;
-          })(),
-        },
-      },
+      mk("bigquery", "connection", { api_base_url: TRUNCATED_CIPHERTEXT }),
     ]);
     await SourceConnection.collection.insertMany([
       mk("ws:bigquery", "config", {
