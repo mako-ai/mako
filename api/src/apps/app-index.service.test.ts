@@ -80,6 +80,7 @@ import {
 import { readThumbnailBlob, thumbnailHeaders } from "./app-thumbnail";
 import { runGit } from "./git";
 import { listVisibleApps } from "./app-listing.service";
+import { invalidateAppsHomeBase } from "./app-home-base.service";
 import { canReadResource } from "../utils/resource-acl";
 import { up as isolateAppIds } from "../migrations/2026-09-16-190000_app_identity_isolation";
 
@@ -601,146 +602,190 @@ describe("discovery facts", () => {
     ]);
   });
 
-  it("reads grants and revocations afresh while keeping Git-only apps visible", async () => {
-    const other = generateUuidv7();
-    const email = "other@acme.test";
-    await ensureTestUser(pg.db, { id: other, email });
-    await workspaceRepo.addMember({
-      workspaceId: WS,
-      userId: other,
-      role: "member",
-      joinedAt: new Date(1),
-    });
-    const api = new Hono<AuthEnv>();
-    api.use("*", async (c, next) => {
-      c.set("user", { id: other, email });
-      c.set("memberRole", "member");
-      await next();
-    });
-    const paths = "/workspaces/:workspaceId/apps";
-    api.route(paths, appsProjectRoutes);
-    api.route(paths, appsHomeRoutes);
-    const list = createAppsTools({
-      workspaceId: WS,
-      userId: other,
-    }).app_list_apps;
-    type AppResult = {
-      success: boolean;
-      apps: Array<{ id: string; path: string; publicShare?: unknown }>;
-    };
-    const listForOther = async (expected: string[]) => {
-      const prefix = `/workspaces/${WS}/apps`;
-      const [explorerResponse, homeResponse, mcpResponse] = await Promise.all([
-        api.request(prefix),
-        api.request(`${prefix}/discovery`),
-        list.execute?.(
-          {},
-          { toolCallId: "list-fixture", messages: [], context: undefined },
-        ),
-      ]);
-      expect(explorerResponse.status).toBe(200);
-      expect(homeResponse.status).toBe(200);
-      const explorer = (await explorerResponse.json()) as AppResult;
-      const home = (await homeResponse.json()) as AppResult;
-      const mcp = mcpResponse as AppResult;
-      for (const response of [explorer, home, mcp]) {
-        expect(response.success).toBe(true);
-        expect(response.apps.map(app => app.path).sort()).toEqual(expected);
-      }
-      return { explorer, home };
-    };
+  it.each(["owner", "admin"] as const)(
+    "reads fresh ACLs with an unshared workspace %s and keeps Git-only apps visible",
+    async role => {
+      invalidateAppsHomeBase(WS);
+      const other = generateUuidv7();
+      const email = "other@acme.test";
+      await ensureTestUser(pg.db, { id: other, email });
+      await workspaceRepo.addMember({
+        workspaceId: WS,
+        userId: other,
+        role,
+        joinedAt: new Date(1),
+      });
+      const api = new Hono<AuthEnv>();
+      api.use("*", async (c, next) => {
+        c.set("user", { id: other, email });
+        c.set("memberRole", role);
+        await next();
+      });
+      const paths = "/workspaces/:workspaceId/apps";
+      api.route(paths, appsProjectRoutes);
+      api.route(paths, appsHomeRoutes);
+      const list = createAppsTools({
+        workspaceId: WS,
+        userId: other,
+      }).app_list_apps;
+      type AppRef = { id: string; path: string };
+      type AppResult = {
+        success: boolean;
+        apps: Array<AppRef & { publicShare?: unknown }>;
+      };
+      const byPath = (apps: AppRef[]) =>
+        apps
+          .map(({ id, path }) => ({ id, path }))
+          .sort((left, right) => left.path.localeCompare(right.path));
+      const listForOther = async (expected: AppRef[]) => {
+        const prefix = `/workspaces/${WS}/apps`;
+        const [explorerResponse, homeResponse, mcpResponse] = await Promise.all(
+          [
+            api.request(prefix),
+            api.request(`${prefix}/discovery`),
+            list.execute?.(
+              {},
+              { toolCallId: "list-fixture", messages: [], context: undefined },
+            ),
+          ],
+        );
+        expect(explorerResponse.status).toBe(200);
+        expect(homeResponse.status).toBe(200);
+        const explorer = (await explorerResponse.json()) as AppResult;
+        const home = (await homeResponse.json()) as AppResult;
+        for (const response of [explorer, home]) {
+          expect(response.success).toBe(true);
+          expect(byPath(response.apps)).toEqual(byPath(expected));
+        }
+        const mcp = mcpResponse as {
+          success: boolean;
+          apps: Array<{ app: string; path: string }>;
+        };
+        expect(mcp.success).toBe(true);
+        expect(
+          byPath(mcp.apps.map(({ app, path }) => ({ id: app, path }))),
+        ).toEqual(byPath(expected));
+        return { explorer, home };
+      };
 
-    const readyAt = new Date("2026-09-01T00:00:00Z");
-    await appsMetadataRepo.recordBindingRun(
-      B_ID,
-      "rows",
-      { at: readyAt, status: "ready" },
-      WS,
-    );
-    await appsMetadataRepo.recordBindingRun(
-      B_ID,
-      "rows",
-      {
-        at: new Date("2026-09-02T00:00:00Z"),
-        status: "error",
-      },
-      WS,
-    );
-    const before = await listForOther(["apps/Sales/CH/b", "apps/a"]);
-    expect(before.home.apps.find(app => app.id === B_ID)).toMatchObject({
-      dataRefreshedAt: readyAt.toISOString(),
-      health: { bindingErrors: ["rows"] },
-    });
-    const sha = (await loadAppsIndex(WS)).sha;
-    const createdAt = new Date("2026-09-03T00:00:00Z");
-    await appsMetadataRepo.createProject({
-      id: B_ID,
-      workspaceId: WS,
-      path: "apps/Sales/CH/b",
-      slug: "b",
-      title: "B",
-      access: "private",
-      owner_id: USER,
-      createdBy: USER,
-      publishedSha: sha,
-      publishedAt: createdAt,
-      chatEnabled: true,
-      lastDeployError: {
-        sha,
-        stage: "build",
-        message: "fixture build error",
-        at: createdAt,
-      },
-      publicShare: {
+      const gitOnly = {
+        id: derivedAppId(WS, "a").toHexString(),
+        path: "apps/a",
+      };
+      const creatorOnly = { id: generateUuidv7(), path: "apps/creator-only" };
+      const privateApp = { id: B_ID, path: "apps/Sales/CH/b" };
+      const unresolved = "users/unmapped/apps/unresolved";
+      await externalCommit({
+        [`${creatorOnly.path}/mako.json`]: manifest(
+          "Creator Only",
+          creatorOnly.id,
+        ),
+        [`${unresolved}/mako.json`]: manifest("Unresolved Owner"),
+      });
+      const creatorRow = await appsMetadataRepo.createProject({
+        ...creatorOnly,
+        workspaceId: WS,
+        title: "Creator Only",
+        slug: "creator-only",
+        access: "private",
+        createdBy: other,
+      });
+      expect(creatorRow.owner_id).toBeUndefined();
+      const snapshot = await loadAppsIndex(WS);
+      const unresolvedFolder = snapshot.apps.find(
+        app => app.path === unresolved,
+      );
+      expect(unresolvedFolder?.scope).toBe("private");
+      expect(unresolvedFolder?.ownerId).toBeUndefined();
+
+      const readyAt = new Date("2026-09-01T00:00:00Z");
+      await appsMetadataRepo.recordBindingRun(
+        B_ID,
+        "rows",
+        { at: readyAt, status: "ready" },
+        WS,
+      );
+      await appsMetadataRepo.recordBindingRun(
+        B_ID,
+        "rows",
+        {
+          at: new Date("2026-09-02T00:00:00Z"),
+          status: "error",
+        },
+        WS,
+      );
+      const visibleWithShare = [gitOnly, creatorOnly, privateApp];
+      const visibleWithoutShare = [gitOnly, creatorOnly];
+      const before = await listForOther(visibleWithShare);
+      expect(before.home.apps.find(app => app.id === B_ID)).toMatchObject({
+        dataRefreshedAt: readyAt.toISOString(),
+        health: { bindingErrors: ["rows"] },
+      });
+      const sha = snapshot.sha;
+      const createdAt = new Date("2026-09-03T00:00:00Z");
+      await appsMetadataRepo.createProject({
+        ...privateApp,
+        workspaceId: WS,
+        slug: "b",
+        title: "B",
+        access: "private",
+        owner_id: USER,
+        createdBy: USER,
+        publishedSha: sha,
+        publishedAt: createdAt,
+        chatEnabled: true,
+        lastDeployError: {
+          sha,
+          stage: "build",
+          message: "fixture build error",
+          at: createdAt,
+        },
+        publicShare: {
+          enabled: true,
+          token: "fixture-share",
+          passwordHash: "fixture-hash",
+          passwordEncrypted: "fixture-encrypted",
+          createdAt,
+          allowLiveQueries: true,
+        },
+      });
+      await listForOther(visibleWithoutShare);
+
+      await appsMetadataRepo.updateProjectSharing(WS, B_ID, {
+        sharedWith: [{ userId: other, role: "viewer", addedAt: createdAt }],
+      });
+      const granted = await listForOther(visibleWithShare);
+      const shared = granted.explorer.apps.find(app => app.id === B_ID);
+      expect(shared).toMatchObject({
+        access: "private",
+        owner_id: USER,
+        publishedSha: sha,
+        publishedAt: createdAt.toISOString(),
+        chatEnabled: true,
+      });
+      expect(shared?.publicShare).toEqual({
         enabled: true,
         token: "fixture-share",
-        passwordHash: "fixture-hash",
-        passwordEncrypted: "fixture-encrypted",
-        createdAt,
+        hasPassword: true,
+        createdAt: createdAt.toISOString(),
         allowLiveQueries: true,
-      },
-    });
-    await listForOther(["apps/a"]);
+      });
+      expect(granted.home.apps.find(app => app.id === B_ID)).toMatchObject({
+        access: "private",
+        publishedSha: sha,
+        dataRefreshedAt: readyAt.toISOString(),
+        health: {
+          bindingErrors: ["rows"],
+          deployError: { stage: "build", at: createdAt.toISOString() },
+        },
+      });
 
-    await appsMetadataRepo.updateProjectSharing(WS, B_ID, {
-      sharedWith: [{ userId: other, role: "viewer", addedAt: createdAt }],
-    });
-    const granted = await listForOther(["apps/Sales/CH/b", "apps/a"]);
-    const shared = granted.explorer.apps.find(app => app.id === B_ID);
-    expect(shared).toMatchObject({
-      access: "private",
-      owner_id: USER,
-      publishedSha: sha,
-      publishedAt: createdAt.toISOString(),
-      chatEnabled: true,
-    });
-    expect(shared?.publicShare).toEqual({
-      enabled: true,
-      token: "fixture-share",
-      hasPassword: true,
-      createdAt: createdAt.toISOString(),
-      allowLiveQueries: true,
-    });
-    expect(granted.home.apps.find(app => app.id === B_ID)).toMatchObject({
-      access: "private",
-      publishedSha: sha,
-      dataRefreshedAt: readyAt.toISOString(),
-      health: {
-        bindingErrors: ["rows"],
-        deployError: { stage: "build", at: createdAt.toISOString() },
-      },
-    });
-
-    await appsMetadataRepo.updateProjectSharing(WS, B_ID, { sharedWith: [] });
-    await listForOther(["apps/a"]);
-    expect((await loadAppsIndex(WS)).sha).toBe(sha);
-    expect(
-      await appsMetadataRepo.findProjectById(
-        derivedAppId(WS, "a").toHexString(),
-        WS,
-      ),
-    ).toBeNull();
-  });
+      await appsMetadataRepo.updateProjectSharing(WS, B_ID, { sharedWith: [] });
+      await listForOther(visibleWithoutShare);
+      expect((await loadAppsIndex(WS)).sha).toBe(sha);
+      expect(await appsMetadataRepo.findProjectById(gitOnly.id, WS)).toBeNull();
+    },
+  );
 });
 
 describe("the index", () => {
