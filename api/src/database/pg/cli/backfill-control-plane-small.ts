@@ -13,6 +13,7 @@
  *   pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts
  *   pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts --replay
  */
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -48,7 +49,10 @@ import {
   workflowRecordedWrites,
   type ModelCatalogSnapshotIdPg,
 } from "../schema/control-plane-app";
-import { migrationDomainState, migrationQuarantine } from "../schema/control-plane";
+import {
+  migrationDomainState,
+  migrationQuarantine,
+} from "../schema/control-plane";
 import { workspaces } from "../schema/workspaces";
 
 const BATCH_SIZE = 50;
@@ -1138,6 +1142,10 @@ async function main(): Promise<void> {
       "CI handoff: drain Mongo writers, copy, verify content and transfer ownership",
     )
     .option(
+      "--verify-cloud-run-writers",
+      "Check both Cloud Run services before the first ownership transfer",
+    )
+    .option(
       "--replay",
       "Read-only content comparison against Postgres; exit 2 on differences",
     )
@@ -1148,6 +1156,7 @@ async function main(): Promise<void> {
   program.parse(argv);
   const {
     activate = false,
+    verifyCloudRunWriters = false,
     apply = false,
     replay = false,
     reconcileDeletedRules = false,
@@ -1155,11 +1164,17 @@ async function main(): Promise<void> {
   } = program.opts<{
     asOf?: string;
     activate?: boolean;
+    verifyCloudRunWriters?: boolean;
     apply?: boolean;
     replay?: boolean;
     reconcileDeletedRules?: boolean;
   }>();
 
+  if (verifyCloudRunWriters && !activate) {
+    process.stderr.write("--verify-cloud-run-writers requires --activate.\n");
+    process.exitCode = 1;
+    return;
+  }
   if (
     activate &&
     (apply || replay || reconcileDeletedRules || asOf !== undefined)
@@ -1214,8 +1229,9 @@ async function main(): Promise<void> {
         process.exitCode = 1;
         return;
       }
-      const status = await activateControlPlane(now =>
-        copyAndVerifyControlPlane(getPgDirectDb(), now),
+      const status = await activateControlPlane(
+        now => copyAndVerifyControlPlane(getPgDirectDb(), now),
+        verifyCloudRunWriters ? verifyCloudRunWritersBeforeCopy : undefined,
       );
       const published = await publishedCutoverTime();
       if (
@@ -1261,6 +1277,26 @@ async function main(): Promise<void> {
   } finally {
     await mongoose.disconnect();
     await closePgConnections();
+  }
+}
+
+function verifyCloudRunWritersBeforeCopy(): void {
+  try {
+    execFileSync(
+      process.execPath,
+      [
+        path.resolve(
+          __dirname,
+          "../../../../../scripts/check-control-plane-revisions.mjs",
+        ),
+      ],
+      { stdio: "inherit" },
+    );
+  } catch (error) {
+    process.stderr.write(
+      "Mongo still owns this domain. Restore the affected service through the preparation release and verify both services before retrying activation.\n",
+    );
+    throw error;
   }
 }
 

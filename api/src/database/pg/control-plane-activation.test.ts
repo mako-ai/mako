@@ -123,6 +123,31 @@ describe("live control-plane activation", () => {
     await mongo?.stop();
   });
 
+  it("checks writer retirement before initializing the fence and skips it after durable publication", async () => {
+    const verify = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValue(Error("canary revision failed"));
+    const copy = vi.fn((at: Date) => copyAndVerifyControlPlane(db, at));
+    await expect(activateControlPlane(copy, verify)).rejects.toThrow(
+      "canary revision failed",
+    );
+    expect(copy).not.toHaveBeenCalled();
+    expect(
+      await mongoose.connection
+        .collection("migration_writer_fences")
+        .countDocuments(),
+    ).toBe(0);
+
+    verify.mockResolvedValueOnce(undefined);
+    expect(await activateControlPlane(copy, verify)).toBe("activated");
+    // The latest service revision can now fail without blocking a repair deploy.
+    expect(await activateControlPlane(copy, verify)).toBe("already active");
+    expect(verify).toHaveBeenCalledTimes(2);
+    expect(copy).toHaveBeenCalledTimes(1);
+    const [receipt] = await db.select().from(schema.migrationDomainState);
+    expect(await publishedCutoverTime()).toEqual(receipt.updatedAt);
+  });
+
   it("drains a recorded HTTP write, then routes late worker and startup mutations through PG", async () => {
     const rule = await notificationsRepo.createRule({
       workspaceId: ws.oid,

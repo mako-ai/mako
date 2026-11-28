@@ -20,7 +20,8 @@ on:
 
 concurrency:
   group: deploy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || (github.event_name == 'workflow_dispatch' && inputs.pr_number != '' && format('pr-{0}', inputs.pr_number)) || github.ref_name }}
-  cancel-in-progress: true
+  # Preview builds can be superseded. Let an active production handoff finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.pr_number != '') }}
 
 # PR previews deploy to the dedicated DEV project (mako-ai-dev); production
 # stays in the prod project. Project-scoped values live on each deploy job.
@@ -1235,8 +1236,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          # Always checkout master for production deploys to prevent accidental deployments from other branches
-          ref: master
+          # The job requires master. Build the commit that triggered this run.
+          ref: ${{ github.sha }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v5
@@ -1340,17 +1341,15 @@ jobs:
           fi
 
       - name: Verify prepared Cloud Run writers and activate the control plane
-        timeout-minutes: 5
         env:
           GCP_MIGRATION_PROJECT_ID: ${{ vars.GCP_MIGRATION_PROJECT_ID }}
         run: |
           set -euo pipefail
-          node scripts/check-control-plane-revisions.mjs
           POSTGRES_DIRECT_URL=$(gcloud secrets versions access latest \
             --secret=POSTGRES_DIRECT_URL --project="${GCP_PROJECT_ID}")
           test -n "${POSTGRES_DIRECT_URL}"
           echo "::add-mask::${POSTGRES_DIRECT_URL}"
-          POSTGRES_DIRECT_URL="${POSTGRES_DIRECT_URL}" pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts --activate
+          POSTGRES_DIRECT_URL="${POSTGRES_DIRECT_URL}" pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts --activate --verify-cloud-run-writers
 
       - name: Keep Neon test branch schema in sync with production
         continue-on-error: true
