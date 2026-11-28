@@ -397,6 +397,56 @@ describe("dbt persistence", () => {
     expect(await retained()).toEqual(0);
   });
 
+  it("rejects distinct Mongo records that map to one Postgres ID in each collection", async () => {
+    const src = source.db("dbt_id_aliases");
+    const id = new mongoose.Types.ObjectId();
+    const at = new Date("2026-10-01T00:00:00Z");
+    const base = {
+      workspaceId: new mongoose.Types.ObjectId(workspace.oid),
+      createdAt: at,
+      updatedAt: at,
+    };
+    const records = {
+      dbt_projects: { name: "Mixed IDs", createdBy: userId },
+      dbt_env_preferences: { projectId: id, userId, environment: "dev" },
+      dbt_jobs: {
+        projectId: id,
+        name: "Mixed IDs",
+        createdBy: userId,
+        environment: "dev",
+      },
+      dbt_runs: {
+        projectId: id,
+        jobId: id,
+        status: "success",
+        environment: "dev",
+        trigger: "schedule",
+        triggeredBy: userId,
+        logs: [],
+      },
+    };
+    for (const [name, record] of Object.entries(records)) {
+      await src.collection(name).insertOne({ ...base, ...record, _id: id });
+      await src.collection<{ _id: string } & Document>(name).insertOne({
+        ...base,
+        ...record,
+        _id: id.toHexString(),
+        updatedAt: new Date(at.getTime() + 1),
+      });
+    }
+    const result = await backfillDbt(src, db, at, {
+      apply: true,
+      onException: async () => {},
+    });
+    for (const table of ["projects", "preferences", "jobs", "runs"] as const) {
+      expect(result.counts[table]).toBe(2);
+      expect(result.inserted[table]).toBe(1);
+      expect(result.skipped[table]).toBe(1);
+      expect(result.reasons[`${table}.duplicateSourceId`]).toBe(1);
+    }
+    expect(result.logs.verifiedRuns).toBe(1);
+  });
+
   it("copies every run and reconciles mutable rows, even when a run finishes without a new log", async () => {
     const src = source.db("dbt_backfill");
     const p = new mongoose.Types.ObjectId();

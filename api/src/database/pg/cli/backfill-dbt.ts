@@ -192,14 +192,28 @@ export async function backfillDbt(
       document: doc,
     });
   }
-  function parentIssues(doc: Document, needsProject: boolean) {
+  // Mongo distinguishes BSON ObjectIds from strings. Several physical source
+  // documents can therefore map to the same Postgres primary key.
+  const sourceIds = {
+    projects: new Set<string>(),
+    preferences: new Set<string>(),
+    jobs: new Set<string>(),
+    runs: new Set<string>(),
+  };
+  function sourceIssues(table: Table, doc: Document) {
     const issues: Issue[] = [];
     const workspaceId = uuid(doc.workspaceId);
-    if (!uuid(doc._id)) issues.push({ reason: "invalidId" });
+    const id = uuid(doc._id);
+    if (!id) issues.push({ reason: "invalidId" });
+    else if (sourceIds[table].has(id)) {
+      issues.push({ reason: "duplicateSourceId", targetId: id });
+    } else {
+      sourceIds[table].add(id);
+    }
     if (!workspaceId || !ws.has(workspaceId)) {
       issues.push({ reason: "missingWorkspace" });
     }
-    if (needsProject) {
+    if (table !== "projects") {
       const project = keys.projects.ids.get(uuid(doc.projectId) ?? "");
       if (!project) issues.push({ reason: "missingProject" });
       else if (project.workspaceId !== workspaceId) {
@@ -321,7 +335,7 @@ export async function backfillDbt(
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
       }),
-      parentIssues(doc, false),
+      sourceIssues("projects", doc),
     );
   }
   for await (const doc of source
@@ -331,7 +345,7 @@ export async function backfillDbt(
     counts.preferences++;
     const p = mongoEnvPreferenceToRecord(doc);
     const userId = await auth.resolveUserUuid(p.userId);
-    const issues = parentIssues(doc, true);
+    const issues = sourceIssues("preferences", doc);
     if (!userId) issues.push({ reason: "missingUser" });
     const row = {
       id: uuid(doc._id) ?? "",
@@ -381,11 +395,11 @@ export async function backfillDbt(
         createdAt: j.createdAt,
         updatedAt: j.updatedAt,
       }),
-      parentIssues(doc, true),
+      sourceIssues("jobs", doc),
     );
   }
   function runReferences(doc: Document) {
-    const issues = parentIssues(doc, true);
+    const issues = sourceIssues("runs", doc);
     const blocked = issues.length > 0;
     const job =
       doc.jobId == null ? undefined : keys.jobs.ids.get(uuid(doc.jobId) ?? "");
