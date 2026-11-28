@@ -658,7 +658,65 @@ house tokens onto Tailwind's colour names (`bg-popover`,
 optional peer set: apps that import neither `/components` nor `/menu` need
 none of it.
 
-### Date filters: `PeriodPicker` (2.27)
+### Date & period filters: `TimePicker` (2.32)
+
+Composable time-range and cohort picker on its own subpath (`@makoai/app-sdk/components/time-picker`, outside the `/components` barrel so apps without `react-day-picker` never load it). Reshapes via props:
+
+```tsx
+import { TimePicker, periodOf, presetPeriod, todayIso, type TimeRange } from "@makoai/app-sdk/components/time-picker";
+
+// 1. Evolution / trend dashboards (shortcuts rail + 2-month calendar, no arrows)
+<TimePicker
+  locale="en"
+  value={period}
+  onChange={setPeriod}
+  shortcuts={["7d", "28d", "90d", "last_week", "mtd", "qtd", "all"]}
+  navigation={false}
+  min="2026-09-17"
+/>
+
+// 2. Observability dashboards (sub-day shortcuts + HH:MM inputs + retention cutoff)
+<TimePicker
+  value={range}
+  onChange={setRange}
+  shortcuts={["1h", "6h", "24h", "48h", "7d", "30d", "90d", "1y"]}
+  includeTime
+  timeRetentionMin={hourlyCutoff}
+/>
+
+// 3. Cohort / sales dashboards (multi-unit rail + < / > stepping)
+<TimePicker
+  value={cohort}
+  onChange={setCohort}
+  periods={["day", "week", "month", "quarter", "year"]}
+  navigation
+  custom={false}
+  min="2024-01-01"
+/>
+
+// 4. Single-unit renewal / capacity worklists (left rail auto-hides, future max, extra buckets)
+<TimePicker
+  value={month}
+  onChange={setMonth}
+  periods={["month"]}
+  navigation
+  custom={false}
+  max="2027-06-30"
+  extraOptions={[{ id: "all", label: "All months" }, { id: "undated", label: "Missing date", badge: 14 }]}
+  activeExtra={extra}
+  onExtraChange={setExtra}
+/>
+
+// 5. Whole-month range (financial models / MRR cohorts)
+<TimePicker value={span} onChange={setSpan} shortcuts={["ytd", "all"]} custom="month" min="2024-01-01" max="2027-12-31" />
+```
+
+- `navigation` defaults to `true` when `periods` is provided, otherwise `false`.
+- Passing a single unit in `periods` (e.g. `["month"]` or `["day"]`) without `custom` or `shortcuts` automatically hides the left rail.
+- `TimeRange` is backwards-compatible with `Period` and adds optional `fromTime` / `toTime` (`"HH:MM"`) and sub-day / `1y` presets.
+- Restore any persisted `?period=...` URL preset (including `"1h"`, `"24h"`, `"1y"`, `"last_week"`, `"mtd"`, `"all"`) with `timePresetRange(param, { min, max })`.
+
+### Legacy date filter: `PeriodPicker` (2.27, superseded by `TimePicker`)
 
 A date filter reads **‹ Nov 2026 ›**. The arrows step one period. The middle
 opens a picker with the units, the recent periods and a Custom range. The

@@ -69,3 +69,15 @@
     max-width: none;
   }
 }
+
+/* TimePicker in the phone sheet (2.32): frame stretches full width and trigger fills between step arrows. */
+@media (width < 769px) {
+  [data-slot="filter-bar"][data-open] [data-slot="filter-field"] [data-slot="time-picker"] {
+    width: 100%;
+    max-width: none;
+  }
+  [data-slot="filter-bar"][data-open] [data-slot="filter-field"] [data-slot="time-picker-trigger"] {
+    width: auto;
+    flex: 1 1 0%;
+  }
+}
