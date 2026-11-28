@@ -29,7 +29,18 @@ function fixture() {
       revisions: [
         {
           name: name + "-00001-lgj",
-          conditions: [{ revisionReason: "RETIRED" }],
+          conditions: [
+            {
+              type: "Active",
+              state: "CONDITION_FAILED",
+              revisionReason: "RETIRED",
+            },
+            {
+              type: "ResourcesAvailable",
+              state: "CONDITION_RECONCILING",
+              revisionReason: "RETIRED",
+            },
+          ],
         },
         {
           name: current,
@@ -148,4 +159,35 @@ test("dbt and the six-collection handoff require their own marker on both servic
     verifyControlPlaneWriters(env, get),
     /mako-canary.*lacks confirmed retirement/,
   );
+});
+
+test("dbt activation waits for the old revision's compute resources on each service", async () => {
+  for (const key of ["main", "canary"]) {
+    const inventory = fixture();
+    for (const service of [inventory.main, inventory.canary]) {
+      service.revisions[1].containers[0].env.push({
+        name: "MAKO_DBT_FENCE_V1",
+        value: "1",
+      });
+    }
+    const [legacy] = inventory[key].revisions;
+    legacy.conditions = [
+      { type: "Active", state: "CONDITION_FAILED", revisionReason: "RETIRED" },
+      { type: "TrafficShutDown", state: "CONDITION_SUCCEEDED" },
+      { type: "ResourcesAvailable", state: "CONDITION_SUCCEEDED" },
+    ];
+    await assert.rejects(
+      verifyControlPlaneWriters(env, inventory.get, { dbt: true }),
+      new RegExp("lacks confirmed retirement: " + legacy.name),
+    );
+    legacy.conditions[2] = {
+      type: "ResourcesAvailable",
+      state: "CONDITION_RECONCILING",
+      revisionReason: "RETIRED",
+    };
+    const result = await verifyControlPlaneWriters(env, inventory.get, {
+      dbt: true,
+    });
+    assert.equal(result.services.length, 2);
+  }
 });
