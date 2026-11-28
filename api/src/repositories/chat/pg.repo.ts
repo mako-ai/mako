@@ -26,7 +26,6 @@ import {
   eq,
   getTableColumns,
   inArray,
-  lt,
   or,
   sql,
 } from "drizzle-orm";
@@ -781,17 +780,11 @@ export class PgChatRepository implements ChatRepository {
     if (input.after) {
       const cursorUuid = parseUuidOrNull(input.after.id);
       if (!cursorUuid) return { chats: [], nextCursor: null };
-      const cursorDate =
-        input.after.updatedAt === null
-          ? new Date(0)
-          : new Date(input.after.updatedAt);
-      const cursorCondition = or(
-        lt(chats.updatedAt, cursorDate),
-        and(eq(chats.updatedAt, cursorDate), lt(chats.id, cursorUuid)),
+      const cursorTime = new Date(input.after.updatedAt ?? 0).toISOString();
+      // Match the composite index so deep pages can seek directly to the cursor.
+      conditions.push(
+        sql`(${chats.updatedAt}, ${chats.id}) < (${cursorTime}::timestamptz, ${cursorUuid}::uuid)`,
       );
-      if (cursorCondition) {
-        conditions.push(cursorCondition);
-      }
     }
 
     const rows = await db
