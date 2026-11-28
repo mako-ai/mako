@@ -44,8 +44,13 @@ async function runApiInstance(workspaceId: string) {
   });
 }
 
-async function waitFor(check: () => Promise<boolean>, failure: string) {
-  for (let attempt = 0; attempt < 50; attempt++) {
+async function waitFor(
+  check: () => Promise<boolean>,
+  failure: string,
+  timeoutMs = 2000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (await check()) return;
     await delay(40);
   }
@@ -116,7 +121,7 @@ if (process.argv[2] === "--preview-api") {
   void runApiInstance(process.argv[3]);
 } else {
   void test(
-    "Redis-less API instances share SSE presence only with their own PR",
+    "Redis-less API instances share TTL-backed SSE presence only with their own PR",
     { timeout: 75_000 },
     async ({ signal }) => {
       const mongo = await MongoMemoryServer.create();
@@ -131,6 +136,9 @@ if (process.argv[2] === "--preview-api") {
       }>("realtime_presence");
       const children: ChildProcess[] = [];
       try {
+        await database
+          .admin()
+          .command({ setParameter: 1, ttlMonitorSleepSecs: 1 });
         const workspaceId = new ObjectId();
         const id = workspaceId.toHexString();
         const filter = { workspaceId, clientId: "pr:1580:fixture" };
@@ -180,12 +188,59 @@ if (process.argv[2] === "--preview-api") {
             assert.ok(initial);
 
             otherStream = await openStream(otherPreview, id, signal);
-            await eventReader(otherStream)("hello");
             await waitFor(
               () => attached(otherPreview),
               "Other PR never saw its own tab",
             );
             assert.ok(await presence.findOne(otherFilter));
+            await otherStream.cancel();
+            otherStream = undefined;
+            await waitFor(
+              async () => !(await attached(otherPreview)),
+              "Other PR still saw its disconnected tab",
+            );
+            assert.equal(await presence.findOne(otherFilter), null);
+            assert.equal(await attached(), true);
+            otherStream = await openStream(otherPreview, id, signal);
+            await waitFor(
+              () => attached(otherPreview),
+              "Other PR never saw its reconnected tab",
+            );
+
+            await waitFor(
+              async () =>
+                (await presence.indexes()).some(
+                  index =>
+                    index.key.lastSeenAt === 1 &&
+                    index.expireAfterSeconds === 90,
+                ),
+              "Preview presence did not create its 90-second TTL index",
+            );
+            const stale = {
+              workspaceId: new ObjectId(),
+              clientId: "pr:1580:stale",
+            };
+            await presence.insertOne({
+              ...stale,
+              userId: "fixture",
+              lastSeenAt: new Date(Date.now() - 70_000),
+            });
+            assert.equal(
+              await attached(reader, stale.workspaceId.toHexString()),
+              false,
+            );
+            assert.ok(
+              await presence.findOne(stale),
+              "TTL keeps still-unexpired rows",
+            );
+            await presence.updateOne(stale, {
+              $set: { lastSeenAt: new Date(Date.now() - 91_000) },
+            });
+            await waitFor(
+              async () => (await presence.findOne(stale)) === null,
+              "Mongo TTL monitor did not remove the expired tab",
+              10_000,
+            );
 
             await waitForEvent("ping");
             await waitFor(async () => {

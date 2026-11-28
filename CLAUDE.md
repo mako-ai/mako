@@ -263,7 +263,7 @@ NOTEBOOK_KERNEL_API_URL=http://host.docker.internal:8080
 # Unset: in-process buffers (local dev / single API instance).
 # Point all serving API instances at the same Redis database so they share
 # chat stream resume state, the notebook kernel registry, and SSE presence.
-# On Cloud Run PR previews without Redis, SSE presence uses staging Mongo.
+# On Cloud Run PR previews without Redis, SSE presence is scoped by PR in staging Mongo.
 REDIS_URL=redis://localhost:6379
 ```
 

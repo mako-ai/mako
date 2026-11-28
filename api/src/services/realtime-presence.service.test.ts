@@ -251,11 +251,13 @@ it.each(["mako", "mako-canary"])(
   "sends no Mongo presence commands on %s",
   async service => {
     const mongo = await MongoMemoryServer.create();
+    // A preview-eligible database makes this a check of the service selector.
+    const mongoUrl = mongo.getUri("staging");
     try {
       vi.stubEnv("K_SERVICE", service);
-      vi.stubEnv("DATABASE_URL", mongo.getUri());
+      vi.stubEnv("DATABASE_URL", mongoUrl);
       vi.stubEnv("REDIS_URL", "redis://presence.test:6379");
-      await mongoose.connect(mongo.getUri(), { monitorCommands: true });
+      await mongoose.connect(mongoUrl, { monitorCommands: true });
       const client = mongoose.connection.getClient();
       const commands: string[] = [];
       client.on("commandStarted", e => {
@@ -291,10 +293,13 @@ it.each(["mako", "mako-canary"])(
       expect(await hasAttachedClients(id)).toBe(true);
       await clearRealtimePresence(id, "tab");
       expect(await hasAttachedClients(id)).toBe(false);
+      expect(commands).toEqual([]);
 
       // Losing the Redis setting must not enable Mongo on production services.
       vi.stubEnv("REDIS_URL", undefined);
       resetRealtimePresenceForTests();
+      await touchRealtimePresence(id, "tab", "user");
+      vi.setSystemTime(Date.now() + 15_000);
       await touchRealtimePresence(id, "tab", "user");
       expect(await hasAttachedClients(id)).toBe(true);
       await clearRealtimePresence(id, "tab");

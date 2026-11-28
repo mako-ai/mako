@@ -102,7 +102,7 @@ HHHHHHHH-HHHH-86dP0-aP1P2P3-P4P5P6P7P8P9P10P11P12P13P14P15
 
 ### Bucket 2 — EXCLUDED: Already Retired / Dropped (Git Workspace) or Moved to Redis
 - Dropped from MongoDB on `origin/master`: `skills` (`skills_retired_20260904`), `dbt_files`, `dbt_file_drafts`, `dbt_checkouts`, `dashboards`, `dashboardfolders`, `makoapps`, `v1_artifact_purge_backlog`, `materialization_runs`, `cdc_locks`, `cdc_checkpoints`.
-- Production realtime presence uses a Redis sorted set per workspace with a 90-second TTL. Redis-less Cloud Run PR previews share presence across their instances through PR-scoped records in staging Mongo.
+- Production realtime presence uses a Redis sorted set per workspace with a 90-second TTL. Redis-less Cloud Run PR previews share presence across instances through the existing `realtime_presence` collection in staging Mongo. Writes and clears match the workspace and a `clientId` stored as `pr:<PR>:<tabId>`. Reads match the workspace and the same PR prefix. Mongo expires idle rows after 90 seconds, and lookups count only heartbeats from the last 60 seconds.
 
 **Retiring the Mongo presence bridge.** The primary service and `mako-canary` serve separate endpoints and share production Mongo. The canary revision `mako-canary-00001-lgj` runs code that upserts `realtime_presence` on SSE connect and heartbeat, deletes on disconnect, and reads it for stranded chats. [Canary deployment](https://github.com/mako-ai/mako/actions/runs/29111508624) · [Deployed presence code](https://github.com/mako-ai/mako/blob/3bd909afeb47c25fbcd5b0e89f7347e80def7fb4/api/src/services/realtime-presence.service.ts#L26)
 

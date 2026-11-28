@@ -239,8 +239,8 @@ jobs:
       RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
       RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
       # Previews cannot reach production Memorystore. The API uses in-process
-      # pub/sub and shares realtime presence across preview instances through
-      # staging Mongo when Cloud Run sets K_SERVICE to mako-pr-<PR>.
+      # pub/sub and shares realtime presence within each PR through staging
+      # Mongo when Cloud Run sets K_SERVICE to mako-pr-<PR>.
       SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
       SENDGRID_FROM_EMAIL: ${{ vars.SENDGRID_FROM_EMAIL }}
       SENDGRID_INVITATION_TEMPLATE_ID: ${{ vars.SENDGRID_INVITATION_TEMPLATE_ID }}
