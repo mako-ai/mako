@@ -4,7 +4,7 @@ import { hasInjectedPgTestDb, hasPostgresConfig } from "../database/pg/client";
 
 const sessions = new AsyncLocalStorage<ClientSession>();
 export const controlPlaneSession = () => sessions.getStore();
-const id = "control-plane-small-v1";
+export const CONTROL_PLANE_DOMAIN = "control-plane-small-v1";
 type Owner = "mongo" | "pg";
 
 function isStandaloneServer(): boolean {
@@ -37,21 +37,28 @@ function ownerOf(row: { owner: Owner } | null): Owner {
   throw new Error("Invalid control-plane writer fence");
 }
 
-// This row is monotonic. Only the activation transaction can change mongo to pg.
-async function readOwner(): Promise<Owner> {
-  const collection = fences();
-  const row = await collection.findOne(
-    { _id: id },
+function findFence() {
+  return fences().findOne(
+    { _id: CONTROL_PLANE_DOMAIN },
     { readPreference: "primary", readConcern: { level: "majority" } },
   );
+}
+
+// This row is monotonic. Only the activation transaction can change mongo to pg.
+async function readOwner(): Promise<Owner> {
+  const row = await findFence();
   if (row) return ownerOf(row);
+  const collection = fences();
   await collection.updateOne(
-    { _id: id },
+    { _id: CONTROL_PLANE_DOMAIN },
     { $setOnInsert: { owner: "mongo", serial: 0 } },
     { upsert: true, writeConcern: { w: "majority" } },
   );
   return ownerOf(
-    await collection.findOne({ _id: id }, { readPreference: "primary" }),
+    await collection.findOne(
+      { _id: CONTROL_PLANE_DOMAIN },
+      { readPreference: "primary" },
+    ),
   );
 }
 
@@ -68,7 +75,7 @@ async function withFence<T>(
     session.withTransaction(
       async () => {
         const row = await fences().findOneAndUpdate(
-          { _id: id },
+          { _id: CONTROL_PLANE_DOMAIN },
           { $inc: { serial: 1 } },
           { returnDocument: "after", session },
         );
@@ -87,11 +94,15 @@ async function withFence<T>(
 
 export async function activateControlPlane(
   copyAndVerify: (cutoverAt: Date) => Promise<void>,
+  verifyPreparedWriters?: () => void | Promise<void>,
 ): Promise<"activated" | "already active"> {
-  if ((await readOwner()) === "pg") return "already active";
+  const state = await findFence();
+  if (state && ownerOf(state) === "pg") return "already active";
   if (isStandaloneServer()) {
     throw new Error("Cutover requires a Mongo replica set or mongos");
   }
+  await verifyPreparedWriters?.();
+  if (!state) await readOwner();
   return withFence(async (owner, session, standaloneOnly) => {
     if (standaloneOnly) {
       throw new Error(
@@ -102,12 +113,20 @@ export async function activateControlPlane(
     const cutoverAt = new Date();
     await copyAndVerify(cutoverAt);
     await fences().updateOne(
-      { _id: id, owner: "mongo" },
+      { _id: CONTROL_PLANE_DOMAIN, owner: "mongo" },
       { $set: { owner: "pg", cutoverAt } },
       { session },
     );
     return "activated";
   });
+}
+
+export async function publishedCutoverTime(): Promise<Date> {
+  const state = await findFence();
+  if (state?.owner !== "pg" || !(state.cutoverAt instanceof Date)) {
+    throw new Error("Missing committed Mongo handoff");
+  }
+  return state.cutoverAt;
 }
 
 const usePg = Symbol("writer changed to Postgres");
@@ -124,6 +143,11 @@ export function createControlPlaneRepo<T extends object>(
     get(target, prop, receiver) {
       if (Object.hasOwn(target, prop)) {
         return Reflect.get(target, prop, receiver);
+      }
+      // Only Release 2 sets this on the new image, after the CI handoff.
+      if (process.env.MAKO_CONTROL_PLANE_PG_ACTIVE === "1") {
+        const method = Reflect.get(pg, prop);
+        return typeof method === "function" ? method.bind(pg) : method;
       }
       const testFallback = process.env.MAKO_TEST_MONGO_FALLBACK;
       if (
@@ -163,7 +187,7 @@ export function createControlPlaneRepo<T extends object>(
             // Pin this source before a nontransactional write. Even after conversion
             // to a replica set, activation cannot race a delayed standalone writer.
             const pin = await fences().updateOne(
-              { _id: id, owner: "mongo" },
+              { _id: CONTROL_PLANE_DOMAIN, owner: "mongo" },
               { $set: { standaloneOnly: true } },
               { writeConcern: { w: "majority" } },
             );

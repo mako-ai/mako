@@ -13,6 +13,7 @@
  *   pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts
  *   pnpm --filter api exec tsx src/database/pg/cli/backfill-control-plane-small.ts --replay
  */
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -20,7 +21,12 @@ import { Command } from "commander";
 import dotenv from "dotenv";
 import { and, asc, eq, gt, gte, inArray, or, sql } from "drizzle-orm";
 import mongoose, { Types } from "mongoose";
-import { controlPlaneSession } from "../../../repositories/control-plane-fence";
+import {
+  activateControlPlane,
+  CONTROL_PLANE_DOMAIN,
+  publishedCutoverTime,
+  controlPlaneSession,
+} from "../../../repositories/control-plane-fence";
 import { PgModelCatalogSnapshotsRepository } from "../../../repositories/control-plane-app/pg.repo";
 import { encodeDeliveryError } from "../../../repositories/notifications/delivery-error";
 import { sanitizePgJsonValue } from "../../../utils/message-sanitizer";
@@ -43,7 +49,10 @@ import {
   workflowRecordedWrites,
   type ModelCatalogSnapshotIdPg,
 } from "../schema/control-plane-app";
-import { migrationQuarantine } from "../schema/control-plane";
+import {
+  migrationDomainState,
+  migrationQuarantine,
+} from "../schema/control-plane";
 import { workspaces } from "../schema/workspaces";
 
 const BATCH_SIZE = 50;
@@ -268,7 +277,7 @@ async function accountForMissingWorkspace(
     .from(migrationQuarantine)
     .where(
       and(
-        eq(migrationQuarantine.domain, "control-plane-small-v1"),
+        eq(migrationQuarantine.domain, CONTROL_PLANE_DOMAIN),
         eq(migrationQuarantine.collectionName, collection),
         eq(migrationQuarantine.mongoId, String(doc._id)),
       ),
@@ -1002,19 +1011,34 @@ export async function backfillControlPlaneSmall(options: {
   if (options.apply && (!hasInjectedPgTestDb() || options.db !== getPgDb())) {
     throw new Error("Unfenced copy requires the injected fixture database");
   }
+  if (options.apply) {
+    return options.db.transaction(async tx => {
+      const target = tx as unknown as MakoPgDb;
+      await lockCopyTarget(target);
+      if (await targetCutoverTime(target)) {
+        throw new Error("Postgres already owns these tables; use --replay");
+      }
+      return runBackfill(
+        target,
+        "apply",
+        now,
+        Boolean(options.reconcileDeletedRules),
+      );
+    });
+  }
   return runBackfill(
     options.db,
-    options.apply ? "apply" : "dry-run",
+    "dry-run",
     now,
     Boolean(options.reconcileDeletedRules),
   );
 }
 
-export function hasParityIssues(r: TableReport): boolean {
+function hasParityIssues(r: TableReport, allowMissingInPg = false): boolean {
   return Boolean(
     r.parity &&
     (r.parity.different ||
-      r.parity.missingInPg ||
+      (!allowMissingInPg && r.parity.missingInPg) ||
       r.parity.pgOnly ||
       r.missingInMongo ||
       Object.keys(r.skipped).some(
@@ -1022,6 +1046,76 @@ export function hasParityIssues(r: TableReport): boolean {
           reason !== "older than 7d TTL" && reason !== "older than 90d TTL",
       )),
   );
+}
+
+export class ControlPlaneParityError extends Error {
+  constructor(
+    readonly reports: Record<string, TableReport>,
+    readonly phase: "before" | "after",
+  ) {
+    super("Control-plane parity mismatch " + phase + " copy");
+  }
+}
+
+function lockCopyTarget(db: MakoPgDb) {
+  return db.execute(
+    sql`LOCK TABLE notification_rules, notification_deliveries, workflow_recorded_runs, workflow_recorded_writes, model_catalog_snapshots, apps_box_policy IN SHARE ROW EXCLUSIVE MODE`,
+  );
+}
+
+async function targetCutoverTime(db: MakoPgDb): Promise<Date | undefined> {
+  const [row] = await db
+    .select({ at: migrationDomainState.updatedAt })
+    .from(migrationDomainState)
+    .where(
+      and(
+        eq(migrationDomainState.domain, CONTROL_PLANE_DOMAIN),
+        eq(migrationDomainState.scopeKey, "global"),
+        eq(migrationDomainState.mode, "pg_only"),
+      ),
+    );
+  return row?.at;
+}
+
+export async function copyAndVerifyControlPlane(db: MakoPgDb, now: Date) {
+  if (!controlPlaneSession()?.inTransaction()) {
+    throw new Error("Activation requires the Mongo writer fence");
+  }
+  await db.transaction(async tx => {
+    const target = tx as unknown as MakoPgDb;
+    // Include maintenance and any other PG writer in the comparison boundary.
+    await lockCopyTarget(target);
+    await target.execute(sql`LOCK TABLE migration_quarantine IN SHARE MODE`);
+    const alreadyStaged = Boolean(await targetCutoverTime(target));
+    const before = await runBackfill(target, "replay", now, true);
+    if (Object.values(before).some(r => hasParityIssues(r, !alreadyStaged))) {
+      throw new ControlPlaneParityError(before, "before");
+    }
+    if (!alreadyStaged) await runBackfill(target, "apply", now, false);
+    const after = await runBackfill(target, "replay", now, true);
+    if (Object.values(after).some(r => hasParityIssues(r))) {
+      throw new ControlPlaneParityError(after, "after");
+    }
+    await target
+      .insert(migrationDomainState)
+      .values({
+        domain: CONTROL_PLANE_DOMAIN,
+        scopeKey: "global",
+        mode: "pg_only",
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [migrationDomainState.domain, migrationDomainState.scopeKey],
+        set: { mode: "pg_only", updatedAt: now },
+      });
+    process.stdout.write(
+      "Verified cutover as_of=" +
+        now.toISOString() +
+        " " +
+        JSON.stringify(after) +
+        "\n",
+    );
+  });
 }
 
 async function main(): Promise<void> {
@@ -1044,6 +1138,14 @@ async function main(): Promise<void> {
       "Fixed ISO timestamp for retention cutoffs during replay and parity checks",
     )
     .option(
+      "--activate",
+      "CI handoff: drain Mongo writers, copy, verify content and transfer ownership",
+    )
+    .option(
+      "--verify-cloud-run-writers",
+      "Check both Cloud Run services before the first ownership transfer",
+    )
+    .option(
       "--replay",
       "Read-only content comparison against Postgres; exit 2 on differences",
     )
@@ -1053,17 +1155,36 @@ async function main(): Promise<void> {
     );
   program.parse(argv);
   const {
+    activate = false,
+    verifyCloudRunWriters = false,
     apply = false,
     replay = false,
     reconcileDeletedRules = false,
     asOf,
   } = program.opts<{
     asOf?: string;
+    activate?: boolean;
+    verifyCloudRunWriters?: boolean;
     apply?: boolean;
     replay?: boolean;
     reconcileDeletedRules?: boolean;
   }>();
 
+  if (verifyCloudRunWriters && !activate) {
+    process.stderr.write("--verify-cloud-run-writers requires --activate.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (
+    activate &&
+    (apply || replay || reconcileDeletedRules || asOf !== undefined)
+  ) {
+    process.stderr.write(
+      "--activate determines its own snapshot and cannot be combined with other modes.\n",
+    );
+    process.exitCode = 1;
+    return;
+  }
   if (apply) {
     process.stderr.write(
       "Unfenced --apply is disabled. Use the standard fenced activation release.\n",
@@ -1090,6 +1211,46 @@ async function main(): Promise<void> {
   }
   await mongoose.connect(mongoUri, { autoCreate: false, autoIndex: false });
   try {
+    if (activate) {
+      // The historical deployment migration writes catalog documents directly.
+      // Require its success receipt before letting the later Mongo migration step run.
+      const curationSeed = await mongoose.connection
+        .collection<{ _id: string; ran_at: Date | null; error?: string }>(
+          "migrations",
+        )
+        .findOne(
+          { _id: "2026-04-23-180000_seed_model_curation" },
+          { projection: { ran_at: 1, error: 1 }, readPreference: "primary" },
+        );
+      if (!(curationSeed?.ran_at instanceof Date) || curationSeed.error) {
+        process.stderr.write(
+          "Control-plane activation blocked: the Mongo catalog seed migration has not completed.\n",
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const status = await activateControlPlane(
+        now => copyAndVerifyControlPlane(getPgDirectDb(), now),
+        verifyCloudRunWriters ? verifyCloudRunWritersBeforeCopy : undefined,
+      );
+      const published = await publishedCutoverTime();
+      if (
+        (await targetCutoverTime(getPgDirectDb()))?.getTime() !==
+        published.getTime()
+      ) {
+        throw new Error(
+          "Mongo handoff does not match the selected PG database",
+        );
+      }
+      process.stdout.write(
+        "Control-plane PG ownership: " +
+          status +
+          " as_of=" +
+          published.toISOString() +
+          "\n",
+      );
+      return;
+    }
     const reports = await backfillControlPlaneSmall({
       db: getPgDirectDb(),
       now,
@@ -1119,8 +1280,35 @@ async function main(): Promise<void> {
   }
 }
 
+function verifyCloudRunWritersBeforeCopy(): void {
+  try {
+    execFileSync(
+      process.execPath,
+      [
+        path.resolve(
+          __dirname,
+          "../../../../../scripts/check-control-plane-revisions.mjs",
+        ),
+      ],
+      { stdio: "inherit" },
+    );
+  } catch (error) {
+    process.stderr.write(
+      "Mongo still owns this domain. Restore the affected service through the preparation release and verify both services before retrying activation.\n",
+    );
+    throw error;
+  }
+}
+
 if (require.main === module) {
   main().catch(error => {
+    if (error instanceof ControlPlaneParityError) {
+      process.stderr.write(
+        error.message + " " + JSON.stringify(error.reports) + "\n",
+      );
+      process.exitCode = 2;
+      return;
+    }
     // Driver messages may include connection strings and bound channel or request data.
     const name = error instanceof Error ? error.name : "unknown error";
     process.stderr.write(`backfill-control-plane-small failed (${name}).\n`);
