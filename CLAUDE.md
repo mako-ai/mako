@@ -13,7 +13,7 @@ Mako is a production-ready, multi-tenant AI-powered SQL client built with a PNPM
 **Architecture:** Four main packages:
 
 - **Root**: Data sync scripts, database migrations, and shared configuration
-- **API**: Hono-based backend server (Node.js 24, TypeScript, MongoDB with Mongoose, Google/GitHub OAuth)
+- **API**: Hono-based backend server (Node.js 24, TypeScript, platform data in Postgres via Drizzle/Neon with MongoDB still serving legacy paths, Google/GitHub OAuth)
 - **App**: React/Vite frontend (React 19, MUI v9, Zustand, Monaco Editor, Vercel AI SDK)
 - **Docs**: Astro-based documentation site
 
@@ -90,6 +90,14 @@ pnpm query <query_file>    # Execute MongoDB queries from file
 pnpm migrate               # Run all pending migrations
 pnpm migrate status        # Show migration status (pending/applied)
 pnpm migrate create "name" # Create a new migration file with timestamp
+```
+
+Platform Postgres (Drizzle, `api/src/database/pg/migrations/`) has its own commands:
+
+```bash
+pnpm pg:generate           # Generate a Drizzle SQL migration from api/src/database/pg/schema
+pnpm pg:migrate            # Apply pending Postgres migrations (POSTGRES_DIRECT_URL, falls back to POSTGRES_URL)
+pnpm --filter api run pg:migrate -- --check   # Validate the migrations folder/journal without connecting
 ```
 
 ### Infrastructure & Deployment
@@ -219,6 +227,11 @@ Create a `.env` file in the root directory. See `.env.example` for reference.
 # Database
 DATABASE_URL=mongodb://localhost:27017/myapp
 MONGODB_CONNECTION_STRING=mongodb://localhost:27018
+
+# Platform Postgres (control-plane repositories — required; local docker-compose service on port 5433)
+POSTGRES_URL=postgresql://mako:mako@localhost:5433/mako
+# POSTGRES_DIRECT_URL=   # unpooled URL for migrations/backfills (falls back to POSTGRES_URL)
+# PG_DRIVER=postgres     # Runtime only. Use neon-ws (WSS on 443) for remote Neon when outbound 5432 is blocked
 
 # OAuth
 GOOGLE_CLIENT_ID=your_google_client_id

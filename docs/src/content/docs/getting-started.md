@@ -7,7 +7,7 @@ description: Set up Mako locally in 5 minutes.
 
 - **Node.js** v22.12+ (CI and production run Node 24)
 - **pnpm** v8+
-- **Docker** & Docker Compose (for MongoDB)
+- **Docker** & Docker Compose (for platform Postgres and the notebook kernel)
 
 ## Installation
 
@@ -25,9 +25,10 @@ cp .env.example .env
 
 Edit `.env` with your configuration. Required:
 
-| Variable             | Default                          | Purpose                                                    |
+| Variable             | Value                          | Purpose                                                    |
 | -------------------- | -------------------------------- | ---------------------------------------------------------- |
-| `DATABASE_URL`       | `mongodb://localhost:27017/mako` | Application database                                       |
+| `DATABASE_URL`       | MongoDB Atlas dev connection string | MongoDB application data                                       |
+| `POSTGRES_URL`       | `postgresql://mako:mako@localhost:5433/mako` | Platform Postgres for control-plane data (the `postgres-platform` service in `docker-compose.yml`). Uncomment this setting in `.env`. |
 | `ENCRYPTION_KEY`     | —                                | Encryption for stored credentials (`openssl rand -hex 32`) |
 | `SESSION_SECRET`     | —                                | Session security                                           |
 | `AI_GATEWAY_API_KEY` | —                                | AI features (Vercel AI Gateway — required)                 |
@@ -39,8 +40,11 @@ For OAuth login, set `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` and/or `GH_CLIENT
 ## Start Development
 
 ```bash
-# Start MongoDB
-pnpm run docker:up
+# Start the notebook kernel and wait for local platform Postgres
+docker compose up -d --wait
+
+# Apply the platform Postgres schema (Drizzle migrations)
+pnpm run pg:migrate
 
 # Start everything (API + App + Inngest dev server)
 pnpm run dev
