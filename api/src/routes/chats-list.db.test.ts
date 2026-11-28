@@ -10,7 +10,7 @@
  *   usage.history, prompts);
  * - the caller sees only their own chats in this workspace (not another
  *   member's, not another workspace's, not app chats or workflow runs);
- * - the sort is served by the list index (no explicit Sort node).
+ * - the list index serves the sort and seeks to the cursor on later pages.
  *
  * Run with: pnpm --filter api exec tsx src/routes/chats-list.db.test.ts
  */
@@ -329,6 +329,9 @@ async function main() {
       const plan = rows.map(row => row["QUERY PLAN"]).join("\n");
       assert.doesNotMatch(plan, /\b(?:Incremental )?Sort\s+\(/);
       assert.match(plan, /idx_chats_user_list/);
+      if (after) {
+        assert.match(plan, /Index Cond: .*ROW\(updated_at, id\) < ROW\(/);
+      }
     }
     assert.ok(encodeChatListCursor({ updatedAt: null, id: "a".repeat(24) }));
 
