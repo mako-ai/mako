@@ -608,7 +608,13 @@ export class PgDbtRepository implements DbtRepository {
       })
       .from(runs)
       .where(runWhere(query))
-      .orderBy(sql`${runs.createdAt} DESC NULLS LAST`)
+      // A key lookup can miss across the entire history. Keep its existing
+      // sort so the planner can choose a sequential scan for that case.
+      .orderBy(
+        query.manifestKey !== undefined
+          ? desc(runs.createdAt)
+          : sql`${runs.createdAt} DESC NULLS LAST`,
+      )
       .limit(1);
     return row ?? null;
   }
