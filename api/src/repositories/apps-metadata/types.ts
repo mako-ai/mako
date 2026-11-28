@@ -95,6 +95,29 @@ export interface AppProjectRecord {
   updatedAt: Date;
 }
 
+export type AppProjectAccessRecord = Pick<
+  AppProjectRecord,
+  "id" | "access" | "workspaceRole" | "sharedWith" | "owner_id" | "createdBy"
+>;
+
+export interface AppProjectListShare {
+  enabled: true;
+  token: string;
+  hasPassword: boolean;
+  createdAt?: Date;
+  allowLiveQueries: boolean;
+}
+
+export type AppProjectListingRecord = AppProjectAccessRecord &
+  Pick<AppProjectRecord, "publishedSha" | "publishedAt" | "chatEnabled"> & {
+    publicShare?: AppProjectListShare;
+  };
+
+export type AppProjectDiscoveryRecord = AppProjectAccessRecord &
+  Pick<AppProjectRecord, "publishedSha" | "publishedAt" | "createdAt"> & {
+    lastDeployError?: Pick<AppLastDeployErrorRecord, "stage" | "at">;
+  };
+
 export interface CreateAppProjectInput {
   id?: string;
   workspaceId: string;
@@ -494,6 +517,15 @@ export interface AppsMetadataRepository {
     slug: string;
   }): Promise<boolean>;
   listProjectsByWorkspace(workspaceId: string): Promise<AppProjectRecord[]>;
+  listProjectAccessByWorkspace(
+    workspaceId: string,
+  ): Promise<AppProjectAccessRecord[]>;
+  listProjectListingStates(
+    workspaceId: string,
+  ): Promise<AppProjectListingRecord[]>;
+  listProjectDiscoveryStates(
+    workspaceId: string,
+  ): Promise<AppProjectDiscoveryRecord[]>;
   listProjectsByIds(
     workspaceId: string,
     ids: readonly string[],

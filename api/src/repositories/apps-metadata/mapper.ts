@@ -56,6 +56,7 @@ import type {
   AppIndexHeadRecord,
   AppLastDeployErrorRecord,
   AppLifecycleRecord,
+  AppProjectAccessRecord,
   AppProjectRecord,
   AppWorktreeRecord,
   UpdateAppProjectSharingPatch,
@@ -848,6 +849,23 @@ export function mongoAppBindingJobToRecord(
 
 // ── PG Row -> Record mappers ─────────────────────────────────────────────────
 
+export function pgAppProjectAccessToRecord(
+  row: Pick<
+    AppProjectRow,
+    "id" | "access" | "workspaceRole" | "sharedWith" | "ownerId" | "createdBy"
+  >,
+): AppProjectAccessRecord {
+  const sharedWith = deserializeShareEntries(row.sharedWith);
+  return {
+    id: toWireId(row.id),
+    access: row.access,
+    ...(row.workspaceRole != null ? { workspaceRole: row.workspaceRole } : {}),
+    ...(sharedWith !== undefined ? { sharedWith } : {}),
+    ...(row.ownerId != null ? { owner_id: row.ownerId.toLowerCase() } : {}),
+    createdBy: row.createdBy ? row.createdBy.toLowerCase() : "",
+  };
+}
+
 export function pgAppProjectToRecord(row: AppProjectRow): AppProjectRecord {
   const hasPublicShare =
     row.publicShareEnabled ||
@@ -876,7 +894,6 @@ export function pgAppProjectToRecord(row: AppProjectRow): AppProjectRecord {
       }
     : undefined;
 
-  const sharedWith = deserializeShareEntries(row.sharedWith);
   const lastDeployError = deserializeLastDeployError(row.lastDeployError);
   const bindingRefreshErrors = deserializeBindingRefreshErrors(
     row.bindingRefreshErrors,
@@ -884,17 +901,12 @@ export function pgAppProjectToRecord(row: AppProjectRow): AppProjectRecord {
   const deployProgress = deserializeDeployProgress(row.deployProgress);
 
   return {
-    id: toWireId(row.id),
+    ...pgAppProjectAccessToRecord(row),
     workspaceId: toWireId(row.workspaceId),
     title: row.title,
     ...(row.slug != null ? { slug: row.slug } : {}),
     ...(row.path != null ? { path: row.path } : {}),
     ...(row.description != null ? { description: row.description } : {}),
-    access: row.access,
-    ...(row.workspaceRole != null ? { workspaceRole: row.workspaceRole } : {}),
-    ...(sharedWith !== undefined ? { sharedWith } : {}),
-    ...(row.ownerId != null ? { owner_id: row.ownerId.toLowerCase() } : {}),
-    createdBy: row.createdBy ? row.createdBy.toLowerCase() : "",
     defaultBranch: row.defaultBranch,
     ...(row.cloudRepoOwner != null && row.cloudRepoName != null
       ? { cloudRepo: { owner: row.cloudRepoOwner, repo: row.cloudRepoName } }

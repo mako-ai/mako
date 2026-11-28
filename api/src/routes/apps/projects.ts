@@ -19,7 +19,6 @@ import {
 import { loadOwnerDirectory } from "../../apps/user-handles.service";
 import { authorizeFolderTarget } from "../../apps/app-authorization";
 import { RepoRequiredError } from "../../apps/config";
-import { serializePublicShare } from "../lib/public-share-routes";
 import {
   AUTH_SECURITY,
   OPEN_RESPONSES,
@@ -61,11 +60,9 @@ appsProjectRoutes.openapi(
       return c.json(
         {
           success: true as const,
-          // Only safe metadata leaves the API. The password hash and its
-          // encrypted reveal copy never do.
           apps: listing.apps.map(app => ({
             ...app,
-            publicShare: serializePublicShare(app.publicShare),
+            publicShare: app.publicShare ?? { enabled: false },
           })),
           folders: listing.folders,
           // Where the caller's own apps go: `users/<handle>/apps`.

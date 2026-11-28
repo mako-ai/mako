@@ -4,18 +4,16 @@
  *
  * The REPO is the list. An app exists because a folder with a `mako.json`
  * exists (anywhere under apps/ or users/<handle>/apps/), so a folder pushed
- * from a local checkout shows up with no registration step (§13). Mongo is
+ * from a local checkout shows up with no registration step (§13). Postgres is
  * consulted only for what cannot live in a repo the customer can clone:
  * visibility, the deployed sha, the share token — and the derived index that
  * makes this read one query.
  */
-import {
-  type IAppProject,
-  type IPublicShare,
-} from "../database/workspace-schema";
+import type { IAppProject } from "../database/workspace-schema";
 import { timed } from "../middleware/server-timing";
 import {
   appsMetadataRepo,
+  type AppProjectListShare,
   toAppProjectCompat,
 } from "../repositories/apps-metadata";
 import { canWriteResource } from "../utils/resource-acl";
@@ -37,8 +35,7 @@ export interface ListedApp {
   access: string;
   owner_id?: string;
   workspaceRole?: IAppProject["workspaceRole"];
-  /** Raw: the route serializes it (never the hash or its reveal copy). */
-  publicShare?: IPublicShare;
+  publicShare?: AppProjectListShare;
   publishedSha?: string;
   publishedAt?: Date;
   chatEnabled: boolean;
@@ -71,11 +68,11 @@ export async function listVisibleApps(
     .catch(() => undefined);
   const [docs, verified] = await Promise.all([
     timed("list.projects", () =>
-      appsMetadataRepo.listProjectsByWorkspace(workspaceId),
+      appsMetadataRepo.listProjectListingStates(workspaceId),
     ),
     timed("list.verified", () => verifiedAppIds(workspaceId)),
   ]);
-  const stateById = new Map(docs.map(d => [d.id, toAppProjectCompat(d)]));
+  const stateById = new Map(docs.map(d => [d.id, d]));
 
   const apps = folders
     // No record yet means nothing has restricted it — a folder someone

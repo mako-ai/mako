@@ -42,6 +42,12 @@ export const appsMetadataRepo: AppsMetadataRepository = {
     activeAppsMetadataRepo.projectExistsMatching(params),
   listProjectsByWorkspace: workspaceId =>
     activeAppsMetadataRepo.listProjectsByWorkspace(workspaceId),
+  listProjectAccessByWorkspace: workspaceId =>
+    activeAppsMetadataRepo.listProjectAccessByWorkspace(workspaceId),
+  listProjectListingStates: workspaceId =>
+    activeAppsMetadataRepo.listProjectListingStates(workspaceId),
+  listProjectDiscoveryStates: workspaceId =>
+    activeAppsMetadataRepo.listProjectDiscoveryStates(workspaceId),
   listProjectsByIds: (workspaceId, ids) =>
     activeAppsMetadataRepo.listProjectsByIds(workspaceId, ids),
   listForeignProjectIds: (excludeWorkspaceId, candidateIds) =>

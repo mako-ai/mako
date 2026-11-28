@@ -294,8 +294,9 @@ export function createAppsToolContext(
    */
   const visibleApps = async () => {
     const folders = await listAppFolders(workspaceId);
-    const docs = await appsMetadataRepo.listProjectsByWorkspace(workspaceId);
-    const stateById = new Map(docs.map(d => [d.id, toAppProjectCompat(d)]));
+    const docs =
+      await appsMetadataRepo.listProjectAccessByWorkspace(workspaceId);
+    const stateById = new Map(docs.map(d => [d.id, d]));
     const role = await memberRole();
     return folders
       .map(folder => ({ folder, state: stateById.get(folder.id) }))
