@@ -14,7 +14,7 @@
  * the `dbt/` prefix is applied here and only here.
  */
 
-import type { IDbtProject } from "../database/workspace-schema";
+type WorkspaceProject = { workspaceId: { toString(): string } };
 import { RepoRequiredError, appsRequireConnectedRepo } from "../apps/config";
 import { ZERO_OID, runGit } from "../apps/git";
 import { commitBranchFor } from "../apps/branch-policy";
@@ -114,7 +114,7 @@ function assertSafeDbtPath(path: string): string {
  * (jobs, deploys, CI).
  */
 export async function getCheckoutBranch(
-  project: Pick<IDbtProject, "workspaceId">,
+  project: WorkspaceProject,
   userId: string | undefined,
 ): Promise<string> {
   if (!userId) return DEFAULT_BRANCH;
@@ -122,7 +122,7 @@ export async function getCheckoutBranch(
 }
 
 async function repoDirIfExists(
-  project: Pick<IDbtProject, "workspaceId">,
+  project: WorkspaceProject,
 ): Promise<string | null> {
   const repoDir = await repoForWorkspace(project.workspaceId.toString());
   return (await repoExists(repoDir)) ? repoDir : null;
@@ -171,7 +171,7 @@ async function resolveBranchOrDefault(
 
 /** List the dbt tree at the user's session branch. */
 export async function listWorkingFiles(
-  project: IDbtProject,
+  project: WorkspaceProject,
   userId: string,
 ): Promise<WorkingFileMeta[]> {
   const repoDir = await repoDirIfExists(project);
@@ -191,7 +191,7 @@ export async function listWorkingFiles(
 
 /** Read one file from the user's session branch. */
 export async function readWorkingFile(
-  project: IDbtProject,
+  project: WorkspaceProject,
   userId: string,
   path: string,
 ): Promise<WorkingFile | null> {
@@ -226,7 +226,7 @@ export async function readWorkingFile(
  * cannot reach the mirror fails rather than reporting success.
  */
 async function commitDbtMutation(
-  project: IDbtProject,
+  project: WorkspaceProject,
   userId: string,
   mutation: { writes?: Record<string, string>; deletes?: string[] },
   message: string,
@@ -299,7 +299,7 @@ async function commitDbtMutation(
 
 /** Commit a batch of files in one commit (scaffold, imports). */
 export async function commitDbtFiles(
-  project: IDbtProject,
+  project: WorkspaceProject,
   userId: string,
   writes: Record<string, string>,
   message: string,
@@ -310,7 +310,7 @@ export async function commitDbtFiles(
 
 /** Write a file: a commit on the session branch (no-op when identical). */
 export async function writeWorkingFile(
-  project: IDbtProject,
+  project: WorkspaceProject,
   userId: string,
   path: string,
   content: string,
@@ -326,7 +326,7 @@ export async function writeWorkingFile(
 
 /** Delete a file: a commit on the session branch. False when absent. */
 export async function deleteWorkingFile(
-  project: IDbtProject,
+  project: WorkspaceProject,
   userId: string,
   path: string,
 ): Promise<boolean> {
@@ -344,7 +344,7 @@ export async function deleteWorkingFile(
 
 /** Rename: one commit carrying the delete and the add. */
 export async function renameWorkingFile(
-  project: IDbtProject,
+  project: WorkspaceProject,
   userId: string,
   from: string,
   to: string,
@@ -380,7 +380,7 @@ export async function renameWorkingFile(
  * its size and the reason; the rest come back as `warnings` for the run.
  */
 export async function loadWorkingTreeContents(
-  project: IDbtProject,
+  project: WorkspaceProject,
   opts: {
     userId?: string;
     branch?: string;
@@ -601,7 +601,7 @@ export function classifySkippedFiles(
  * whatever lands on the branch meanwhile. Null when there is no tree.
  */
 export async function resolveWorkingTreeCommit(
-  project: Pick<IDbtProject, "workspaceId">,
+  project: WorkspaceProject,
   opts: { userId?: string; branch?: string } = {},
 ): Promise<string | null> {
   // No bound repo: nothing to pin. The run fails when it loads its tree,
@@ -628,7 +628,7 @@ export async function resolveWorkingTreeCommit(
  * there is no repo or the commit cannot be read.
  */
 export async function commitTimeOf(
-  project: Pick<IDbtProject, "workspaceId">,
+  project: WorkspaceProject,
   sha: string,
 ): Promise<Date | null> {
   try {

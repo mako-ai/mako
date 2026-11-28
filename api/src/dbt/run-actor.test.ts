@@ -1,8 +1,8 @@
 /**
  * dbt_runs.actor: who started a run, set on every creation path.
  *
- * The pure helpers first, then the service paths against real Mongoose models
- * (mongodb-memory-server; only Inngest is mocked): trigger, scheduled job
+ * The pure helpers first, then the service paths against PGlite
+ * (only Inngest is mocked): trigger, scheduled job
  * tick, ad-hoc record and retry. The agent, MCP and deploy-on-push paths are
  * covered next to their code (dbt-job-tools.test.ts, dbt-before-deploy.test.ts,
  * local-run.integration.test.ts); the REST routes read their actor through
@@ -17,8 +17,7 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
   ensureTestUser,
   ensureTestWorkspace,
@@ -30,7 +29,7 @@ vi.mock("../inngest/client", () => ({
   inngest: { send: vi.fn(async () => ({ ids: [] })) },
 }));
 
-import { DbtJob, DbtProject, DbtRun } from "../database/workspace-schema";
+import { dbtRepo } from "../repositories/dbt";
 import { mcpOAuthClients } from "../database/pg/schema";
 import { authRepo } from "../repositories/auth";
 import {
@@ -53,45 +52,35 @@ import type { AuthenticatedContext } from "../middleware/workspace.middleware";
 
 const WS = new Types.ObjectId();
 let pg: PgTestDb;
-let mongo: MongoMemoryServer;
 
 beforeAll(async () => {
   pg = await setupPgTestDb();
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
 });
 
 afterAll(async () => {
   await pg?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
 });
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  await Promise.all([
-    DbtProject.deleteMany({}),
-    DbtRun.deleteMany({}),
-    DbtJob.deleteMany({}),
-    pg.reset(),
-  ]);
+  await pg.reset();
   await ensureTestWorkspace(pg.db, { id: String(WS) });
 });
 
 async function seedProject() {
-  return DbtProject.create({
-    workspaceId: WS,
+  return dbtRepo.createProject({
+    workspaceId: String(WS),
     name: `p-${new Types.ObjectId().toString()}`,
     environments: [
       {
         name: "dev",
-        connectionId: new Types.ObjectId(),
+        connectionId: String(new Types.ObjectId()),
         targetSchema: "dbt_dev",
         threads: 4,
       },
       {
         name: "prod",
-        connectionId: new Types.ObjectId(),
+        connectionId: String(new Types.ObjectId()),
         targetSchema: "dbt_prod",
         threads: 4,
       },
@@ -101,9 +90,9 @@ async function seedProject() {
   });
 }
 
-async function seedJob(projectId: Types.ObjectId) {
-  return DbtJob.create({
-    workspaceId: WS,
+async function seedJob(projectId: string) {
+  return dbtRepo.createJob({
+    workspaceId: String(WS),
     projectId,
     name: "nightly",
     environment: "prod",
@@ -280,7 +269,7 @@ describe("every run creation path stores an actor", () => {
       triggeredBy: "u1",
       actor: { kind: "user", userId: "u1" },
     });
-    const stored = await DbtRun.findById(run._id).lean();
+    const stored = await dbtRepo.findRunById(run._id);
     expect(stored?.actor).toEqual({
       kind: "user",
       userId: "u1",
@@ -301,7 +290,7 @@ describe("every run creation path stores an actor", () => {
       triggeredBy: "scheduler",
       actor: scheduledRunActor(job._id.toString()),
     });
-    const stored = await DbtRun.findById(run._id).lean();
+    const stored = await dbtRepo.findRunById(run._id);
     expect(stored?.actor).toEqual({
       kind: "schedule",
       jobScheduleId: job._id.toString(),
@@ -330,14 +319,16 @@ describe("every run creation path stores an actor", () => {
 
   it("a retry stores kind retry, the source run and who asked", async () => {
     const project = await seedProject();
-    const source = await DbtRun.create({
-      workspaceId: WS,
+    const source = await dbtRepo.createRun({
+      workspaceId: String(WS),
       projectId: project._id,
       environment: "prod",
       commands: ["build"],
       status: "error",
       trigger: "schedule",
       triggeredBy: "scheduler",
+    });
+    await dbtRepo.updateRun(source._id, {
       artifactKeys: { runResults: "k/run_results.json" },
     });
     const retry = await triggerDbtRunRetry({
@@ -346,7 +337,8 @@ describe("every run creation path stores an actor", () => {
       triggeredBy: "u1",
       actor: { kind: "user", userId: "u1" },
     });
-    const stored = await DbtRun.findById(retry?._id).lean();
+    if (!retry) throw new Error("Expected a retry run");
+    const stored = await dbtRepo.findRunById(retry._id);
     expect(stored?.actor).toEqual({
       kind: "retry",
       userId: "u1",

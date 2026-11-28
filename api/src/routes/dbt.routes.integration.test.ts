@@ -1,8 +1,8 @@
 /**
  * dbt routes — in-process integration tests.
  *
- * Drives the real `dbtRoutes` Hono app via `app.request()` with dbt data in
- * MongoDB and connection metadata in PGlite. Mocked auth, workspace roles,
+ * Drives the real `dbtRoutes` Hono app via `app.request()` with dbt data
+ * and connection metadata in PGlite. Mocked auth, workspace roles,
  * runner, Inngest, GitHub, artifact storage and entity versioning keep the
  * focus on routing, RBAC, validation and persistence.
  */
@@ -16,10 +16,10 @@ import {
   vi,
 } from "vitest";
 import { Hono } from "hono";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
   ensureTestDatabaseConnection,
+  ensureTestUser,
   setupPgTestDb,
   type PgTestDb,
 } from "../test-support/pg-test";
@@ -114,6 +114,7 @@ import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 import { eq } from "drizzle-orm";
 import { objectIdToUuid } from "../database/pg/id-codec";
 import { databaseConnections } from "../database/pg/schema";
+import { dbtRepo, type CreateDbtRunInput } from "../repositories/dbt";
 import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
 import { startLocalDbtRun } from "../dbt/local-run.service";
 import {
@@ -135,7 +136,6 @@ const localRunMock = startLocalDbtRun as unknown as ReturnType<typeof vi.fn>;
 const retryMock = triggerDbtRunRetry as unknown as ReturnType<typeof vi.fn>;
 
 let pg: PgTestDb;
-let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
 const CONN = new Types.ObjectId().toString();
 
@@ -192,14 +192,10 @@ beforeAll(async () => {
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   pg = await setupPgTestDb();
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
 });
 
 afterAll(async () => {
   await pg?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -213,12 +209,7 @@ beforeEach(async () => {
   ctx.auth = {};
   vi.clearAllMocks();
   // Reset data and (re)seed a dbt-compatible connection for environments.
-  await Promise.all([
-    mongoose.connection.collection("dbt_projects").deleteMany({}),
-    mongoose.connection.collection("dbt_jobs").deleteMany({}),
-    mongoose.connection.collection("dbt_runs").deleteMany({}),
-    pg.reset(),
-  ]);
+  await pg.reset();
   // Fresh bare workspace repo per test: file writes are commits now.
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
@@ -227,6 +218,7 @@ beforeEach(async () => {
     retryDelay: 100,
   });
   await bindTestWorkspaceRepo(WS);
+  await ensureTestUser(pg.db, { id: "u1", email: "joan@example.com" });
   await seedDbtGitTree(WS, { "dbt_project.yml": "name: analytics\n" });
   await ensureTestDatabaseConnection(pg.db, {
     id: CONN,
@@ -432,6 +424,27 @@ describe("project CRUD", () => {
     ).find(p => p._id === projectId);
     expect(listed2?.myDevEnvironment).toBeUndefined();
   });
+
+  it.each(["apiKey", "mcpOAuth"])(
+    "rejects personal preferences without a user for %s",
+    async authType => {
+      const projectId = await createProjectAsOwner();
+      ctx.auth = {
+        authType,
+        user: null,
+        workspace: { _id: new Types.ObjectId(WS) },
+      };
+      for (const environment of ["dev", ""]) {
+        const response = await req(
+          "PUT",
+          `/projects/${projectId}/my-environment`,
+          { environment },
+        );
+        expect(response.status).toBe(400);
+        expect(JSON.stringify(await response.json())).toContain("user session");
+      }
+    },
+  );
 
   it("sets, validates, and clears the production (defer) environment", async () => {
     const projectId = await createProjectAsOwner();
@@ -644,28 +657,34 @@ describe("not-found handling", () => {
 
 async function insertRun(
   projectId: string,
-  overrides: Record<string, unknown> = {},
+  overrides: Partial<CreateDbtRunInput> = {},
 ): Promise<string> {
-  const _id = new Types.ObjectId();
-  await mongoose.connection.collection("dbt_runs").insertOne({
-    _id,
-    workspaceId: new Types.ObjectId(WS),
-    projectId: new Types.ObjectId(projectId),
+  const run = await dbtRepo.createRun({
+    workspaceId: WS,
+    projectId,
     environment: "dev",
     commands: ["build"],
     status: "success",
     trigger: "manual",
-    logs: [],
-    createdAt: new Date(),
+    triggeredBy: "u1",
     ...overrides,
   });
-  return _id.toString();
+  return run._id;
 }
 
 describe("runs lifecycle", () => {
-  it("lists runs and filters by jobId", async () => {
+  it("lists runs and filters by jobId", async ({ onTestFinished }) => {
+    const list = vi.spyOn(dbtRepo, "listRuns");
+    onTestFinished(() => list.mockRestore());
     const projectId = await createProjectAsOwner();
-    const jobId = new Types.ObjectId();
+    const job = await dbtRepo.createJob({
+      workspaceId: WS,
+      projectId,
+      name: "Filtered job",
+      environment: "dev",
+      createdBy: "u1",
+    });
+    const jobId = job._id;
     await insertRun(projectId);
     await insertRun(projectId, { jobId });
 
@@ -676,6 +695,14 @@ describe("runs lifecycle", () => {
       await req("GET", `/projects/${projectId}/runs?jobId=${jobId}`)
     ).json();
     expect(filtered.runs).toHaveLength(1);
+    expect(list).toHaveBeenCalledWith(
+      { workspaceId: WS, projectId },
+      { limit: 50 },
+    );
+    expect(list).toHaveBeenCalledWith(
+      { workspaceId: WS, projectId, jobId },
+      { limit: 50 },
+    );
   });
 
   it("returns run detail with logs sliced by the cursor", async () => {
@@ -887,13 +914,21 @@ describe("ad-hoc runner routes", () => {
     expect(preview.logs[0].line).toContain("Compilation Error");
   });
 
-  it("lineage returns an empty DAG when no manifest exists yet", async () => {
+  it("lineage returns an empty DAG when no manifest exists yet", async ({
+    onTestFinished,
+  }) => {
+    const latest = vi.spyOn(dbtRepo, "findLatestArtifactRun");
+    onTestFinished(() => latest.mockRestore());
     const projectId = await createProjectAsOwner();
     const res = await req("GET", `/projects/${projectId}/lineage`);
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.lineage.nodes).toEqual([]);
     expect(json.lineage.edges).toEqual([]);
+    expect(latest).toHaveBeenCalledWith(
+      { workspaceId: WS, projectId, hasManifest: true },
+      true,
+    );
   });
 });
 
@@ -1000,19 +1035,11 @@ describe("runs record who asked (actor), read off the request", () => {
 
   it("the run read API redacts the actor: handle in, email out", async () => {
     const projectId = await createProjectAsOwner();
-    const run = await mongoose.connection.collection("dbt_runs").insertOne({
-      workspaceId: new Types.ObjectId(WS),
-      projectId: new Types.ObjectId(projectId),
-      environment: "dev",
-      commands: ["build"],
-      status: "success",
-      trigger: "manual",
-      triggeredBy: "u1",
+    const runId = await insertRun(projectId, {
       actor: { kind: "user", userId: "u1", userName: "old@example.com" },
-      createdAt: new Date(),
     });
     const one = await (
-      await req("GET", `/projects/${projectId}/runs/${run.insertedId}`)
+      await req("GET", `/projects/${projectId}/runs/${runId}`)
     ).json();
     expect(one.run.actor).toEqual({ kind: "user", userId: "u1" });
     const list = await (await req("GET", `/projects/${projectId}/runs`)).json();

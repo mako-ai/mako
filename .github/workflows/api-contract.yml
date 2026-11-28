@@ -156,6 +156,8 @@ jobs:
         # route integration spec, the dbt-* agent tools, and anything else
         # that happens to live under src/dbt. The real-dbt engine contract
         # self-skips without RUN_DBT_ENGINE_CONTRACT.
+        env:
+          RUN_DBT_CUTOVER_INTEGRATION: "1"
         run: pnpm --filter api run test:dbt
 
       - name: API destination tests

@@ -18,15 +18,11 @@
  *     (project, environment) pair to the warehouse schema apps substitute for
  *     the `{{ dbt_schema }}` token in dbt-linked binding queries.
  */
+import { parseEntityId } from "../database/pg/id-codec";
 
 import { Types } from "mongoose";
 import { containsDbtSchemaToken, resolveDbtSchemaToken } from "@mako/schemas";
-import {
-  DbtEnvPreference,
-  DbtProject,
-  type IDbtEnvironment,
-  type IDbtProject,
-} from "../database/workspace-schema";
+import { dbtRepo, type DbtEnvironmentRecord } from "../repositories/dbt";
 import { getUserDisplayName } from "../services/entity-version.service";
 import { isWarehouseWriteCommand, type ParsedDbtCommand } from "./commands";
 import { loggers } from "../logging";
@@ -38,10 +34,12 @@ import {
 
 const logger = loggers.api("dbt-environments");
 
-type ProjectEnvFields = Pick<
-  IDbtProject,
-  "environments" | "defaultEnvironment"
-> & { prodEnvironment?: string };
+type EnvironmentName = Pick<DbtEnvironmentRecord, "name" | "ownerUserId">;
+type ProjectEnvFields<E extends EnvironmentName = EnvironmentName> = {
+  environments: E[];
+  defaultEnvironment: string;
+  prodEnvironment?: string;
+};
 
 /**
  * The environment treated as "production": the defer-state source
@@ -106,10 +104,10 @@ export function assertAdhocDbtRunAllowed(
 }
 
 /** The acting user's personal environment on this project, if provisioned. */
-export function findPersonalEnvironment(
-  project: ProjectEnvFields,
+export function findPersonalEnvironment<E extends EnvironmentName>(
+  project: ProjectEnvFields<E>,
   userId: string | undefined,
-): IDbtEnvironment | undefined {
+): E | undefined {
   if (!userId) return undefined;
   return project.environments.find(env => env.ownerUserId === userId);
 }
@@ -134,7 +132,7 @@ export function resolveEnvironmentNameForUser(
   );
 }
 
-type ProjectIdEnvFields = ProjectEnvFields & Pick<IDbtProject, "_id">;
+type ProjectIdEnvFields = ProjectEnvFields & { _id: { toString(): string } };
 
 /**
  * The user's saved DEVELOPMENT environment for a project, or undefined when
@@ -145,12 +143,7 @@ export async function getUserDevEnvPreference(
   userId: string | undefined,
 ): Promise<string | undefined> {
   if (!userId) return undefined;
-  const pref = await DbtEnvPreference.findOne({
-    projectId: project._id,
-    userId,
-  })
-    .select("environment")
-    .lean();
+  const pref = await dbtRepo.findEnvPreference(String(project._id), userId);
   if (!pref) return undefined;
   return project.environments.some(env => env.name === pref.environment)
     ? pref.environment
@@ -164,21 +157,17 @@ export async function setUserDevEnvPreference(params: {
   userId: string;
   environment: string | null;
 }): Promise<void> {
-  const projectId = new Types.ObjectId(params.projectId.toString());
+  const projectId = String(params.projectId);
   if (params.environment === null) {
-    await DbtEnvPreference.deleteOne({ projectId, userId: params.userId });
+    await dbtRepo.deleteEnvPreference(projectId, params.userId);
     return;
   }
-  await DbtEnvPreference.updateOne(
-    { projectId, userId: params.userId },
-    {
-      $set: {
-        workspaceId: new Types.ObjectId(params.workspaceId.toString()),
-        environment: params.environment,
-      },
-    },
-    { upsert: true },
-  );
+  await dbtRepo.upsertEnvPreference({
+    ...params,
+    environment: params.environment,
+    workspaceId: String(params.workspaceId),
+    projectId,
+  });
 }
 
 /**
@@ -220,7 +209,7 @@ export function sanitizePersonalSlug(input: string): string {
 }
 
 export interface EnsurePersonalEnvironmentResult {
-  environment: IDbtEnvironment;
+  environment: DbtEnvironmentRecord;
   created: boolean;
 }
 
@@ -235,10 +224,10 @@ export async function ensurePersonalDbtEnvironment(params: {
   projectId: string;
   userId: string;
 }): Promise<EnsurePersonalEnvironmentResult> {
-  const project = await DbtProject.findOne({
-    _id: new Types.ObjectId(params.projectId),
-    workspaceId: new Types.ObjectId(params.workspaceId),
-  });
+  const project = await dbtRepo.findProjectById(
+    params.projectId,
+    params.workspaceId,
+  );
   if (!project) throw new Error("dbt project not found");
 
   const existing = findPersonalEnvironment(project, params.userId);
@@ -268,7 +257,7 @@ export async function ensurePersonalDbtEnvironment(params: {
     throw new Error("Project has no environments to clone a connection from");
   }
 
-  const environment: IDbtEnvironment = {
+  const environment: DbtEnvironmentRecord = {
     name,
     connectionId: baseEnv.connectionId,
     targetSchema,
@@ -277,10 +266,11 @@ export async function ensurePersonalDbtEnvironment(params: {
     ownerUserId: params.userId,
   };
   project.environments.push(environment);
-  project.markModified("environments");
   const { commitDbtEnvironmentsFile } = await import("./dbt-config.service");
   await commitDbtEnvironmentsFile(project, params.userId);
-  await project.save();
+  await dbtRepo.updateProject(project._id, {
+    environments: project.environments,
+  });
 
   return { environment, created: true };
 }
@@ -299,13 +289,11 @@ export async function resolveDbtSchemaForBinding(params: {
   dbtProjectId: string;
   environmentName?: string;
 }): Promise<{ schema: string; environmentName: string } | null> {
-  if (!Types.ObjectId.isValid(params.dbtProjectId)) return null;
-  const project = await DbtProject.findOne({
-    _id: new Types.ObjectId(params.dbtProjectId),
-    workspaceId: new Types.ObjectId(params.workspaceId.toString()),
-  })
-    .select("environments defaultEnvironment prodEnvironment")
-    .lean();
+  if (!parseEntityId(params.dbtProjectId)) return null;
+  const project = await dbtRepo.findProjectById(
+    params.dbtProjectId,
+    String(params.workspaceId),
+  );
   if (!project) return null;
 
   const envName =
@@ -351,13 +339,11 @@ export async function resolveDbtBoundCode(params: {
     return params.code;
   }
   if (params.environment) {
-    const project = Types.ObjectId.isValid(params.dbtProjectId)
-      ? await DbtProject.findOne({
-          _id: new Types.ObjectId(params.dbtProjectId),
-          workspaceId: new Types.ObjectId(params.workspaceId.toString()),
-        })
-          .select("environments defaultEnvironment prodEnvironment")
-          .lean()
+    const project = parseEntityId(params.dbtProjectId)
+      ? await dbtRepo.findProjectById(
+          params.dbtProjectId,
+          String(params.workspaceId),
+        )
       : null;
     if (!project) {
       throw new DbtEnvironmentUnavailableError(
@@ -428,7 +414,7 @@ export class DbtEnvironmentUnavailableError extends Error {
  * models must not show up in someone else's app.
  */
 export function devDbtEnvironmentSchema(
-  project: Pick<IDbtProject, "environments">,
+  project: { environments: Array<EnvironmentName & { targetSchema: string }> },
   environmentName: string,
   userId: string | undefined,
 ): string {

@@ -1,7 +1,7 @@
 /** Lineage: the flattened manifest parent_map for the DAG view. */
 import { Hono } from "hono";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
-import { DbtRun } from "../../database/workspace-schema";
+import { dbtRepo } from "../../repositories/dbt";
 import { getArtifactStore } from "../../services/artifact-store.service";
 import { serverError, findProject } from "./context";
 import { fail } from "../lib/respond";
@@ -75,13 +75,14 @@ dbtLineageRoutes.get(
         return fail(c, 404, "dbt project not found");
       }
       // Latest run with a manifest artifact wins.
-      const run = await DbtRun.findOne({
-        projectId: project._id,
-        "artifactKeys.manifest": { $exists: true, $ne: null },
-      })
-        .select("artifactKeys stepResults createdAt")
-        .sort({ createdAt: -1 })
-        .lean();
+      const run = await dbtRepo.findLatestArtifactRun(
+        {
+          workspaceId: project.workspaceId,
+          projectId: project._id,
+          hasManifest: true,
+        },
+        true,
+      );
       if (!run?.artifactKeys?.manifest) {
         return c.json({
           success: true,

@@ -1,14 +1,9 @@
+import { parseEntityId } from "../../database/pg/id-codec";
 /** dbt projects: list, create, read, update, delete, and environments. */
 import { Hono } from "hono";
-import { Types } from "mongoose";
 import { z } from "zod";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
-import {
-  DbtEnvPreference,
-  DbtJob,
-  DbtProject,
-  DbtRun,
-} from "../../database/workspace-schema";
+import { dbtRepo, DbtDuplicateProjectNameError } from "../../repositories/dbt";
 import { connectionsRepo } from "../../repositories/connections";
 import {
   commitDbtFiles,
@@ -43,7 +38,7 @@ const environmentSchema = z.object({
   name: z.string().min(1).max(64),
   connectionId: z
     .string()
-    .refine(Types.ObjectId.isValid, "Invalid connection id"),
+    .refine(value => !!parseEntityId(value), "Invalid connection id"),
   /**
    * Optional read-only connection to the same warehouse: metric queries run
    * on it instead of the build connection. Empty or absent: none.
@@ -51,7 +46,7 @@ const environmentSchema = z.object({
   readConnectionId: z
     .string()
     .refine(
-      value => value === "" || Types.ObjectId.isValid(value),
+      value => value === "" || parseEntityId(value),
       "Invalid read connection id",
     )
     .optional(),
@@ -165,14 +160,7 @@ async function validateEnvironments(
 
 /** An environment as the route received it, as the model stores it. */
 function toStoredEnvironment(env: z.infer<typeof environmentSchema>) {
-  const { readConnectionId, ...rest } = env;
-  return {
-    ...rest,
-    connectionId: new Types.ObjectId(env.connectionId),
-    ...(readConnectionId
-      ? { readConnectionId: new Types.ObjectId(readConnectionId) }
-      : {}),
-  };
+  return { ...env, readConnectionId: env.readConnectionId || undefined };
 }
 
 // ---------------------------------------------------------------------------
@@ -185,14 +173,12 @@ function toStoredEnvironment(env: z.infer<typeof environmentSchema>) {
 dbtProjectRoutes.get("/projects", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+    if (!workspaceId || !parseEntityId(workspaceId)) {
       return badRequest(c, "Valid workspace ID is required");
     }
-    const docs = await DbtProject.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-    }).sort({ updatedAt: -1 });
+    const projects = await dbtRepo.listProjectsByWorkspace(workspaceId);
     // Environments follow dbt/environments.yml at main (apps.md §23).
-    for (const doc of docs) {
+    for (const doc of projects) {
       try {
         await ensureEnvironmentsDerivedCache(doc);
       } catch (error) {
@@ -202,14 +188,11 @@ dbtProjectRoutes.get("/projects", async (c: AuthenticatedContext) => {
         });
       }
     }
-    const projects = docs.map(doc => doc.toObject());
     const userId = getUserId(c);
-    const prefs = await DbtEnvPreference.find({
-      projectId: { $in: projects.map(p => p._id) },
+    const prefs = await dbtRepo.listEnvPreferencesForUser(
+      projects.map(p => p._id),
       userId,
-    })
-      .select("projectId environment")
-      .lean();
+    );
     const prefByProject = new Map(
       prefs.map(pref => [pref.projectId.toString(), pref.environment]),
     );
@@ -231,7 +214,7 @@ dbtProjectRoutes.get("/projects", async (c: AuthenticatedContext) => {
 dbtProjectRoutes.post("/projects", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
-    if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+    if (!workspaceId || !parseEntityId(workspaceId)) {
       return badRequest(c, "Valid workspace ID is required");
     }
     const parsed = createProjectSchema.safeParse(await c.req.json());
@@ -260,26 +243,23 @@ dbtProjectRoutes.post("/projects", async (c: AuthenticatedContext) => {
     const userId = getUserId(c);
     // ONE dbt project per workspace: the project is the `dbt/` folder of the
     // workspace repo (apps.md §20), and two projects cannot share it.
-    const existing = await DbtProject.exists({
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const existing = await dbtRepo.workspaceHasProject(workspaceId);
     if (existing) {
       return badRequest(
         c,
         "This workspace already has a dbt project (dbt/ in the workspace repo)",
       );
     }
-    const project = new DbtProject({
-      workspaceId: new Types.ObjectId(workspaceId),
+    const input = {
+      workspaceId,
       name: body.name,
       dbtVersion: body.dbtVersion ?? "1.12",
       environments: body.environments.map(toStoredEnvironment),
       defaultEnvironment: body.defaultEnvironment,
       createdBy: userId,
-    });
-    // Git first (issue #956): the file is the record, the row follows.
-    await commitDbtEnvironmentsFile(project, userId);
-    await project.save();
+    };
+    await commitDbtEnvironmentsFile(input, userId);
+    const project = await dbtRepo.createProject(input);
 
     // Scaffold straight into the workspace repo: dbt/ appears as one commit
     // on the creator's session branch. A pre-existing dbt/dbt_project.yml
@@ -305,7 +285,7 @@ dbtProjectRoutes.post("/projects", async (c: AuthenticatedContext) => {
     });
     return c.json({ success: true, project });
   } catch (error) {
-    if ((error as { code?: number }).code === 11000) {
+    if (error instanceof DbtDuplicateProjectNameError) {
       return badRequest(c, "A dbt project with this name already exists");
     }
     return serverError(c, error, "Failed to create dbt project");
@@ -393,12 +373,18 @@ dbtProjectRoutes.patch(
         if (personalError) return badRequest(c, personalError);
       }
       await commitDbtEnvironmentsFile(project, getUserId(c));
-      await project.save();
+      const updated = await dbtRepo.updateProject(project._id, {
+        ...body,
+        environments: body.environments && project.environments,
+        prodEnvironment:
+          body.prodEnvironment === "" ? null : body.prodEnvironment,
+      });
+      if (!updated) return fail(c, 404, "dbt project not found");
       publishDbtEvent(c, {
         type: "dbt.project.updated",
         projectId: project._id.toString(),
       });
-      return c.json({ success: true, project });
+      return c.json({ success: true, project: updated });
     } catch (error) {
       return serverError(c, error, "Failed to update dbt project");
     }
@@ -482,7 +468,13 @@ dbtProjectRoutes.put(
           `Environment "${environment}" is not in the project`,
         );
       }
-      const userId = getUserId(c);
+      const userId = c.get("user")?.id;
+      if (!userId) {
+        return badRequest(
+          c,
+          "A user session is required to set a dev environment",
+        );
+      }
       await setUserDevEnvPreference({
         workspaceId: project.workspaceId,
         projectId: project._id,
@@ -510,12 +502,7 @@ dbtProjectRoutes.delete(
       // The dbt/ folder in the repo is deliberately left alone: deleting the
       // project row removes the runner surface, not the files (git history is
       // the recovery path either way).
-      await Promise.all([
-        DbtEnvPreference.deleteMany({ projectId: project._id }),
-        DbtJob.deleteMany({ projectId: project._id }),
-        DbtRun.deleteMany({ projectId: project._id }),
-      ]);
-      await project.deleteOne();
+      await dbtRepo.deleteProject(project._id);
       publishDbtEvent(c, {
         type: "dbt.project.updated",
         projectId: project._id.toString(),

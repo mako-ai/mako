@@ -1,20 +1,18 @@
 /**
  * dbt orchestration config as files (apps.md §23): write-through, push-sync
- * reconciliation, adoption. Real bare repo, mongodb-memory-server for the Dbt*
- * models, PGlite (test-support/pg-test.ts) for workspace and connection rows.
+ * reconciliation, adoption. Real bare Git repository and PGlite for dbt, workspace and connection rows.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
   ensureTestDatabaseConnection,
   setupPgTestDb,
   type PgTestDb,
 } from "../test-support/pg-test";
-import { DbtJob, DbtProject } from "../database/workspace-schema";
+import { dbtRepo } from "../repositories/dbt";
 import {
   DEFAULT_BRANCH,
   commitBlobsOnBranch,
@@ -49,11 +47,10 @@ import {
   unbindTestWorkspaceRepo,
 } from "../apps/bind-test-workspace-repo";
 
-let mongo: MongoMemoryServer;
 let pgh: PgTestDb;
 let tmpRoot: string;
-const WS = new Types.ObjectId();
-const CONN = new Types.ObjectId();
+const WS = new Types.ObjectId().toString();
+const CONN = new Types.ObjectId().toString();
 const MAIN = `refs/heads/${DEFAULT_BRANCH}`;
 
 beforeAll(async () => {
@@ -61,15 +58,11 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
   pgh = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
   await pgh.close();
-  await mongoose.disconnect();
-  await mongo.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -81,22 +74,21 @@ afterAll(async () => {
 beforeEach(async () => {
   await pgh.reset();
   await ensureTestDatabaseConnection(pgh.db, {
-    workspaceId: WS.toString(),
-    id: CONN.toString(),
+    workspaceId: WS,
+    id: CONN,
   });
-  await Promise.all([DbtProject.deleteMany({}), DbtJob.deleteMany({})]);
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
     force: true,
     maxRetries: 5,
     retryDelay: 100,
   });
-  await initRepo(repoDirFor(WS.toString()), { "README.md": "x\n" });
-  await bindTestWorkspaceRepo(WS.toString());
+  await initRepo(repoDirFor(WS), { "README.md": "x\n" });
+  await bindTestWorkspaceRepo(WS);
 });
 
 async function seedProject() {
-  return DbtProject.create({
+  const project = await dbtRepo.createProject({
     workspaceId: WS,
     name: "Analytics",
     dbtVersion: "1.9",
@@ -112,10 +104,11 @@ async function seedProject() {
     defaultEnvironment: "dev",
     createdBy: "u1",
   });
+  return project;
 }
 
-async function seedJob(project: { _id: Types.ObjectId }, name: string) {
-  return DbtJob.create({
+async function seedJob(project: { _id: string }, name: string) {
+  return dbtRepo.createJob({
     workspaceId: WS,
     projectId: project._id,
     slug: await reserveJobSlug(project._id, name),
@@ -130,7 +123,7 @@ async function seedJob(project: { _id: Types.ObjectId }, name: string) {
 
 async function fileAt(rel: string): Promise<string | null> {
   try {
-    const blob = await readBlob(repoDirFor(WS.toString()), MAIN, rel);
+    const blob = await readBlob(repoDirFor(WS), MAIN, rel);
     return blob.isBinary ? null : blob.contents;
   } catch {
     return null;
@@ -168,7 +161,7 @@ describe("write-through", () => {
     const contents = await fileAt(jobFilePath(job.slug!));
     expect(contents).toContain("Nightly prod build");
     expect(contents).toContain("cron: 0 6 * * *");
-    const fresh = await DbtJob.findById(job._id);
+    const fresh = await dbtRepo.findJobById(job._id);
     expect(fresh?.sourceBlobSha).toBeTruthy();
 
     await deleteDbtJobFile(project, job.slug);
@@ -177,14 +170,14 @@ describe("write-through", () => {
 
   it("commitDbtJobFile throws when there is no GitHub repo bound and does not stamp the row", async () => {
     // No binding → 412, even if a leftover local git directory exists.
-    await unbindTestWorkspaceRepo(WS.toString());
+    await unbindTestWorkspaceRepo(WS);
     const project = await seedProject();
     const job = await seedJob(project, "Nightly");
     await expect(commitDbtJobFile(project, job)).rejects.toMatchObject({
       name: "RepoRequiredError",
       status: 412,
     });
-    const fresh = await DbtJob.findById(job._id);
+    const fresh = await dbtRepo.findJobById(job._id);
     expect(fresh?.sourceBlobSha).toBeFalsy();
   });
 });
@@ -194,7 +187,7 @@ describe("GET/list from git", () => {
     const project = await seedProject();
     const job = await seedJob(project, "Mongo only");
     await commitDbtJobFile(project, job);
-    await unbindTestWorkspaceRepo(WS.toString());
+    await unbindTestWorkspaceRepo(WS);
     expect(await loadLiveJobs(project)).toEqual([]);
   });
 
@@ -210,7 +203,7 @@ describe("GET/list from git", () => {
       deferToProduction: false,
     });
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       { writes: { [jobFilePath("git-only")]: contents } },
       { message: "git-only job" },
@@ -221,7 +214,7 @@ describe("GET/list from git", () => {
     expect(liveJobToPlain(live[0]!, project)).toMatchObject({
       name: "Git only",
     });
-    expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(1);
+    expect(await dbtRepo.listJobsByProject(project._id)).toHaveLength(1);
   });
 
   it("resyncs a stale existing row without creating or scheduling", async () => {
@@ -237,17 +230,17 @@ describe("GET/list from git", () => {
       deferToProduction: false,
     });
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       { writes: { [jobFilePath(job.slug!)]: edited } },
       { message: "edit job" },
     );
     const live = await loadLiveJobs(project);
     expect(liveJobToPlain(live[0]!, project).name).toBe("Renamed in git");
-    const fresh = await DbtJob.findById(job._id);
+    const fresh = await dbtRepo.findJobById(job._id);
     expect(fresh?.commands).toEqual(["test"]);
     expect(fresh?.scheduledRun?.nextAt).toBeUndefined();
-    expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(1);
+    expect(await dbtRepo.listJobsByProject(project._id)).toHaveLength(1);
   });
 
   it("keeps last-good fields but never presents invalid YAML as live", async () => {
@@ -255,7 +248,7 @@ describe("GET/list from git", () => {
     const job = await seedJob(project, "Nightly");
     await commitDbtJobFile(project, job);
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       { writes: { [jobFilePath(job.slug!)]: "name: [broken" } },
       { message: "break yaml" },
@@ -264,7 +257,7 @@ describe("GET/list from git", () => {
     const plain = liveJobToPlain(live[0]!, project);
     expect(plain.definitionInvalid).toBeTruthy();
     expect(plain.name).toBe("Nightly");
-    expect((await DbtJob.findById(job._id))?.commands).toEqual([
+    expect((await dbtRepo.findJobById(job._id))?.commands).toEqual([
       "build --select realadvisor",
     ]);
     expect(await loadLiveJobById(project, job._id.toString())).not.toBeNull();
@@ -275,7 +268,7 @@ describe("GET/list from git", () => {
     const job = await seedJob(project, "Nightly"); // 0 6 Europe/Zurich
     await commitDbtJobFile(project, job);
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       {
         writes: {
@@ -293,12 +286,12 @@ describe("GET/list from git", () => {
     );
     // The list stamps the row level with the new blob...
     await loadLiveJobs(project);
-    const listed = await DbtJob.findById(job._id);
+    const listed = await dbtRepo.findJobById(job._id);
     expect(listed?.schedule?.cron).toBe("0 9 * * *");
     expect(listed?.scheduledRun?.nextAt?.getUTCHours()).toBe(9);
     // ...so push-sync skips it; the registration above must already hold.
-    await syncDbtConfigFromRepo(WS.toString());
-    const synced = await DbtJob.findById(job._id);
+    await syncDbtConfigFromRepo(WS);
+    const synced = await dbtRepo.findJobById(job._id);
     expect(synced?.scheduledRun?.nextAt?.getUTCHours()).toBe(9);
   });
 
@@ -314,7 +307,7 @@ describe("GET/list from git", () => {
         deferToProduction: false,
       });
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       {
         writes: {
@@ -349,20 +342,15 @@ describe("GET/list from git", () => {
     expect(plain["aaa-bad-cron"].enabled).toBe(false);
     expect(plain["zzz-good"].definitionInvalid).toBeUndefined();
 
-    await expect(syncDbtConfigFromRepo(WS.toString())).resolves.toBeUndefined();
-    expect(await DbtJob.countDocuments({ projectId: project._id })).toBe(1);
-    const good = await DbtJob.findOne({
-      projectId: project._id,
-      slug: "zzz-good",
-    });
+    await expect(syncDbtConfigFromRepo(WS)).resolves.toBeUndefined();
+    expect(await dbtRepo.listJobsByProject(project._id)).toHaveLength(1);
+    const good = await dbtRepo.findJobBySlug(project._id, "zzz-good");
     expect(good?.scheduledRun?.nextAt?.getUTCHours()).toBe(9);
     // The id the list handed out before the push is the id of the row.
     expect(good?._id.toString()).toBe(
       live.find(item => item.def.slug === "zzz-good")!.id.toString(),
     );
-    expect(good?._id.toString()).toBe(
-      derivedJobId(WS.toString(), "zzz-good").toString(),
-    );
+    expect(good?._id.toString()).toBe(derivedJobId(WS, "zzz-good").toString());
   });
 
   it("reverting a broken file to its previous content clears the invalid marker", async () => {
@@ -371,26 +359,28 @@ describe("GET/list from git", () => {
     await commitDbtJobFile(project, job);
     const good = await fileAt(jobFilePath(job.slug!));
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       { writes: { [jobFilePath(job.slug!)]: "name: [broken" } },
       { message: "break yaml" },
     );
     await loadLiveJobs(project);
-    const at = (await DbtJob.findById(job._id))?.definitionInvalid?.at;
+    const at = (await dbtRepo.findJobById(job._id))?.definitionInvalid?.at;
     expect(at).toBeInstanceOf(Date);
     // A second list call must not rewrite the marker.
     await loadLiveJobs(project);
-    expect((await DbtJob.findById(job._id))?.definitionInvalid?.at).toEqual(at);
+    expect((await dbtRepo.findJobById(job._id))?.definitionInvalid?.at).toEqual(
+      at,
+    );
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       { writes: { [jobFilePath(job.slug!)]: good! } },
       { message: "revert" },
     );
-    await syncDbtConfigFromRepo(WS.toString());
+    await syncDbtConfigFromRepo(WS);
     expect(
-      (await DbtJob.findById(job._id))?.definitionInvalid?.reason,
+      (await dbtRepo.findJobById(job._id))?.definitionInvalid?.reason,
     ).toBeUndefined();
   });
 });
@@ -403,14 +393,14 @@ describe("an environment's read connection", () => {
       environments: [
         {
           name: "prod",
-          connectionId: CONN.toString(),
+          connectionId: CONN,
           readConnectionId: read,
           targetSchema: "dbt_prod",
           threads: 4,
         },
         {
           name: "dev",
-          connectionId: CONN.toString(),
+          connectionId: CONN,
           targetSchema: "dbt_dev",
           threads: 4,
         },
@@ -434,7 +424,7 @@ describe("an environment's read connection", () => {
     const project = await seedProject();
     const read = new Types.ObjectId();
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       {
         writes: {
@@ -443,7 +433,7 @@ describe("an environment's read connection", () => {
             environments: [
               {
                 name: "prod",
-                connectionId: CONN.toString(),
+                connectionId: CONN,
                 readConnectionId: read.toString(),
                 targetSchema: "dbt_prod",
                 threads: 4,
@@ -455,12 +445,13 @@ describe("an environment's read connection", () => {
       { message: "prod reads through a read-only credential" },
     );
     await ensureEnvironmentsDerivedCache(project);
-    const stored = await DbtProject.findById(project._id);
+    const stored = await dbtRepo.findProjectById(project._id);
     expect(stored?.environments[0].readConnectionId?.toString()).toBe(
       read.toString(),
     );
     // And back out to the file unchanged.
-    await commitDbtEnvironmentsFile(stored as NonNullable<typeof stored>);
+    if (!stored) throw new Error("Missing seeded project");
+    await commitDbtEnvironmentsFile(stored);
     expect(await fileAt(DBT_ENVIRONMENTS_PATH)).toContain(
       `read_connection_id: ${read.toString()}`,
     );
@@ -475,7 +466,7 @@ describe("environments follow dbt/environments.yml; jobs resolve through the ove
     expect(good).toContain("default_environment: dev");
 
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       {
         writes: {
@@ -484,7 +475,7 @@ describe("environments follow dbt/environments.yml; jobs resolve through the ove
             environments: [
               {
                 name: "staging",
-                connectionId: CONN.toString(),
+                connectionId: CONN,
                 targetSchema: "dbt_staging",
                 threads: 2,
               },
@@ -497,12 +488,12 @@ describe("environments follow dbt/environments.yml; jobs resolve through the ove
     await ensureEnvironmentsDerivedCache(project);
     expect(project.defaultEnvironment).toBe("staging");
     expect(project.environments.map(env => env.name)).toEqual(["staging"]);
-    const stored = await DbtProject.findById(project._id);
+    const stored = await dbtRepo.findProjectById(project._id);
     expect(stored?.environments.map(env => env.name)).toEqual(["staging"]);
     expect(stored?.environmentsInvalid?.reason).toBeUndefined();
 
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       { writes: { [DBT_ENVIRONMENTS_PATH]: "environments: [broken" } },
       { message: "break environments" },
@@ -515,7 +506,7 @@ describe("environments follow dbt/environments.yml; jobs resolve through the ove
     expect(project.environments.map(env => env.name)).toEqual(["staging"]);
 
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       { writes: { [DBT_ENVIRONMENTS_PATH]: good! } },
       { message: "revert" },
@@ -524,14 +515,14 @@ describe("environments follow dbt/environments.yml; jobs resolve through the ove
     expect(project.environmentsInvalid?.reason).toBeUndefined();
     expect(project.defaultEnvironment).toBe("dev");
     expect(
-      (await DbtProject.findById(project._id))?.environmentsInvalid?.reason,
+      (await dbtRepo.findProjectById(project._id))?.environmentsInvalid?.reason,
     ).toBeUndefined();
   });
 
   it("resolves a git-only job as 409, a synced one as ok, a deleted file as 404", async () => {
     const project = await seedProject();
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       {
         writes: {
@@ -552,12 +543,12 @@ describe("environments follow dbt/environments.yml; jobs resolve through the ove
     expect(gitOnly.ok).toBe(false);
     if (!gitOnly.ok) expect(gitOnly.status).toBe(409);
 
-    await syncDbtConfigFromRepo(WS.toString());
+    await syncDbtConfigFromRepo(WS);
     const synced = await resolveLiveJobRow(project, id);
     expect(synced.ok).toBe(true);
 
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       { deletes: [jobFilePath("only-git")] },
       { message: "delete job file" },
@@ -570,7 +561,7 @@ describe("environments follow dbt/environments.yml; jobs resolve through the ove
   it("a job file with several space-separated selectors syncs into a runnable row", async () => {
     const project = await seedProject();
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       {
         writes: {
@@ -588,10 +579,11 @@ describe("environments follow dbt/environments.yml; jobs resolve through the ove
       },
       { message: "merged on GitHub" },
     );
-    await syncDbtConfigFromRepo(WS.toString());
-    const row = await DbtJob.findOne({
-      slug: "manual-build-customer-activation-prod",
-    });
+    await syncDbtConfigFromRepo(WS);
+    const row = await dbtRepo.findJobBySlug(
+      project._id,
+      "manual-build-customer-activation-prod",
+    );
     expect(row?.name).toBe("Manual: build customer activation (prod)");
     expect(row?.commands).toHaveLength(2);
     const id = (await loadLiveJobs(project))[0]!.id.toString();
@@ -601,7 +593,7 @@ describe("environments follow dbt/environments.yml; jobs resolve through the ove
   it("a git-only file that does not apply says why, not 'once synced'", async () => {
     const project = await seedProject();
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       {
         writes: {
@@ -617,7 +609,7 @@ describe("environments follow dbt/environments.yml; jobs resolve through the ove
       },
       { message: "job with unknown environment" },
     );
-    await syncDbtConfigFromRepo(WS.toString());
+    await syncDbtConfigFromRepo(WS);
     const id = (await loadLiveJobs(project))[0]!.id.toString();
     const resolved = await resolveLiveJobRow(project, id);
     expect(resolved.ok).toBe(false);
@@ -634,10 +626,9 @@ describe("sync from repo", () => {
     const project = await seedProject();
     const job = await seedJob(project, "Nightly prod build");
     await commitDbtJobFile(project, job);
-    await DbtJob.updateOne(
-      { _id: job._id },
-      { $set: { "scheduledRun.consecutiveFailures": 3 } },
-    );
+    await dbtRepo.updateJob(job._id, {
+      scheduledRun: { consecutiveFailures: 3 },
+    });
 
     const edited = serializeJobFile({
       name: "Nightly prod build",
@@ -648,14 +639,14 @@ describe("sync from repo", () => {
       deferToProduction: false,
     });
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       { writes: { [jobFilePath(job.slug!)]: edited } },
       { message: "laptop edit" },
     );
-    await syncDbtConfigFromRepo(WS.toString());
+    await syncDbtConfigFromRepo(WS);
 
-    const fresh = await DbtJob.findById(job._id);
+    const fresh = await dbtRepo.findJobById(job._id);
     expect(fresh?.commands).toEqual([
       "build --select realadvisor --full-refresh",
     ]);
@@ -677,7 +668,7 @@ describe("sync from repo", () => {
       deferToProduction: false,
     });
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       {
         writes: { [jobFilePath("evil")]: evil },
@@ -685,17 +676,17 @@ describe("sync from repo", () => {
       },
       { message: "laptop mischief" },
     );
-    await syncDbtConfigFromRepo(WS.toString());
-    expect(await DbtJob.findById(job._id)).toBeNull();
-    expect(await DbtJob.findOne({ slug: "evil" })).toBeNull();
+    await syncDbtConfigFromRepo(WS);
+    expect(await dbtRepo.findJobById(job._id)).toBeNull();
+    expect(await dbtRepo.findJobBySlug(project._id, "evil")).toBeNull();
   });
 
   it("environments.yml edits reach the project row", async () => {
     const project = await seedProject();
-    await adoptDbtConfig(WS.toString());
+    await adoptDbtConfig(WS);
     const raw = (await fileAt(DBT_ENVIRONMENTS_PATH))!;
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       {
         writes: {
@@ -707,8 +698,8 @@ describe("sync from repo", () => {
       },
       { message: "laptop env edit" },
     );
-    await syncDbtConfigFromRepo(WS.toString());
-    const fresh = await DbtProject.findById(project._id);
+    await syncDbtConfigFromRepo(WS);
+    const fresh = await dbtRepo.findProjectById(project._id);
     expect(fresh?.environments.find(e => e.name === "dev")?.targetSchema).toBe(
       "dbt_dev_v2",
     );
@@ -718,10 +709,10 @@ describe("sync from repo", () => {
     const project = await seedProject();
     const job = await seedJob(project, "Nightly prod build");
     await commitDbtJobFile(project, job);
-    const before = await DbtJob.findById(job._id);
+    const before = await dbtRepo.findJobById(job._id);
     const commands = [...(before?.commands ?? [])];
     await commitBlobsOnBranch(
-      repoDirFor(WS.toString()),
+      repoDirFor(WS),
       DEFAULT_BRANCH,
       {
         writes: {
@@ -730,8 +721,8 @@ describe("sync from repo", () => {
       },
       { message: "typo" },
     );
-    await syncDbtConfigFromRepo(WS.toString());
-    const after = await DbtJob.findById(job._id);
+    await syncDbtConfigFromRepo(WS);
+    const after = await dbtRepo.findJobById(job._id);
     expect(after?.definitionInvalid?.reason).toMatch(/unparseable/i);
     expect(after?.enabled).toBe(false);
     expect(after?.commands).toEqual(commands);
@@ -741,7 +732,7 @@ describe("sync from repo", () => {
 describe("adoption", () => {
   it("writes files for unstamped jobs + environments once, re-runnable", async () => {
     const project = await seedProject();
-    await DbtJob.create({
+    await dbtRepo.createJob({
       workspaceId: WS,
       projectId: project._id,
       name: "Legacy job",
@@ -750,13 +741,15 @@ describe("adoption", () => {
       enabled: true,
       createdBy: "u1",
     });
-    const first = await adoptDbtConfig(WS.toString());
+    const first = await adoptDbtConfig(WS);
     expect(first).toEqual({ jobs: 1, written: 2 });
-    const row = await DbtJob.findOne({ name: "Legacy job" });
+    const row = (await dbtRepo.listJobsByProject(project._id)).find(
+      job => job.name === "Legacy job",
+    );
     expect(row?.slug).toBe("legacy-job");
     expect(await fileAt(jobFilePath("legacy-job"))).toContain("Legacy job");
     expect(await fileAt(DBT_ENVIRONMENTS_PATH)).toContain("dbt_prod");
-    const again = await adoptDbtConfig(WS.toString());
+    const again = await adoptDbtConfig(WS);
     expect(again.written).toBe(0);
   });
 });

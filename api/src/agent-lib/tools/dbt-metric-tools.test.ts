@@ -1,6 +1,6 @@
 /**
  * The semantic-layer tools end to end: list_metrics, compile_metric and
- * query_metric with dbt projects and runs in MongoDB, warehouse connection
+ * query_metric with dbt projects, runs and warehouse connection
  * metadata in PGlite, and an in-memory artifact store holding the semantic
  * manifest a real dbt-core 1.12.7 parse wrote. MetricFlow itself (the Python
  * engine) and the warehouse are stand-ins here; the engine is pinned by
@@ -33,8 +33,7 @@ import {
   it,
   vi,
 } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
   ensureTestDatabaseConnection,
   setupPgTestDb,
@@ -82,8 +81,9 @@ import {
 } from "./dbt-metric-tools";
 import { eq } from "drizzle-orm";
 import { objectIdToUuid } from "../../database/pg/id-codec";
-import { databaseConnections } from "../../database/pg/schema";
-import { DbtProject, DbtRun } from "../../database/workspace-schema";
+import { databaseConnections, dbtRuns } from "../../database/pg/schema";
+import { dbtRepo } from "../../repositories/dbt";
+import { dbtUuid } from "../../repositories/dbt/mapper";
 import { MetricflowQueryError } from "../../dbt/semantic/metricflow.service";
 import { clearSemanticCatalogCache } from "../../dbt/semantic/semantic-manifest.service";
 
@@ -99,7 +99,6 @@ const SEMANTIC_MANIFEST = readFileSync(
 );
 
 let pg: PgTestDb;
-let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
 const PROD_CONN = new Types.ObjectId();
 const DEV_CONN = new Types.ObjectId();
@@ -144,34 +143,38 @@ async function seedProject(
     devRun = false,
     manifest = SEMANTIC_MANIFEST,
   } = options;
-  const project = await DbtProject.create({
-    workspaceId: new Types.ObjectId(WS),
+  const project = await dbtRepo.createProject({
+    workspaceId: WS,
     name,
     environments: [
       {
         name: "prod",
-        connectionId: PROD_CONN,
+        connectionId: String(PROD_CONN),
         targetSchema: "dbt_prod",
         threads: 4,
       },
       {
         name: "dev",
-        connectionId: DEV_CONN,
+        connectionId: String(DEV_CONN),
         targetSchema: "dbt_dev",
         threads: 4,
       },
     ],
     defaultEnvironment: "dev",
     createdBy: "tester",
-    ...(prod ? { lastProdManifestKey: `runs/${name}/prod/manifest.json` } : {}),
   });
   if (prod) {
+    await dbtRepo.updateProject(project._id, {
+      lastProdManifestKey: `runs/${name}/prod/manifest.json`,
+    });
     if (prodSemantic) {
       stored.set(`runs/${name}/prod/semantic_manifest.json`, manifest);
     }
-    await DbtRun.collection.insertOne({
-      workspaceId: new Types.ObjectId(WS),
-      projectId: project._id,
+    await pg.db.insert(dbtRuns).values({
+      workspaceId: dbtUuid(WS),
+      projectId: dbtUuid(project._id),
+      trigger: "manual",
+      triggeredBy: "tester",
       environment: "prod",
       status: "success",
       createdAt: new Date("2026-11-01T00:00:00Z"),
@@ -185,9 +188,11 @@ async function seedProject(
   }
   if (devRun) {
     stored.set(`runs/${name}/dev/semantic_manifest.json`, manifest);
-    await DbtRun.collection.insertOne({
-      workspaceId: new Types.ObjectId(WS),
-      projectId: project._id,
+    await pg.db.insert(dbtRuns).values({
+      workspaceId: dbtUuid(WS),
+      projectId: dbtUuid(project._id),
+      trigger: "manual",
+      triggeredBy: "tester",
       environment: "dev",
       status: "success",
       createdAt: new Date("2026-11-02T00:00:00Z"),
@@ -202,22 +207,14 @@ async function seedProject(
 
 beforeAll(async () => {
   pg = await setupPgTestDb();
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
   await pg?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
 });
 
 beforeEach(async () => {
-  await Promise.all([
-    DbtProject.deleteMany({}),
-    DbtRun.deleteMany({}),
-    pg.reset(),
-  ]);
+  await pg.reset();
   stored.clear();
   clearSemanticCatalogCache();
   engine.describe.mockReset();
@@ -743,10 +740,13 @@ describe("an environment's read connection", () => {
   ) {
     await seedConnection(READ_CONN, "Warehouse (read-only)", type);
     const project = await seedProject();
-    await DbtProject.updateOne(
-      { _id: project._id, "environments.name": "prod" },
-      { $set: { "environments.$.readConnectionId": READ_CONN } },
-    );
+    await dbtRepo.updateProject(project._id, {
+      environments: project.environments.map(env =>
+        env.name === "prod"
+          ? { ...env, readConnectionId: String(READ_CONN) }
+          : env,
+      ),
+    });
     clearSemanticCatalogCache();
   }
 
@@ -786,8 +786,7 @@ describe("an environment's read connection", () => {
       connectionRole: "build",
     });
 
-    await DbtProject.deleteMany({});
-    await DbtRun.deleteMany({});
+    await dbtRepo.deleteProjectsByWorkspace(WS);
     await seedWithReadConnection("bigquery");
     expect(
       await run(tools.compile_metric, { metrics: ["revenue"] }),
@@ -816,9 +815,11 @@ describe("a named dbt environment", () => {
   async function seedProdAndDev() {
     const project = await seedProject();
     stored.set("runs/Analytics/dev/semantic_manifest.json", DEV_MANIFEST);
-    await DbtRun.collection.insertOne({
-      workspaceId: new Types.ObjectId(WS),
-      projectId: project._id,
+    await pg.db.insert(dbtRuns).values({
+      workspaceId: dbtUuid(WS),
+      projectId: dbtUuid(project._id),
+      trigger: "manual",
+      triggeredBy: "tester",
       environment: "dev",
       status: "success",
       createdAt: new Date("2026-11-03T00:00:00Z"),
@@ -908,7 +909,7 @@ describe("a named dbt environment", () => {
     expect(engine.compile).not.toHaveBeenCalled();
 
     // "dev" exists; without a run that stored a manifest it says that.
-    await DbtRun.deleteMany({ environment: "dev" });
+    await pg.db.delete(dbtRuns).where(eq(dbtRuns.environment, "dev"));
     const unparsed = await run<{ metrics: unknown[]; message: string }>(
       tools.list_metrics,
       { environment: "dev" },

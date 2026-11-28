@@ -92,6 +92,13 @@
       "when": 1795803016383,
       "tag": "0012_control_plane_notifications_workflows_config",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795818094508,
+      "tag": "0013_dbt_tables",
+      "breakpoints": true
     }
   ]
 }

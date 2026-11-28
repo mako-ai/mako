@@ -3,7 +3,7 @@
  *
  * - dbtRunExecutorFunction: executes a queued DbtRun. One step.run per
  *   command (each must finish inside the Cloud Run request timeout), with
- *   batched log writes into dbt_runs.logs and artifact upload to the
+ *   batched log writes into dbt_run_logs and artifact upload to the
  *   artifact store. Secrets never cross step boundaries — every step loads
  *   the project snapshot + decrypted profile itself.
  * - dbtSchedulerFunction: cron sweep over due dbt_jobs with the same
@@ -11,16 +11,13 @@
  * - dbtRunCancelFunction: companion that finalizes runs killed by cancelOn.
  */
 
-import { Types } from "mongoose";
-import { claimDueScheduledRuns } from "../../services/scheduled-run-claim";
+import { claimDueScheduledRunsFromStore } from "../../services/scheduled-run-claim";
 import { inngest } from "../client";
 import {
-  DbtJob,
-  DbtProject,
-  DbtRun,
-  type DbtRunStatus,
-  type IDbtRun,
-} from "../../database/workspace-schema";
+  dbtRepo,
+  type DbtRunRecord,
+  type DbtRunUpdate,
+} from "../../repositories/dbt";
 import { loggers } from "../../logging";
 import { parseDbtCommand } from "../../dbt/commands";
 import {
@@ -77,7 +74,6 @@ import { getArtifactStore } from "../../services/artifact-store.service";
 
 const logger = loggers.inngest("dbt");
 
-const MAX_LOG_LINES = 5000;
 const LOG_FLUSH_INTERVAL_MS = 2000;
 
 function extractShowPreview(logs: DbtLogLine[]): string {
@@ -90,8 +86,8 @@ function extractShowPreview(logs: DbtLogLine[]): string {
     .slice(0, 8_000);
 }
 
-/** Buffered writer for dbt_runs.logs — capped, batched $push. */
-function createLogWriter(runId: Types.ObjectId) {
+/** Serialize bounded log flushes in emission order. */
+function createLogWriter(runId: string) {
   let buffer: DbtLogLine[] = [];
   let timer: ReturnType<typeof setTimeout> | null = null;
   let flushing = Promise.resolve();
@@ -101,24 +97,7 @@ function createLogWriter(runId: Types.ObjectId) {
     const lines = buffer;
     buffer = [];
     flushing = flushing.then(async () => {
-      await DbtRun.updateOne(
-        { _id: runId },
-        {
-          $push: {
-            logs: {
-              $each: lines.map(line => ({
-                ts: line.ts,
-                level: line.level,
-                line: line.line.slice(0, 2000),
-              })),
-              $slice: -MAX_LOG_LINES,
-            },
-          },
-          // The absolute line count, so a follower's cursor survives the
-          // $slice above (GET /dbt/local-runs/:id).
-          $inc: { logTotal: lines.length },
-        },
-      ).catch(error => {
+      await dbtRepo.appendRunLogs(runId, lines).catch(error => {
         logger.warn("dbt log flush failed", { error, runId: runId.toString() });
       });
     });
@@ -231,7 +210,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
   },
   async ({ event, step }) => {
     const data = event.data as DbtRunRequestedEvent;
-    const runObjectId = new Types.ObjectId(data.runId);
+    const runId = data.runId;
 
     // An event sent before lanes carries no concurrency keys. Send it again
     // with the default lane's keys, where it queued before, and stop. The
@@ -243,9 +222,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       const stillQueued = await step.run(
         "check-queued-for-requeue",
         async () => {
-          const run = await DbtRun.findById(runObjectId)
-            .select("status")
-            .lean();
+          const run = await dbtRepo.findRunById(runId);
           return run?.status === "queued";
         },
       );
@@ -277,7 +254,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       step.run(
         attempt === 0 ? "mark-running" : `mark-running-${attempt}`,
         async () => {
-          const claim = await claimDbtRunSlot(runObjectId);
+          const claim = await claimDbtRunSlot(runId);
           if (claim.state === "busy") {
             return { busy: true as const, holderId: claim.holderId };
           }
@@ -285,7 +262,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           return { busy: false as const, info: await describeRun(claim.run) };
         },
       );
-    const describeRun = async (run: IDbtRun) => {
+    const describeRun = async (run: DbtRunRecord) => {
       // Slim CI: resolve the project's last prod manifest so the executor can
       // run `--defer --state`. Applies to (a) scheduled/deploy jobs that opt in
       // via deferToProduction, (b) PR CI runs (unless the project's CI config
@@ -295,19 +272,14 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       let wantsDefer = false;
       if (run.jobId) {
         wantsDefer = Boolean(
-          (await DbtJob.findById(run.jobId).select("deferToProduction").lean())
-            ?.deferToProduction,
+          (await dbtRepo.findJobById(run.jobId))?.deferToProduction,
         );
       } else if (run.deferToProduction) {
         wantsDefer = true;
       }
       if (wantsDefer) {
-        const project = await DbtProject.findById(run.projectId)
-          .select("lastProdManifestKey")
-          .lean();
-        deferStateKey =
-          (project as { lastProdManifestKey?: string })?.lastProdManifestKey ??
-          null;
+        const project = await dbtRepo.findProjectById(run.projectId);
+        deferStateKey = project?.lastProdManifestKey ?? null;
       }
 
       return {
@@ -358,9 +330,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       // Already cancelled, duplicate delivery, or the lane stayed busy past
       // every claim (the sweeper fails it at 6 h). A run cancelled while queued
       // still owes the app deploys it held (a no-op unless it is terminal).
-      await step.run("release-held-deploys", () =>
-        releaseHeldDeploys(runObjectId),
-      );
+      await step.run("release-held-deploys", () => releaseHeldDeploys(runId));
       return { skipped: true };
     }
 
@@ -428,7 +398,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             }
           }
           const parsed = parseDbtCommand(commandText);
-          const logWriter = createLogWriter(runObjectId);
+          const logWriter = createLogWriter(runId);
           // What the runner injects (DBT_SECRET_* values, keyfile secrets)
           // never reaches the stored log — dbt code, a laptop's included,
           // could otherwise print it straight back to whoever started the run.
@@ -450,10 +420,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           // run log of every command and on the run doc, never silent.
           if (snapshot.warnings.length > 0) {
             for (const line of warningLogLines(snapshot.warnings)) onLog(line);
-            await DbtRun.updateOne(
-              { _id: runObjectId },
-              { $addToSet: { warnings: { $each: snapshot.warnings } } },
-            );
+            await dbtRepo.updateRun(runId, { addWarnings: snapshot.warnings });
           }
 
           // Retry runs seed the prior run_results.json into target/ so
@@ -608,9 +575,9 @@ export const dbtRunExecutorFunction = inngest.createFunction(
               }
             }
 
-            const update: Record<string, unknown> = {};
-            for (const [kind, key] of Object.entries(artifactKeys)) {
-              update[`artifactKeys.${kind}`] = key;
+            const update: DbtRunUpdate = {};
+            if (Object.keys(artifactKeys).length) {
+              update.artifactKeys = artifactKeys;
             }
             if (parsed.subcommand === "show" && commandResult?.logLines) {
               update.output = {
@@ -619,15 +586,10 @@ export const dbtRunExecutorFunction = inngest.createFunction(
               };
             }
             if (stepResults.length > 0 || Object.keys(update).length > 0) {
-              await DbtRun.updateOne(
-                { _id: runObjectId },
-                {
-                  ...(Object.keys(update).length > 0 ? { $set: update } : {}),
-                  ...(stepResults.length > 0
-                    ? { $push: { stepResults: { $each: stepResults } } }
-                    : {}),
-                },
-              );
+              await dbtRepo.updateRun(runId, {
+                ...update,
+                pushStepResults: stepResults.length ? stepResults : undefined,
+              });
             }
 
             return {
@@ -652,7 +614,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       }
     } catch (error) {
       // A step threw instead of returning a non-zero dbt exit code: snapshot
-      // load, artifact upload, the post-command DbtRun.updateOne, a per-command
+      // load, artifact upload, the post-command run update, a per-command
       // timeout, etc. Without catching here the function would reject and the
       // "finalize-run" step below would never run, leaving the doc stuck on
       // "running" (logs show dbt finished, but the status pill never flips).
@@ -675,9 +637,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
 
     await step.run("finalize-run", async () => {
       const completedAt = new Date();
-      const run = await DbtRun.findById(runObjectId)
-        .select("startedAt status cancelledAt cancelledBy")
-        .lean();
+      const run = await dbtRepo.findRunById(runId);
 
       // Detect cancellation from the PERSISTED marker, not the in-memory
       // AbortController: Inngest replays the function body (and recreates the
@@ -687,7 +647,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       // (or flips status to "cancelled") before aborting, so the marker is
       // durable. Without this a cancelled run would finalize as "error".
       if (run?.status === "cancelled" || run?.cancelledAt) {
-        await finalizeCancelledDbtRun(runObjectId, run?.cancelledBy);
+        await finalizeCancelledDbtRun(runId, run?.cancelledBy);
         logger.info("dbt run cancelled; finalized", { runId: data.runId });
         return;
       }
@@ -696,38 +656,30 @@ export const dbtRunExecutorFunction = inngest.createFunction(
         ? completedAt.getTime() - new Date(run.startedAt).getTime()
         : undefined;
 
-      await DbtRun.updateOne(
-        { _id: runObjectId, status: "running" },
+      const completion = await dbtRepo.finishRun(
+        runId,
         {
-          $set: {
-            status: failed ? "error" : "success",
-            completedAt,
-            ...(durationMs !== undefined ? { durationMs } : {}),
-            ...(errorMessage ? { error: errorMessage } : {}),
-          },
+          status: failed ? "error" : "success",
+          completedAt,
+          durationMs,
+          error: errorMessage || undefined,
         },
+        "running",
       );
+      // Replay may follow a committed finish. Reconcile its file/artifact side
+      // effects again without incrementing scheduledRun counters a second time.
+      const finishedRun = completion?.run ?? run;
+      if (
+        !finishedRun ||
+        finishedRun.status !== (failed ? "error" : "success")
+      ) {
+        return;
+      }
 
       if (runInfo.jobId) {
-        const updatedJob = await DbtJob.findOneAndUpdate(
-          { _id: new Types.ObjectId(runInfo.jobId) },
-          {
-            $set: {
-              "scheduledRun.lastAt": completedAt,
-              "scheduledRun.lastStatus": failed ? "error" : "success",
-              "scheduledRun.lastError": failed ? errorMessage : undefined,
-              ...(durationMs !== undefined
-                ? { "scheduledRun.lastDurationMs": durationMs }
-                : {}),
-              ...(failed ? {} : { "scheduledRun.consecutiveFailures": 0 }),
-            },
-            $inc: {
-              "scheduledRun.runCount": 1,
-              ...(failed ? { "scheduledRun.consecutiveFailures": 1 } : {}),
-            },
-          },
-          { returnDocument: "after" },
-        );
+        const updatedJob = completion
+          ? completion.job
+          : await dbtRepo.findJobById(runInfo.jobId);
 
         // Stop a broken scheduled job from hammering the warehouse forever:
         // after a threshold of consecutive failures, disable the schedule and
@@ -745,22 +697,20 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             const { commitDbtJobFile } =
               await import("../../dbt/dbt-config.service");
             updatedJob.enabled = false;
-            await commitDbtJobFile(
+            const sourceBlobSha = await commitDbtJobFile(
               { workspaceId: updatedJob.workspaceId },
               updatedJob,
               undefined,
               `dbt: auto-disable job "${updatedJob.name}" after ${failures} failures`,
             );
-            await DbtJob.updateOne(
-              { _id: updatedJob._id },
-              {
-                $set: {
-                  enabled: false,
-                  "scheduledRun.lastError": `Auto-disabled after ${failures} consecutive failures. Last error: ${errorMessage ?? "unknown"}`,
-                },
-                $unset: { "scheduledRun.nextAt": "" },
+            await dbtRepo.updateJob(updatedJob._id, {
+              sourceBlobSha,
+              enabled: false,
+              scheduledRun: {
+                nextAt: null,
+                lastError: `Auto-disabled after ${failures} consecutive failures. Last error: ${errorMessage ?? "unknown"}`,
               },
-            );
+            });
             logger.warn("Auto-disabled dbt job after repeated failures", {
               jobId: updatedJob._id.toString(),
               consecutiveFailures: failures,
@@ -773,45 +723,35 @@ export const dbtRunExecutorFunction = inngest.createFunction(
 
       // Keep the last successful prod manifest as the state artifact for
       // --defer / state:modified+ (Slim CI, later phase).
-      if (!failed) {
-        const finishedRun = await DbtRun.findById(runObjectId)
-          .select(
-            "workspaceId createdAt sourceSha artifactKeys environment gitBranch workingTreeUserId localOverlay deploysAfterRun lane",
-          )
-          .lean();
-        if (finishedRun?.artifactKeys?.manifest) {
-          const project = await DbtProject.findById(
-            new Types.ObjectId(data.projectId),
-          )
-            .select("environments defaultEnvironment prodEnvironment")
-            .lean();
-          // Single source of truth for what counts as production (explicit
-          // prodEnvironment setting > "prod" by name > project default).
-          const prodLike =
-            project != null &&
-            finishedRun.environment === resolveProdLikeEnvironmentName(project);
-          // Only a build of committed main is prod state: never a laptop
-          // overlay, a working tree or a PR head (promotesProdManifest).
-          // Compare-and-set on commit order: an older commit's run that
-          // finishes last must not overwrite a newer manifest.
-          if (promotesProdManifest(finishedRun, prodLike)) {
-            await promoteProdManifest({
-              projectId: data.projectId,
-              manifestKey: finishedRun.artifactKeys.manifest,
-              committedAt: await prodManifestOrderKey(finishedRun),
-              sourceSha: finishedRun.sourceSha,
-              runId: data.runId,
-            });
-          }
+      if (!failed && finishedRun.artifactKeys?.manifest) {
+        const project = await dbtRepo.findProjectById(
+          data.projectId,
+          data.workspaceId,
+        );
+        // Single source of truth for what counts as production (explicit
+        // prodEnvironment setting > "prod" by name > project default).
+        const prodLike =
+          project != null &&
+          finishedRun.environment === resolveProdLikeEnvironmentName(project);
+        // Only a build of committed main is prod state: never a laptop
+        // overlay, a working tree or a PR head (promotesProdManifest).
+        // Compare-and-set on commit order: an older commit's run that
+        // finishes last must not overwrite a newer manifest.
+        if (promotesProdManifest(finishedRun, prodLike)) {
+          await promoteProdManifest({
+            projectId: data.projectId,
+            manifestKey: finishedRun.artifactKeys.manifest,
+            committedAt: await prodManifestOrderKey(finishedRun),
+            sourceSha: finishedRun.sourceSha,
+            runId: data.runId,
+          });
         }
       }
     });
 
     // Success, failure or cancel: the run is over, so the app deploys it held
     // go now. Their bindings then read whatever prod holds after this run.
-    await step.run("release-held-deploys", () =>
-      releaseHeldDeploys(runObjectId),
-    );
+    await step.run("release-held-deploys", () => releaseHeldDeploys(runId));
 
     // Surface unexpected executor failures (a thrown step rather than a clean
     // non-zero dbt exit) to Inngest after the run doc has been finalized as
@@ -849,7 +789,7 @@ export const dbtRunCancelFunction = inngest.createFunction(
     };
     await step.sleep("allow-executor-teardown", "10s");
     await step.run("finalize-cancelled", async () => {
-      await finalizeCancelledDbtRun(new Types.ObjectId(runId), cancelledBy);
+      await finalizeCancelledDbtRun(runId, cancelledBy);
     });
     await step.run("release-held-deploys", () => releaseHeldDeploys(runId));
     return { runId };
@@ -908,7 +848,13 @@ export const dbtSchedulerFunction = inngest.createFunction(
     // Fetch + optimistic claim of every due job in one step; only the
     // scan that flips nextAt triggers.
     const claimed = await step.run("claim-due-dbt-jobs", () =>
-      claimDueScheduledRuns(DbtJob, new Date(), { enabled: true }),
+      claimDueScheduledRunsFromStore(
+        {
+          findDue: at => dbtRepo.findDueScheduledJobs(at),
+          claim: (job, nextAt) => dbtRepo.claimScheduledJob(job, nextAt),
+        },
+        new Date(),
+      ),
     );
 
     let triggered = 0;
@@ -923,9 +869,8 @@ export const dbtSchedulerFunction = inngest.createFunction(
           let firstError: unknown = null;
           for (const dueJob of chunk) {
             try {
-              const job = await DbtJob.findOne({
-                _id: new Types.ObjectId(dueJob.id),
-                workspaceId: new Types.ObjectId(dueJob.workspaceId),
+              const job = await dbtRepo.findJobById(dueJob.id, {
+                workspaceId: dueJob.workspaceId,
               });
               if (!job) continue;
               const run = await triggerDbtJobRun({
@@ -990,7 +935,7 @@ const DBT_RUN_DONE_GRACE_MS = 2 * 60 * 1000;
  */
 function detectDbtTerminalOutcome(
   logs: Array<{ line?: string }> | undefined,
-): DbtRunStatus | null {
+): "success" | "error" | null {
   if (!logs?.length) return null;
   // Newest lines are last; a small tail is enough to catch the summary block.
   const tail = logs
@@ -1011,7 +956,7 @@ function detectDbtTerminalOutcome(
 }
 
 /**
- * Run-history retention. dbt_runs embed capped logs + stepResults and would
+ * Run-history retention. dbt runs accumulate logs and step results and would
  * otherwise grow unbounded. The parent job preserves last status/error in
  * `scheduledRun`, so pruning completed history rows past the window is safe.
  * Override with DBT_RUN_RETENTION_DAYS.
@@ -1030,25 +975,15 @@ export const dbtRunSweeperFunction = inngest.createFunction(
     const swept = await step.run("sweep-abandoned-dbt-runs", async () => {
       const now = Date.now();
 
-      // Active runs are rare; fetch and filter in JS so we can look at the
-      // last log timestamp (capped array — $slice: -1 keeps this cheap).
-      const activeRuns = await DbtRun.find({
-        status: { $in: ["queued", "running"] },
-      })
-        .select({
-          status: 1,
-          startedAt: 1,
-          createdAt: 1,
-          jobId: 1,
-          logs: { $slice: -8 },
-        })
-        .lean();
+      const activeRuns = (await dbtRepo.listActiveRunsWithLogTail(8)).map(
+        ({ run, logs }) => ({ ...run, logs }),
+      );
 
       // Classify each active run that needs sweeping, recovering the real
       // outcome from dbt's terminal log summary where possible.
       const abandoned: Array<{
         run: (typeof activeRuns)[number];
-        status: DbtRunStatus;
+        status: "success" | "error";
         error: string;
         recoveredFromLogs: boolean;
       }> = [];
@@ -1105,48 +1040,20 @@ export const dbtRunSweeperFunction = inngest.createFunction(
       }
 
       for (const { run, status, error, recoveredFromLogs } of abandoned) {
-        const failedRun = status === "error";
         const completedAt = new Date();
-        const updated = await DbtRun.updateOne(
-          { _id: run._id, status: { $in: ["queued", "running"] } },
+        const updated = await dbtRepo.finishRun(
+          run._id,
           {
-            $set: {
-              status,
-              completedAt,
-              ...(error ? { error } : {}),
-              ...(run.startedAt
-                ? {
-                    durationMs:
-                      completedAt.getTime() - new Date(run.startedAt).getTime(),
-                  }
-                : {}),
-            },
+            status,
+            completedAt,
+            error: error || undefined,
+            durationMs:
+              run.startedAt && completedAt.getTime() - run.startedAt.getTime(),
           },
+          run.status,
         );
-        // Finalized concurrently by the executor or cancel finalizer.
-        if (updated.modifiedCount === 0) continue;
+        if (!updated) continue;
         await releaseHeldDeploys(run._id);
-
-        // Mirror finalize-run so job health stats don't silently drift.
-        if (run.jobId) {
-          await DbtJob.updateOne(
-            { _id: run.jobId },
-            {
-              $set: {
-                "scheduledRun.lastAt": completedAt,
-                "scheduledRun.lastStatus": status,
-                "scheduledRun.lastError": failedRun
-                  ? error || "Run abandoned by executor"
-                  : undefined,
-                ...(failedRun ? {} : { "scheduledRun.consecutiveFailures": 0 }),
-              },
-              $inc: {
-                "scheduledRun.runCount": 1,
-                ...(failedRun ? { "scheduledRun.consecutiveFailures": 1 } : {}),
-              },
-            },
-          );
-        }
 
         logger.warn("Swept abandoned dbt run", {
           runId: run._id.toString(),
@@ -1169,17 +1076,14 @@ export const dbtRunSweeperFunction = inngest.createFunction(
       const cutoff = new Date(
         Date.now() - DBT_RUN_RETENTION_DAYS * 24 * 60 * 60 * 1000,
       );
-      const result = await DbtRun.deleteMany({
-        status: { $in: ["success", "error", "cancelled"] },
-        completedAt: { $lt: cutoff },
-      });
-      if (result.deletedCount) {
+      const deleted = await dbtRepo.pruneTerminalRuns(cutoff);
+      if (deleted) {
         logger.info("Pruned old dbt runs", {
-          deleted: result.deletedCount,
+          deleted,
           retentionDays: DBT_RUN_RETENTION_DAYS,
         });
       }
-      return result.deletedCount ?? 0;
+      return deleted;
     });
 
     return { swept, pruned };

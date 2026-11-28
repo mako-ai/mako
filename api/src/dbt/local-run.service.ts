@@ -30,13 +30,13 @@
  * Browser sessions are full members acting as themselves: they may target
  * any non-prod environment, as the IDE's Run button can.
  */
-import { Types } from "mongoose";
+import { parseEntityId } from "../database/pg/id-codec";
 import {
-  DbtProject,
-  DbtRun,
-  type IDbtProject,
-  type IDbtRun,
-} from "../database/workspace-schema";
+  dbtRepo,
+  type DbtProjectRecord,
+  type DbtRunRecord,
+  type DbtRunWithLogs,
+} from "../repositories/dbt";
 import {
   hasWorkspaceApiKeyScope,
   type WorkspaceApiKeyScope,
@@ -126,7 +126,7 @@ export function buildLocalRunCommand(input: {
 }
 
 type EnvProject = Pick<
-  IDbtProject,
+  DbtProjectRecord,
   "environments" | "defaultEnvironment" | "prodEnvironment"
 >;
 
@@ -177,21 +177,18 @@ export function authorizeLocalRunEnvironment(input: {
 async function resolveLocalRunProject(
   workspaceId: string,
   projectId?: string,
-): Promise<IDbtProject> {
+): Promise<DbtProjectRecord> {
   if (projectId) {
-    if (!Types.ObjectId.isValid(projectId)) {
+    if (!parseEntityId(projectId)) {
       throw new LocalRunError("Invalid project id", 400);
     }
-    const project = await DbtProject.findOne({
-      _id: new Types.ObjectId(projectId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
+    const project = await dbtRepo.findProjectById(projectId, workspaceId);
     if (!project) throw new LocalRunError("dbt project not found", 404);
     return project;
   }
-  const projects = await DbtProject.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-  }).limit(10);
+  const projects = await dbtRepo.listProjectsByWorkspace(workspaceId, {
+    limit: 2,
+  });
   if (projects.length === 0) {
     throw new LocalRunError("This workspace has no dbt project", 404);
   }
@@ -224,7 +221,7 @@ export interface StartLocalRunInput {
 }
 
 export interface StartLocalRunResult {
-  run: IDbtRun;
+  run: DbtRunRecord;
   projectId: string;
   /** The personal environment was created by this call. */
   provisionedEnvironment?: { name: string; targetSchema: string };
@@ -263,7 +260,7 @@ export async function startLocalDbtRun(
             name: ensured.environment.name,
             targetSchema: ensured.environment.targetSchema,
           };
-          project = (await DbtProject.findById(project._id)) ?? project;
+          project = (await dbtRepo.findProjectById(project._id)) ?? project;
         }
       }
     }
@@ -323,14 +320,18 @@ export async function findOwnLocalRun(input: {
   workspaceId: string;
   userId: string;
   runId: string;
-}): Promise<IDbtRun | null> {
-  if (!Types.ObjectId.isValid(input.runId)) return null;
-  return DbtRun.findOne({
-    _id: new Types.ObjectId(input.runId),
-    workspaceId: new Types.ObjectId(input.workspaceId),
-    triggeredBy: input.userId,
-    localOverlay: { $exists: true },
-  });
+  logsSince?: number;
+}): Promise<DbtRunWithLogs | null> {
+  if (!parseEntityId(input.runId)) return null;
+  return dbtRepo.findRunWithLogs(
+    input.runId,
+    {
+      workspaceId: input.workspaceId,
+      triggeredBy: input.userId,
+      hasLocalOverlay: true,
+    },
+    input.logsSince,
+  );
 }
 
 /**

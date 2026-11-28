@@ -8,13 +8,11 @@
 import { Types } from "mongoose";
 import { inngest } from "../inngest/client";
 import {
-  DbtJob,
-  DbtProject,
-  DbtRun,
+  dbtRepo,
   type DbtRunStatus,
-  type IDbtJob,
-  type IDbtRun,
-} from "../database/workspace-schema";
+  type DbtJobRecord,
+  type DbtRunRecord,
+} from "../repositories/dbt";
 import { assertAdhocDbtRunAllowed } from "./dbt-environments.service";
 import {
   commitTimeOf,
@@ -25,7 +23,6 @@ import { parseDbtCommands } from "./commands";
 import { cancelLocalRun } from "./dbt-run-registry";
 import {
   chooseRunLane,
-  dbtRunLaneFilter,
   dbtRunQueueKeys,
   type DbtRunLane,
 } from "./dbt-run-queue";
@@ -47,8 +44,8 @@ const TERMINAL_DBT_RUN_STATUSES: ReadonlySet<DbtRunStatus> = new Set([
  * the prod environment (a read-only `dbt test --env prod` is allowed).
  */
 export function promotesProdManifest(
-  run: Pick<IDbtRun, "gitBranch" | "workingTreeUserId" | "localOverlay"> &
-    Partial<Pick<IDbtRun, "deploysAfterRun" | "lane">>,
+  run: Pick<DbtRunRecord, "gitBranch" | "workingTreeUserId" | "localOverlay"> &
+    Partial<Pick<DbtRunRecord, "deploysAfterRun" | "lane">>,
   ranInProdLikeEnvironment: boolean,
 ): boolean {
   if (!ranInProdLikeEnvironment) return false;
@@ -70,8 +67,9 @@ export function promotesProdManifest(
  * predates the pin, or a commit this instance cannot read).
  */
 export async function prodManifestOrderKey(
-  run: Pick<IDbtRun, "workspaceId" | "createdAt"> &
-    Partial<Pick<IDbtRun, "sourceSha">>,
+  run: { workspaceId: { toString(): string }; createdAt: Date } & Partial<
+    Pick<DbtRunRecord, "sourceSha">
+  >,
 ): Promise<Date> {
   if (run.sourceSha) {
     const at = await commitTimeOf(
@@ -99,25 +97,8 @@ export async function promoteProdManifest(params: {
   sourceSha?: string;
   runId?: string;
 }): Promise<boolean> {
-  const projectId = new Types.ObjectId(String(params.projectId));
-  const set = {
-    lastProdManifestKey: params.manifestKey,
-    lastProdManifestCommittedAt: params.committedAt,
-  };
-  const result = await DbtProject.updateOne(
-    {
-      _id: projectId,
-      $or: [
-        { lastProdManifestCommittedAt: { $exists: false } },
-        { lastProdManifestCommittedAt: null },
-        { lastProdManifestCommittedAt: { $lte: params.committedAt } },
-      ],
-    },
-    params.sourceSha
-      ? { $set: { ...set, lastProdManifestSha: params.sourceSha } }
-      : { $set: set, $unset: { lastProdManifestSha: "" } },
-  );
-  if (result.matchedCount > 0) return true;
+  const projectId = String(params.projectId);
+  if (await dbtRepo.promoteProdManifest({ ...params, projectId })) return true;
   logger.info("Skipped stale prod manifest promotion", {
     projectId: projectId.toString(),
     runId: params.runId,
@@ -148,9 +129,9 @@ const logger = loggers.api("dbt-run");
 const QUEUE_TIMEOUT_MS = Number(process.env.DBT_QUEUE_TIMEOUT_MS) || 5 * 60_000;
 
 type ReconcilableRun = {
-  _id: Types.ObjectId;
-  projectId?: Types.ObjectId;
-  jobId?: Types.ObjectId;
+  _id: Types.ObjectId | string;
+  projectId?: Types.ObjectId | string;
+  jobId?: Types.ObjectId | string;
   status: string;
   /** Absent on runs that predate lanes: the default lane. */
   lane?: DbtRunLane | null;
@@ -200,11 +181,11 @@ export async function reconcileStaleQueuedRun<T extends ReconcilableRun>(
   if (run.jobId) return run;
   // Still waiting behind its lane's concurrency lock? Not a lost event.
   if (run.projectId) {
-    const peerRunning = await DbtRun.exists({
-      projectId: run.projectId,
+    const peerRunning = await dbtRepo.runExists({
+      projectId: String(run.projectId),
       status: "running",
-      _id: { $ne: run._id },
-      ...dbtRunLaneFilter(run.lane),
+      excludeRunId: String(run._id),
+      lane: run.lane ?? "default",
     });
     if (peerRunning) return run;
   }
@@ -219,13 +200,12 @@ export async function reconcileStaleQueuedRun<T extends ReconcilableRun>(
     return { ...run, status: "error", error, completedAt } as T;
   }
 
-  const res = await DbtRun.updateOne(
-    { _id: run._id, status: "queued" },
-    { $set: { status: "error", error, completedAt } },
+  const updated = await dbtRepo.updateRun(
+    String(run._id),
+    { status: "error", error, completedAt },
+    { status: "queued" },
   );
-
-  // modifiedCount === 0 means the executor claimed it first; leave it alone.
-  if (res.modifiedCount !== 1) return run;
+  if (!updated) return run;
   await releaseHeldDeploys(run._id);
 
   logger.warn("dbt run timed out in queued; finalized as error", {
@@ -266,23 +246,21 @@ export async function reconcileStaleQueuedRuns<T extends ReconcilableRun>(
  * executor (e.g. inngest.send throws). Guarded on "queued" so it never clobbers
  * a run that somehow already started.
  */
-async function failUnenqueuedRun(
-  runId: Types.ObjectId,
-  cause: unknown,
-): Promise<void> {
+async function failUnenqueuedRun(runId: string, cause: unknown): Promise<void> {
   const message = cause instanceof Error ? cause.message : String(cause);
-  await DbtRun.updateOne(
-    { _id: runId, status: "queued" },
-    {
-      $set: {
+  await dbtRepo
+    .updateRun(
+      runId,
+      {
         status: "error",
         error: `Failed to enqueue dbt run: ${message}`,
         completedAt: new Date(),
       },
-    },
-  ).catch(() => {
-    /* best-effort: the original send error is what we surface */
-  });
+      { status: "queued" },
+    )
+    .catch(() => {
+      /* best-effort: the original send error is what we surface */
+    });
 }
 
 export interface DbtRunCiContext {
@@ -351,16 +329,14 @@ export async function triggerDbtRun(params: {
   sourceSha?: string;
   /** App deploys this run's end releases (apps/dbt-before-deploy.ts). */
   deploysAfterRun?: { workspaceId: string; appIds: string[]; sha: string };
-}): Promise<IDbtRun> {
+}): Promise<DbtRunRecord> {
   // Validate before persisting anything — bad commands never reach a run doc.
   const parsedCommands = parseDbtCommands(params.commands);
 
-  const project = await DbtProject.findOne({
-    _id: new Types.ObjectId(params.projectId),
-    workspaceId: new Types.ObjectId(params.workspaceId),
-  })
-    .select("workspaceId environments defaultEnvironment prodEnvironment")
-    .lean();
+  const project = await dbtRepo.findProjectById(
+    params.projectId,
+    params.workspaceId,
+  );
 
   // Ad-hoc (non-job, non-CI) runs on repo-connected projects build a
   // working tree — refuse warehouse writes into the protected prod-like
@@ -384,10 +360,10 @@ export async function triggerDbtRun(params: {
       : undefined);
 
   if (params.skipIfActive && params.jobId) {
-    const active = await DbtRun.findOne({
-      jobId: new Types.ObjectId(params.jobId),
-      status: { $in: ["queued", "running"] },
-    }).sort({ createdAt: -1 });
+    const active = await dbtRepo.findLatestRun({
+      jobId: params.jobId,
+      status: ["queued", "running"],
+    });
     if (active) return active;
   }
 
@@ -409,10 +385,10 @@ export async function triggerDbtRun(params: {
     jobId: params.jobId,
   });
 
-  const run = await DbtRun.create({
-    workspaceId: new Types.ObjectId(params.workspaceId),
-    projectId: new Types.ObjectId(params.projectId),
-    jobId: params.jobId ? new Types.ObjectId(params.jobId) : undefined,
+  const run = await dbtRepo.createRun({
+    workspaceId: params.workspaceId,
+    projectId: params.projectId,
+    jobId: params.jobId,
     environment: params.environment,
     commands: params.commands,
     status: "queued",
@@ -469,10 +445,6 @@ export async function triggerDbtRun(params: {
   return run;
 }
 
-/** Log lines kept when persisting a completed sync ad-hoc run (mirrors the
- * executor's MAX_LOG_LINES cap in inngest/functions/dbt-run.ts). */
-const ADHOC_RECORD_MAX_LOG_LINES = 5000;
-
 /**
  * Persist a COMPLETED synchronous ad-hoc command (IDE Run button / command
  * bar) into dbt_runs so editor runs share the same history, run detail, and
@@ -499,12 +471,12 @@ export async function recordCompletedAdhocDbtRun(params: {
     "success" | "exitCode" | "logs" | "stepResults"
   > &
     Partial<Pick<AdhocDbtResult, "warnings">>;
-}): Promise<IDbtRun | null> {
+}): Promise<DbtRunRecord | null> {
   try {
     const completedAt = new Date();
-    return await DbtRun.create({
-      workspaceId: new Types.ObjectId(params.workspaceId),
-      projectId: new Types.ObjectId(params.projectId),
+    return await dbtRepo.createRun({
+      workspaceId: params.workspaceId,
+      projectId: params.projectId,
       environment: params.environment,
       commands: [params.command],
       status: params.result.success ? "success" : "error",
@@ -522,13 +494,7 @@ export async function recordCompletedAdhocDbtRun(params: {
         : {
             error: `dbt command "${params.command}" exited with code ${params.result.exitCode}`,
           }),
-      logs: params.result.logs.slice(-ADHOC_RECORD_MAX_LOG_LINES).map(line => ({
-        ts: line.ts,
-        level: line.level,
-        // dbt emits blank spacer lines; `create` runs full validation (unlike
-        // the executor's $push), and a required String path rejects "".
-        line: line.line.slice(0, 2000) || " ",
-      })),
+      logs: params.result.logs,
       stepResults: params.result.stepResults,
       ...(params.result.warnings?.length
         ? { warnings: params.result.warnings }
@@ -545,11 +511,14 @@ export async function recordCompletedAdhocDbtRun(params: {
 
 export async function triggerDbtJobRun(params: {
   workspaceId: string;
-  job: IDbtJob;
+  job: Pick<DbtJobRecord, "environment" | "commands"> & {
+    _id: { toString(): string };
+    projectId: { toString(): string };
+  };
   trigger: "schedule" | "manual" | "agent";
   triggeredBy: string;
   actor: DbtRunActor;
-}): Promise<IDbtRun> {
+}): Promise<DbtRunRecord> {
   return triggerDbtRun({
     workspaceId: params.workspaceId,
     projectId: params.job.projectId.toString(),
@@ -576,16 +545,15 @@ export async function triggerDbtRunRetry(params: {
   triggeredBy: string;
   /** Who asks for the retry; the run stores it as kind "retry". */
   actor: DbtRunActor;
-}): Promise<IDbtRun | null> {
-  const source = await DbtRun.findOne({
-    _id: new Types.ObjectId(params.runId),
-    workspaceId: new Types.ObjectId(params.workspaceId),
-  }).lean();
+}): Promise<DbtRunRecord | null> {
+  const source = await dbtRepo.findRunById(params.runId, {
+    workspaceId: params.workspaceId,
+  });
   if (!source) return null;
   if (source.status !== "error") return null;
   if (!source.artifactKeys?.runResults) return null;
 
-  const run = await DbtRun.create({
+  const run = await dbtRepo.createRun({
     workspaceId: source.workspaceId,
     projectId: source.projectId,
     jobId: source.jobId,
@@ -650,46 +618,14 @@ export async function triggerDbtRunRetry(params: {
  * Flip a run that is still queued/running to the terminal "cancelled" status.
  * Shared by the executor (when its subprocess was aborted) and the
  * `dbt/run.cancel` finalizer so a cancel always lands exactly one terminal
- * write. Idempotent (guarded on a non-terminal status) and an aggregation
- * pipeline so it can preserve an already-staged cancelledBy/cancelledAt and
- * compute durationMs from startedAt in a single atomic update.
+ * write. Idempotent (guarded on a non-terminal status) and preserves an already-staged cancelledBy/cancelledAt and
+ * computes durationMs from startedAt in a single atomic update.
  */
 export async function finalizeCancelledDbtRun(
   runId: Types.ObjectId | string,
   fallbackCancelledBy?: string,
 ): Promise<void> {
-  const _id = typeof runId === "string" ? new Types.ObjectId(runId) : runId;
-  await DbtRun.updateOne(
-    { _id, status: { $in: ["queued", "running"] } },
-    [
-      {
-        $set: {
-          status: "cancelled",
-          completedAt: "$$NOW",
-          cancelledAt: { $ifNull: ["$cancelledAt", "$$NOW"] },
-          cancelledBy: {
-            $ifNull: ["$cancelledBy", fallbackCancelledBy ?? "user"],
-          },
-          error: { $ifNull: ["$error", "Cancelled"] },
-          durationMs: {
-            $cond: [
-              { $ifNull: ["$startedAt", false] },
-              {
-                $dateDiff: {
-                  startDate: "$startedAt",
-                  endDate: "$$NOW",
-                  unit: "millisecond",
-                },
-              },
-              "$durationMs",
-            ],
-          },
-        },
-      },
-    ],
-    // Mongoose 9 rejects pipeline updates unless they opt in.
-    { updatePipeline: true },
-  );
+  await dbtRepo.finalizeCancelledRun(String(runId), fallbackCancelledBy);
 }
 
 export interface DbtRunCancelResult {
@@ -722,12 +658,9 @@ export async function requestDbtRunCancel(params: {
   /** User id, or "agent" for automated cancels. */
   cancelledBy?: string;
 }): Promise<DbtRunCancelResult | null> {
-  const run = await DbtRun.findOne({
-    _id: new Types.ObjectId(params.runId),
-    workspaceId: new Types.ObjectId(params.workspaceId),
-  })
-    .select("status cancelledAt cancelledBy")
-    .lean();
+  const run = await dbtRepo.findRunById(params.runId, {
+    workspaceId: params.workspaceId,
+  });
   if (!run) return null;
 
   // Idempotent: a terminal run is a no-op that echoes the current status.
@@ -744,20 +677,11 @@ export async function requestDbtRunCancel(params: {
 
   // Queued runs are finalized synchronously (never start). Guarded on "queued"
   // so a last-moment executor pickup (queued→running race) is never clobbered.
-  const queued = await DbtRun.findOneAndUpdate(
-    { _id: run._id, status: "queued" },
-    {
-      $set: {
-        status: "cancelled",
-        completedAt: now,
-        cancelledAt: now,
-        cancelledBy,
-      },
-    },
-    { returnDocument: "after" },
-  )
-    .select("status cancelledAt cancelledBy")
-    .lean();
+  const queued = await dbtRepo.updateRun(
+    run._id,
+    { status: "cancelled", completedAt: now, cancelledAt: now, cancelledBy },
+    { status: "queued" },
+  );
 
   // Always emit the cancel event: frees the Inngest concurrency slot (cancelOn)
   // so the next queued run starts, and runs the finalizer as a cross-instance
@@ -784,17 +708,16 @@ export async function requestDbtRunCancel(params: {
 
   // Not queued anymore → running (or it just finished). Stage attribution so
   // the finalizer + UI can show who/when, then kill the local subprocess.
-  await DbtRun.updateOne(
-    { _id: run._id, status: "running" },
-    { $set: { cancelledAt: now, cancelledBy } },
+  await dbtRepo.updateRun(
+    run._id,
+    { cancelledAt: now, cancelledBy },
+    { status: "running" },
   );
   cancelLocalRun(params.runId, `Cancelled by ${cancelledBy}`);
 
   // Re-read for the authoritative current status (handles the finish-just-as-
   // cancel-arrives race: return the real terminal status, not an error).
-  const fresh = await DbtRun.findById(run._id)
-    .select("status cancelledAt cancelledBy")
-    .lean();
+  const fresh = await dbtRepo.findRunById(run._id);
   return {
     status: fresh?.status ?? "running",
     cancelledAt: fresh?.cancelledAt,
@@ -830,7 +753,7 @@ export function reenabledAfterAutoDisableFilter(
 }
 
 /** Recompute a job's next scheduled run after a schedule edit. */
-export async function applyJobScheduleChange(job: IDbtJob): Promise<void> {
+export async function applyJobScheduleChange(job: DbtJobRecord): Promise<void> {
   if (job.schedule?.cron && job.enabled) {
     const { getNextScheduledConsoleRunAt } =
       await import("../services/scheduled-query-schedule.service");
@@ -838,20 +761,14 @@ export async function applyJobScheduleChange(job: IDbtJob): Promise<void> {
       cron: job.schedule.cron,
       timezone: job.schedule.timezone || "UTC",
     });
-    await DbtJob.updateOne(
-      { _id: job._id },
-      { $set: { "scheduledRun.nextAt": nextAt } },
+    await dbtRepo.updateJob(String(job._id), { scheduledRun: { nextAt } });
+    await dbtRepo.resetJobFailuresIfReenabled(
+      String(job._id),
+      DBT_AUTO_DISABLE_AFTER_FAILURES,
     );
-    const reenabled = reenabledAfterAutoDisableFilter(job._id);
-    if (reenabled) {
-      await DbtJob.updateOne(reenabled, {
-        $set: { "scheduledRun.consecutiveFailures": 0 },
-      });
-    }
   } else {
-    await DbtJob.updateOne(
-      { _id: job._id },
-      { $unset: { "scheduledRun.nextAt": "" } },
-    );
+    await dbtRepo.updateJob(String(job._id), {
+      scheduledRun: { nextAt: null },
+    });
   }
 }

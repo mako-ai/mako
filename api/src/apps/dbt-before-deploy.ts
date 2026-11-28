@@ -16,11 +16,7 @@
  * deploys at once, as before. The hourly apps reconcile stays the backstop.
  */
 import { Types } from "mongoose";
-import {
-  DbtProject,
-  DbtRun,
-  type DbtRunStatus,
-} from "../database/workspace-schema";
+import { dbtRepo, type DbtRunStatus } from "../repositories/dbt";
 import { loggers } from "../logging";
 import { DBT_ROOT, dbtResourcePaths } from "../dbt/dbt-working-tree.service";
 import { resolveProdLikeEnvironmentName } from "../dbt/dbt-environments.service";
@@ -136,14 +132,9 @@ export async function planDbtBeforeDeploy(input: {
 
   // The repo holds one dbt project (dbt/); a workspace with two project rows
   // is ambiguous, the same rule dbt-rules-turn.service applies.
-  const projects = await DbtProject.find({
-    workspaceId: new Types.ObjectId(workspaceId),
-  })
-    .select(
-      "environments defaultEnvironment prodEnvironment lastProdManifestKey",
-    )
-    .limit(2)
-    .lean();
+  const projects = await dbtRepo.listProjectsByWorkspace(workspaceId, {
+    limit: 2,
+  });
   const project = projects.length === 1 ? projects[0] : null;
   // state:modified needs a prod manifest to compare against.
   if (!project?.lastProdManifestKey) return null;
@@ -228,27 +219,15 @@ export async function holdDeploysForDbtRun(input: {
   // when that run's command already selects every model the joiner reads.
   // A joiner that needs a model the run does not build starts its own run
   // below: joining would deploy it against an unbuilt model.
-  const existing = await DbtRun.findOne({
-    "deploysAfterRun.workspaceId": workspaceId,
-    "deploysAfterRun.sha": sha,
-  })
-    .sort({ createdAt: -1 })
-    .select("_id commands")
-    .lean();
+  const existing = await dbtRepo.findLatestRun({
+    deploysAfter: { workspaceId, sha },
+  });
   const built = modelsSelectedBy(existing?.commands?.[0]);
   if (existing && plan.models.every(model => built.has(model))) {
     // Joins only while the run is active and unreleased. The release claims
     // after the run turns terminal and reads appIds then, so an app added
     // here is never dropped.
-    const joined = await DbtRun.updateOne(
-      {
-        _id: existing._id,
-        status: { $in: ["queued", "running"] },
-        "deploysAfterRun.releasedAt": { $exists: false },
-      },
-      { $addToSet: { "deploysAfterRun.appIds": { $each: plan.held } } },
-    );
-    if (joined.matchedCount === 1) {
+    if (await dbtRepo.joinDeploysAfterRun(existing._id, plan.held)) {
       await Promise.all(plan.held.map(appId => markDeployQueued(appId, sha)));
       logger.info("Apps deploys joined a dbt build already running", {
         workspaceId,
@@ -315,8 +294,6 @@ export async function holdDeploysForDbtRun(input: {
   }
 }
 
-const TERMINAL: DbtRunStatus[] = ["success", "error", "cancelled"];
-
 type HeldDeploys = {
   workspaceId: string;
   appIds: string[];
@@ -345,34 +322,10 @@ export async function releaseDeploysAfterRun(
   /** The 60-minute cap: release while the run is still queued or running. */
   opts: { anyStatus?: boolean } = {},
 ): Promise<string[]> {
-  const _id = typeof runId === "string" ? new Types.ObjectId(runId) : runId;
+  const _id = String(runId);
   // One atomic write: claim the release and record whether the run was
   // still going at that instant (the cap path only).
-  const claimed = await DbtRun.findOneAndUpdate(
-    {
-      _id,
-      ...(opts.anyStatus ? {} : { status: { $in: TERMINAL } }),
-      deploysAfterRun: { $exists: true },
-      "deploysAfterRun.releasedAt": { $exists: false },
-    },
-    [
-      {
-        $set: {
-          "deploysAfterRun.releasedAt": "$$NOW",
-          ...(opts.anyStatus
-            ? {
-                "deploysAfterRun.releasedEarly": {
-                  $not: [{ $in: ["$status", TERMINAL] }],
-                },
-              }
-            : {}),
-        },
-      },
-    ],
-    { returnDocument: "after", updatePipeline: true },
-  )
-    .select("status deploysAfterRun")
-    .lean();
+  const claimed = await dbtRepo.claimDeploysAfterRelease(_id, opts);
   if (claimed?.deploysAfterRun) {
     return requestHeldDeploys(_id, claimed.deploysAfterRun, {
       runStatus: claimed.status,
@@ -383,18 +336,7 @@ export async function releaseDeploysAfterRun(
   if (opts.anyStatus) return [];
 
   // Released early by the cap, and the run has now built prod: once more.
-  const again = await DbtRun.findOneAndUpdate(
-    {
-      _id,
-      status: "success",
-      "deploysAfterRun.releasedEarly": true,
-      "deploysAfterRun.rereleasedAt": { $exists: false },
-    },
-    { $set: { "deploysAfterRun.rereleasedAt": new Date() } },
-    { returnDocument: "after" },
-  )
-    .select("status deploysAfterRun")
-    .lean();
+  const again = await dbtRepo.claimDeploysAfterRerelease(_id);
   if (!again?.deploysAfterRun) return [];
   return requestHeldDeploys(_id, again.deploysAfterRun, {
     runStatus: again.status,
@@ -404,7 +346,7 @@ export async function releaseDeploysAfterRun(
 }
 
 async function requestHeldDeploys(
-  _id: Types.ObjectId,
+  _id: string,
   held: HeldDeploys,
   ctx: {
     runStatus: DbtRunStatus;
@@ -441,17 +383,7 @@ async function requestHeldDeploys(
     });
     return held.appIds;
   } catch (error) {
-    await DbtRun.updateOne(
-      { _id },
-      {
-        $unset: {
-          [`deploysAfterRun.${ctx.claim}`]: 1,
-          ...(ctx.claim === "releasedAt"
-            ? { "deploysAfterRun.releasedEarly": 1 }
-            : {}),
-        },
-      },
-    ).catch(() => undefined);
+    await dbtRepo.unclaimDeploysAfterRun(_id, ctx.claim).catch(() => undefined);
     logger.warn("Could not release app deploys held for a dbt build", {
       workspaceId: held.workspaceId,
       runId: _id.toString(),

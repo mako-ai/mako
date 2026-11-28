@@ -1439,6 +1439,7 @@ jobs:
             --vpc-egress=all-traffic \
             --set-env-vars BASE_URL=${BASE_URL} \
             --set-env-vars MAKO_CONTROL_PLANE_PG_ACTIVE=1 \
+            --set-env-vars MAKO_DBT_FENCE_V1=1 \
             --set-env-vars MAKO_CONTROL_PLANE_FENCE_V1=1 \
             --set-env-vars API_RATE_LIMIT_MODE=enforce \
             --set-env-vars "APPS_LIFECYCLE_ENFORCE=${APPS_LIFECYCLE_ENFORCE}" \

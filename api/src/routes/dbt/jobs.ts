@@ -1,9 +1,9 @@
+import { parseEntityId } from "../../database/pg/id-codec";
 /** dbt jobs (git is the store: the file is committed before the derived row). */
 import { Hono } from "hono";
-import { Types } from "mongoose";
 import { z } from "zod";
 import { AuthenticatedContext } from "../../middleware/workspace.middleware";
-import { DbtJob } from "../../database/workspace-schema";
+import { dbtRepo } from "../../repositories/dbt";
 import {
   DbtCommandValidationError,
   parseDbtCommands,
@@ -136,7 +136,7 @@ dbtJobRoutes.post(
       const validationError = validateJobBody(project, parsed.data);
       if (validationError) return badRequest(c, validationError);
 
-      const job = new DbtJob({
+      const input = {
         workspaceId: project.workspaceId,
         projectId: project._id,
         slug: await reserveJobSlug(project._id, parsed.data.name),
@@ -147,12 +147,15 @@ dbtJobRoutes.post(
         enabled: parsed.data.enabled,
         deferToProduction: parsed.data.deferToProduction,
         createdBy: getUserId(c),
-      });
-      // Git first: the file is the record, the derived row follows.
-      await commitDbtJobFile(project, job, getUserId(c));
-      await job.save();
+      };
+      const sourceBlobSha = await commitDbtJobFile(
+        project,
+        input,
+        getUserId(c),
+      );
+      const job = await dbtRepo.createJob({ ...input, sourceBlobSha });
       await applyJobScheduleChange(job);
-      const fresh = await DbtJob.findById(job._id).lean();
+      const fresh = await dbtRepo.findJobById(job._id);
       publishDbtEvent(c, {
         type: "dbt.job.updated",
         projectId: project._id.toString(),
@@ -173,7 +176,7 @@ dbtJobRoutes.patch(
         return fail(c, 404, "dbt project not found");
       }
       const jobId = c.req.param("jobId") as string;
-      if (!Types.ObjectId.isValid(jobId)) {
+      if (!parseEntityId(jobId)) {
         return badRequest(c, "Invalid job id");
       }
       const resolved = await resolveLiveJobRow(project, jobId);
@@ -200,16 +203,18 @@ dbtJobRoutes.patch(
       const validationError = validateJobBody(project, merged);
       if (validationError) return badRequest(c, validationError);
 
-      job.name = merged.name;
-      job.environment = merged.environment;
-      job.commands = merged.commands;
-      job.schedule = merged.schedule ?? undefined;
-      job.enabled = merged.enabled;
-      job.deferToProduction = merged.deferToProduction;
-      await commitDbtJobFile(project, job, getUserId(c));
-      await job.save();
-      await applyJobScheduleChange(job);
-      const fresh = await DbtJob.findById(job._id).lean();
+      const sourceBlobSha = await commitDbtJobFile(
+        project,
+        { ...job, ...merged, schedule: merged.schedule ?? undefined },
+        getUserId(c),
+      );
+      const saved = await dbtRepo.updateJob(job._id, {
+        ...parsed.data,
+        sourceBlobSha,
+      });
+      if (!saved) return fail(c, 404, "Job not found");
+      await applyJobScheduleChange(saved);
+      const fresh = await dbtRepo.findJobById(job._id);
       publishDbtEvent(c, {
         type: "dbt.job.updated",
         projectId: project._id.toString(),
@@ -230,7 +235,7 @@ dbtJobRoutes.delete(
         return fail(c, 404, "dbt project not found");
       }
       const jobId = c.req.param("jobId") as string;
-      if (!Types.ObjectId.isValid(jobId)) {
+      if (!parseEntityId(jobId)) {
         return badRequest(c, "Invalid job id");
       }
       const resolved = await resolveLiveJobRow(project, jobId);
@@ -239,7 +244,7 @@ dbtJobRoutes.delete(
       }
       const doomed = resolved.row;
       await deleteDbtJobFile(project, doomed.slug, getUserId(c));
-      await DbtJob.deleteOne({ _id: doomed._id });
+      await dbtRepo.deleteJob(doomed._id);
       publishDbtEvent(c, {
         type: "dbt.job.updated",
         projectId: project._id.toString(),
@@ -260,7 +265,7 @@ dbtJobRoutes.post(
         return fail(c, 404, "dbt project not found");
       }
       const jobId = c.req.param("jobId") as string;
-      if (!Types.ObjectId.isValid(jobId)) {
+      if (!parseEntityId(jobId)) {
         return badRequest(c, "Invalid job id");
       }
       const resolved = await resolveLiveJobRow(project, jobId);

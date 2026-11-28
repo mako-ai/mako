@@ -9,8 +9,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
   ensureTestUser,
   setupPgTestDb,
@@ -23,13 +22,12 @@ import {
   renderDbtRulesBlock,
   resolveDbtRules,
 } from "./dbt-rules.service";
-import { DbtProject, type IDbtProject } from "../database/workspace-schema";
+import { dbtRepo, type DbtProjectRecord } from "../repositories/dbt";
 import { seedDbtGitTree } from "./test-support/git-tree";
 import { appsMetadataRepo } from "../repositories/apps-metadata";
 import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 
 let pg: PgTestDb;
-let mongo: MongoMemoryServer;
 let tmpRoot: string;
 const WS = new Types.ObjectId();
 const CONN = new Types.ObjectId();
@@ -41,14 +39,10 @@ beforeAll(async () => {
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
   pg = await setupPgTestDb();
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
 }, 120_000);
 
 afterAll(async () => {
   await pg?.close();
-  await mongoose.disconnect();
-  await mongo?.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -58,7 +52,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await Promise.all([pg.reset(), DbtProject.deleteMany({})]);
+  await pg.reset();
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
     force: true,
@@ -68,14 +62,14 @@ beforeEach(async () => {
   await bindTestWorkspaceRepo(WS.toString());
 });
 
-async function seedProject(): Promise<IDbtProject> {
-  const project = await DbtProject.create({
-    workspaceId: WS,
+async function seedProject(): Promise<DbtProjectRecord> {
+  return dbtRepo.createProject({
+    workspaceId: String(WS),
     name: "Analytics",
     environments: [
       {
         name: "dev",
-        connectionId: CONN,
+        connectionId: String(CONN),
         targetSchema: "analytics",
         threads: 4,
       },
@@ -83,10 +77,13 @@ async function seedProject(): Promise<IDbtProject> {
     defaultEnvironment: "dev",
     createdBy: "tester",
   });
-  return project as unknown as IDbtProject;
 }
 
-async function seedBase(project: IDbtProject, path: string, content: string) {
+async function seedBase(
+  project: DbtProjectRecord,
+  path: string,
+  content: string,
+) {
   await seedDbtGitTree(project.workspaceId, { [path]: content });
 }
 

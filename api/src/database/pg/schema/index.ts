@@ -14,3 +14,4 @@ export * from "./usage-stats";
 export * from "./mcp";
 export * from "./chat";
 export * from "./control-plane-app";
+export * from "./dbt";

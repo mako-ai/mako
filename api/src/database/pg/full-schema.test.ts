@@ -87,6 +87,11 @@ const EXPECTED_TABLES = [
   "chat_messages",
   "chat_usage_entries",
   "chats",
+  "dbt_projects",
+  "dbt_env_preferences",
+  "dbt_jobs",
+  "dbt_runs",
+  "dbt_run_logs",
   // App control plane: notifications, workflow recorded writes, global config (6)
   "apps_box_policy",
   "model_catalog_snapshots",
@@ -137,7 +142,7 @@ describe("Full Postgres migration schema with post-backfill FKs", () => {
     await pg.close();
   });
 
-  it("creates all 65 tables with zero stream-event tables and no chat_messages.parts jsonb column", async () => {
+  it("creates all 70 tables with zero stream-event tables and no chat_messages.parts jsonb column", async () => {
     const res = await pg.query<{ table_name: string }>(
       `SELECT table_name
          FROM information_schema.tables
@@ -146,7 +151,7 @@ describe("Full Postgres migration schema with post-backfill FKs", () => {
     );
     const actual = res.rows.map(r => r.table_name).sort();
     expect(actual).toEqual(EXPECTED_TABLES);
-    expect(actual).toHaveLength(65);
+    expect(actual).toHaveLength(70);
     expect(actual).not.toContain("stream_events");
     expect(actual).not.toContain("chat_stream_events");
 
@@ -374,7 +379,7 @@ describe("Full Postgres migration schema with post-backfill FKs", () => {
     expect(postDeleteLlmUsage.rows).toEqual([{ id: usageValidId }]);
   });
 
-  it("sets DEFAULT uuidv7() on all 55 UUID-PK tables and generates valid RFC 9562 UUIDv7 rows", async () => {
+  it("sets DEFAULT uuidv7() on all 60 UUID-PK tables and generates valid RFC 9562 UUIDv7 rows", async () => {
     const defaultsRes = await pg.query<{
       table_name: string;
       column_default: string | null;
@@ -386,7 +391,7 @@ describe("Full Postgres migration schema with post-backfill FKs", () => {
           AND data_type = 'uuid'
         ORDER BY table_name`,
     );
-    expect(defaultsRes.rows).toHaveLength(55);
+    expect(defaultsRes.rows).toHaveLength(60);
     for (const row of defaultsRes.rows) {
       expect(row.column_default, `${row.table_name}.id default`).toMatch(
         /uuidv7\(\)/i,

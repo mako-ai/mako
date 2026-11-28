@@ -2,7 +2,7 @@
  * dbt orchestration config in the workspace repo (apps.md §23).
  *
  * Files are authoritative for job DEFINITIONS (`dbt/jobs/<slug>.yml`) and
- * project environments/settings (`dbt/environments.yml`); the Mongo rows
+ * project environments/settings (`dbt/environments.yml`); the database rows
  * are the derived index the scheduler scans, carrying the runtime fields
  * (scheduledRun claims, failure counters, lastRun stats) that never enter
  * git. Every in-product mutation writes through here (a commit on main —
@@ -10,15 +10,14 @@
  * rule 2), and the push-reaction reconciles external edits, re-registering
  * schedules the way a push to apps/ deploys.
  */
+import { parseEntityId } from "../database/pg/id-codec";
 import { createHash } from "node:crypto";
 import { CronExpressionParser } from "cron-parser";
-import { Types } from "mongoose";
 import {
-  DbtJob,
-  DbtProject,
-  type IDbtJob,
-  type IDbtProject,
-} from "../database/workspace-schema";
+  dbtRepo,
+  type DbtJobRecord,
+  type DbtProjectRecord,
+} from "../repositories/dbt";
 import { loggers } from "../logging";
 import { authorForUser } from "../apps/workspace-consoles.service";
 import {
@@ -72,18 +71,15 @@ export interface JobDefinitionAtMain {
 
 export interface LiveJob {
   def: JobDefinitionAtMain;
-  row: IDbtJob | null;
-  id: Types.ObjectId;
+  row: DbtJobRecord | null;
+  id: string;
 }
 
-export function derivedJobId(
-  workspaceId: string,
-  slug: string,
-): Types.ObjectId {
+export function derivedJobId(workspaceId: string, slug: string): string {
   const digest = createHash("sha1")
     .update(`dbt-job:${workspaceId}:${slug}`)
     .digest("hex");
-  return new Types.ObjectId(digest.slice(0, 24));
+  return digest.slice(0, 24);
 }
 
 /** Authored job files at main; unbound workspaces deliberately read empty. */
@@ -158,7 +154,7 @@ export function jobScheduleFailure(
  * other job (apps.md §23 fail-safe).
  */
 export function jobApplyFailure(
-  project: IDbtProject,
+  project: DbtProjectRecord,
   file: DbtJobFile,
 ): string | null {
   if (file.name.length > JOB_NAME_MAX_LENGTH) {
@@ -179,12 +175,12 @@ export function jobApplyFailure(
  * Mongoose materialises an unset nested path as `{}` on a hydrated doc, so
  * the marker's presence is its `reason`, never the object's truthiness.
  */
-function isMarkedInvalid(row: IDbtJob): boolean {
+function isMarkedInvalid(row: DbtJobRecord): boolean {
   return typeof row.definitionInvalid?.reason === "string";
 }
 
 async function markJobInvalid(
-  row: IDbtJob,
+  row: DbtJobRecord,
   reason: string,
   path: string,
 ): Promise<void> {
@@ -197,7 +193,7 @@ async function markJobInvalid(
   }
   const definitionInvalid = { reason, at: new Date(), path };
   try {
-    await DbtJob.updateOne({ _id: row._id }, { $set: { definitionInvalid } });
+    await dbtRepo.updateJob(row._id, { definitionInvalid });
     row.definitionInvalid = definitionInvalid;
   } catch (error) {
     logger.warn("Failed to mark dbt job invalid", {
@@ -207,7 +203,7 @@ async function markJobInvalid(
   }
 }
 
-function scheduleDiffers(row: IDbtJob, file: DbtJobFile): boolean {
+function scheduleDiffers(row: DbtJobRecord, file: DbtJobFile): boolean {
   return (
     row.enabled !== file.enabled ||
     (row.schedule?.cron ?? null) !== (file.schedule?.cron ?? null) ||
@@ -224,9 +220,9 @@ function scheduleDiffers(row: IDbtJob, file: DbtJobFile): boolean {
  * old cron (or never fire, for a schedule added to a manual job).
  */
 export async function ensureJobDerivedCache(
-  project: IDbtProject,
+  project: DbtProjectRecord,
   def: JobDefinitionAtMain,
-  row: IDbtJob,
+  row: DbtJobRecord,
 ): Promise<void> {
   if (!def.parsed) {
     await markJobInvalid(row, "unparseable job file", def.path);
@@ -240,40 +236,29 @@ export async function ensureJobDerivedCache(
   if (row.sourceBlobSha === def.oid && !isMarkedInvalid(row)) return;
   const file = def.parsed;
   const reschedule = scheduleDiffers(row, file);
-  const unset: Record<string, 1> = { definitionInvalid: 1 };
-  if (!file.schedule) unset.schedule = 1;
-  await DbtJob.updateOne(
-    { _id: row._id },
-    {
-      $set: {
-        name: file.name,
-        environment: file.environment,
-        commands: file.commands,
-        ...(file.schedule ? { schedule: file.schedule } : {}),
-        enabled: file.enabled,
-        deferToProduction: file.deferToProduction,
-        sourceBlobSha: def.oid,
-      },
-      $unset: unset,
-    },
-  );
-  Object.assign(row, {
+  const patch = {
     name: file.name,
     environment: file.environment,
     commands: file.commands,
-    schedule: file.schedule ?? undefined,
+    schedule: file.schedule ?? null,
     enabled: file.enabled,
     deferToProduction: file.deferToProduction,
     sourceBlobSha: def.oid,
+    definitionInvalid: null,
+  };
+  const updated = await dbtRepo.updateJob(row._id, patch);
+  if (!updated) return;
+  Object.assign(row, updated, {
+    schedule: updated.schedule,
     definitionInvalid: undefined,
   });
   if (reschedule) await applyJobScheduleChange(row);
 }
 
 function joinLiveJobs(
-  project: IDbtProject,
+  project: DbtProjectRecord,
   defs: JobDefinitionAtMain[],
-  rows: IDbtJob[],
+  rows: DbtJobRecord[],
 ): LiveJob[] {
   const bySlug = new Map(rows.map(row => [row.slug, row]));
   return defs.map(def => ({
@@ -285,7 +270,9 @@ function joinLiveJobs(
   }));
 }
 
-export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
+export async function loadLiveJobs(
+  project: DbtProjectRecord,
+): Promise<LiveJob[]> {
   const workspaceId = project.workspaceId.toString();
   if ((await boundRepoDirIfExists(workspaceId)) == null) return [];
   // A job "applies" against the environments the FILE declares, not the
@@ -300,7 +287,7 @@ export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
     });
   }
   const defs = await listJobDefinitionsAtMain(workspaceId);
-  const rows = await DbtJob.find({ projectId: project._id });
+  const rows = await dbtRepo.listJobsByProject(project._id);
   const bySlug = new Map(rows.map(row => [row.slug, row]));
   for (const def of defs) {
     const row = bySlug.get(def.slug);
@@ -319,16 +306,16 @@ export async function loadLiveJobs(project: IDbtProject): Promise<LiveJob[]> {
 }
 
 export async function loadLiveJobById(
-  project: IDbtProject,
+  project: DbtProjectRecord,
   jobId: string,
 ): Promise<LiveJob | null> {
-  if (!Types.ObjectId.isValid(jobId)) return null;
+  if (!parseEntityId(jobId)) return null;
   const live = await loadLiveJobs(project);
   return live.find(job => job.id.toString() === jobId) ?? null;
 }
 
 export type LiveJobRowResolution =
-  | { ok: true; live: LiveJob; row: IDbtJob }
+  | { ok: true; live: LiveJob; row: DbtJobRecord }
   | { ok: false; status: 404 | 409; error: string };
 
 /**
@@ -339,7 +326,7 @@ export type LiveJobRowResolution =
  * and resolves to nothing, so it can no longer be triggered.
  */
 export async function resolveLiveJobRow(
-  project: IDbtProject,
+  project: DbtProjectRecord,
   jobId: string,
 ): Promise<LiveJobRowResolution> {
   const live = await loadLiveJobById(project, jobId);
@@ -366,18 +353,12 @@ export async function resolveLiveJobRow(
   return { ok: true, live, row: live.row };
 }
 
-function rowAsPlain(row: IDbtJob): Record<string, unknown> {
-  return typeof row.toObject === "function"
-    ? (row.toObject() as Record<string, unknown>)
-    : { ...(row as unknown as Record<string, unknown>) };
-}
-
 export function liveJobToPlain(
   live: LiveJob,
-  project: IDbtProject,
+  project: DbtProjectRecord,
 ): Record<string, unknown> {
-  const base = live.row
-    ? rowAsPlain(live.row)
+  const base: Record<string, unknown> = live.row
+    ? { ...live.row }
     : {
         _id: live.id,
         workspaceId: project.workspaceId,
@@ -424,7 +405,17 @@ export function liveJobToPlain(
   return base;
 }
 
-function jobToFile(job: IDbtJob): DbtJobFile {
+function jobToFile(
+  job: Pick<
+    DbtJobRecord,
+    | "name"
+    | "environment"
+    | "commands"
+    | "schedule"
+    | "enabled"
+    | "deferToProduction"
+  >,
+): DbtJobFile {
   return {
     name: job.name,
     environment: job.environment,
@@ -437,7 +428,12 @@ function jobToFile(job: IDbtJob): DbtJobFile {
   };
 }
 
-function environmentsToFile(project: IDbtProject) {
+function environmentsToFile(
+  project: Pick<
+    DbtProjectRecord,
+    "dbtVersion" | "environments" | "defaultEnvironment" | "prodEnvironment"
+  >,
+) {
   return {
     dbtVersion: project.dbtVersion,
     defaultEnvironment: project.defaultEnvironment,
@@ -456,54 +452,57 @@ function environmentsToFile(project: IDbtProject) {
   };
 }
 
-function isEnvironmentsMarkedInvalid(project: IDbtProject): boolean {
+function isEnvironmentsMarkedInvalid(project: DbtProjectRecord): boolean {
   return typeof project.environmentsInvalid?.reason === "string";
 }
 
 async function markEnvironmentsInvalid(
-  project: IDbtProject,
+  project: DbtProjectRecord,
   reason: string,
 ): Promise<void> {
   if (project.environmentsInvalid?.reason === reason) return;
   const environmentsInvalid = { reason, at: new Date() };
-  await DbtProject.updateOne(
-    { _id: project._id },
-    { $set: { environmentsInvalid } },
-  );
+  await dbtRepo.updateProject(project._id, { environmentsInvalid });
   project.environmentsInvalid = environmentsInvalid;
 }
 
 /** Project settings follow `dbt/environments.yml`; same mapping for read and push. */
 async function applyEnvironmentsFile(
-  project: IDbtProject,
+  project: DbtProjectRecord,
   parsed: DbtEnvironmentsFile,
 ): Promise<void> {
+  const level =
+    serializeEnvironmentsFile(environmentsToFile(project)) ===
+    serializeEnvironmentsFile(parsed);
+  if (level && !isEnvironmentsMarkedInvalid(project)) return;
+  if (parsed.environments.some(env => !parseEntityId(env.connectionId))) {
+    await markEnvironmentsInvalid(project, "invalid environment connection id");
+    return;
+  }
   project.environments = parsed.environments.map(env => ({
     name: env.name,
-    connectionId: new Types.ObjectId(env.connectionId),
+    connectionId: env.connectionId,
     // A value that is no id is dropped: metric queries then fall back to
     // the build connection rather than the whole file being refused.
-    ...(env.readConnectionId && Types.ObjectId.isValid(env.readConnectionId)
-      ? { readConnectionId: new Types.ObjectId(env.readConnectionId) }
+    ...(env.readConnectionId && parseEntityId(env.readConnectionId)
+      ? { readConnectionId: env.readConnectionId }
       : {}),
     targetSchema: env.targetSchema,
     threads: env.threads ?? 4,
     vars: env.vars,
     ownerUserId: env.ownerUserId,
-  })) as IDbtProject["environments"];
+  }));
   project.defaultEnvironment = parsed.defaultEnvironment;
   project.prodEnvironment = parsed.prodEnvironment;
   if (parsed.dbtVersion) project.dbtVersion = parsed.dbtVersion;
-  const clearInvalid = isEnvironmentsMarkedInvalid(project);
-  if (project.isModified()) await project.save();
-  if (clearInvalid) {
-    // Assigning undefined to a nested path persists `{}`; unset it.
-    await DbtProject.updateOne(
-      { _id: project._id },
-      { $unset: { environmentsInvalid: 1 } },
-    );
-    project.environmentsInvalid = undefined;
-  }
+  await dbtRepo.updateProject(project._id, {
+    environments: project.environments,
+    defaultEnvironment: project.defaultEnvironment,
+    prodEnvironment: project.prodEnvironment ?? null,
+    dbtVersion: project.dbtVersion,
+    environmentsInvalid: null,
+  });
+  project.environmentsInvalid = undefined;
 }
 
 /**
@@ -514,7 +513,7 @@ async function applyEnvironmentsFile(
  * (workspace not adopted) leaves the row alone; an unbound workspace too.
  */
 export async function ensureEnvironmentsDerivedCache(
-  project: IDbtProject,
+  project: DbtProjectRecord,
 ): Promise<void> {
   const workspaceId = project.workspaceId.toString();
   if (!(await getWorkspaceRepo(workspaceId))) return;
@@ -532,10 +531,6 @@ export async function ensureEnvironmentsDerivedCache(
     await markEnvironmentsInvalid(project, "unparseable environments.yml");
     return;
   }
-  const level =
-    serializeEnvironmentsFile(environmentsToFile(project)) ===
-    serializeEnvironmentsFile(parsed);
-  if (level && !isEnvironmentsMarkedInvalid(project)) return;
   await applyEnvironmentsFile(project, parsed);
 }
 
@@ -554,7 +549,7 @@ export async function ensureEnvironmentsDerivedCache(
  * jobs added since — and deregisters their schedules with them. `adoptDbtConfig`
  * fails the other way: it computes "which files already exist" from the tree
  * and writes the rest, so an old tip makes it overwrite a newer job file with
- * Mongo's version. Freshening at COMMIT time cannot fix that second one — the
+ * the indexed version. Freshening at COMMIT time cannot fix that second one — the
  * payload was already decided from a stale read — which is why this moved up
  * here from commitConfig rather than being added alongside it (#916).
  *
@@ -589,13 +584,13 @@ async function commitConfig(
 
 /** Reserve a unique slug for a new job and stamp it on the row fields. */
 export async function reserveJobSlug(
-  projectId: Types.ObjectId,
+  projectId: string | { toString(): string },
   name: string,
 ): Promise<string> {
   const base = slugifyJobName(name);
   let slug = base;
   for (let i = 2; i < 100; i++) {
-    const taken = await DbtJob.exists({ projectId, slug });
+    const taken = await dbtRepo.jobSlugExists(String(projectId), slug);
     if (!taken) return slug;
     slug = `${base}-${i}`;
   }
@@ -604,11 +599,20 @@ export async function reserveJobSlug(
 
 /** Write-through: the job's file mirrors the row's definition fields. */
 export async function commitDbtJobFile(
-  project: Pick<IDbtProject, "workspaceId">,
-  job: IDbtJob,
+  project: { workspaceId: { toString(): string } },
+  job: Pick<
+    DbtJobRecord,
+    | "name"
+    | "environment"
+    | "commands"
+    | "schedule"
+    | "enabled"
+    | "deferToProduction"
+    | "slug"
+  > & { _id?: { toString(): string }; sourceBlobSha?: string },
   actorUserId?: string,
   messageOverride?: string,
-): Promise<void> {
+): Promise<string | undefined> {
   if (!job.slug) return; // pre-adoption row; the migration stamps slugs
   const contents = serializeJobFile(jobToFile(job));
   const sha = blobOid(contents);
@@ -618,23 +622,15 @@ export async function commitDbtJobFile(
     messageOverride ?? `dbt: job "${job.name}" (${job.slug})`,
     actorUserId ? await authorForUser(actorUserId) : undefined,
   );
-  // Stamp AFTER the file exists. Stamping first meant a failed commit left
-  // the row claiming a sha for a file that was never written, and the
-  // push-sync short-circuits on a matching sha. For a not-yet-persisted
-  // document (`new DbtJob`), the caller saves after this returns.
-  if (written && job.sourceBlobSha !== sha) {
-    job.sourceBlobSha = sha;
-    if (!job.isNew) {
-      await DbtJob.updateOne(
-        { _id: job._id },
-        { $set: { sourceBlobSha: sha } },
-      );
-    }
+  if (!written) return undefined;
+  if (job._id && job.sourceBlobSha !== sha) {
+    await dbtRepo.updateJob(String(job._id), { sourceBlobSha: sha });
   }
+  return sha;
 }
 
 export async function deleteDbtJobFile(
-  project: Pick<IDbtProject, "workspaceId">,
+  project: { workspaceId: { toString(): string } },
   slug: string | undefined,
   actorUserId?: string,
 ): Promise<void> {
@@ -648,7 +644,7 @@ export async function deleteDbtJobFile(
 }
 
 export async function commitDbtEnvironmentsFile(
-  project: IDbtProject,
+  project: Parameters<typeof environmentsToFile>[0] & { workspaceId: string },
   actorUserId?: string,
 ): Promise<void> {
   await commitConfig(
@@ -666,7 +662,7 @@ export async function commitDbtEnvironmentsFile(
 }
 
 /**
- * Reconcile the Mongo index from `dbt/jobs/*.yml` + `dbt/environments.yml`
+ * Reconcile the job index from `dbt/jobs/*.yml` + `dbt/environments.yml`
  * at main. Runs on every push (notifyRepoPushed). Definition fields follow
  * the files; runtime fields (scheduledRun, failure counters) are preserved;
  * schedules are re-registered when they changed. Invalid files are logged
@@ -693,8 +689,8 @@ async function syncDbtConfigNow(
 ): Promise<void> {
   const repoDir = await repoDirIfExists(workspaceId);
   if (repoDir == null) return;
-  const project = await DbtProject.findOne({
-    workspaceId: new Types.ObjectId(workspaceId),
+  const [project] = await dbtRepo.listProjectsByWorkspace(workspaceId, {
+    limit: 1,
   });
   if (!project) return;
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
@@ -703,7 +699,7 @@ async function syncDbtConfigNow(
   const jobPaths = entries
     .map(e => e.path)
     .filter(p => slugFromJobFilePath(p) !== null);
-  // No dbt config in the repo at all → not adopted; leave Mongo alone.
+  // No dbt config in the repo at all → not adopted; leave the index alone.
   const hasEnvFile = entries.some(e => e.path === DBT_ENVIRONMENTS_PATH);
   if (jobPaths.length === 0 && !hasEnvFile) return;
 
@@ -716,7 +712,7 @@ async function syncDbtConfigNow(
         : parseEnvironmentsFile(blob.contents);
       if (!parsed) {
         logger.warn(
-          "dbt environments.yml is invalid; not overwriting from Mongo",
+          "dbt environments.yml is invalid; keeping the last indexed settings",
           { workspaceId },
         );
         await markEnvironmentsInvalid(project, "unparseable environments.yml");
@@ -737,17 +733,20 @@ async function syncDbtConfigNow(
     seenSlugs.add(slug);
     const contents = buf.toString("utf8");
     const sha = blobOid(contents);
-    const row = await DbtJob.findOne({ projectId: project._id, slug });
+    const row = await dbtRepo.findJobBySlug(project._id, slug);
     // Level already — unless the row is still flagged from an earlier bad
     // version and the file was reverted to this exact content, in which
     // case the marker must clear.
     if (row && row.sourceBlobSha === sha && !isMarkedInvalid(row)) continue;
     const parsed = parseJobFile(contents);
     if (!parsed) {
-      logger.warn("dbt job file is invalid; not overwriting from Mongo", {
-        workspaceId,
-        path,
-      });
+      logger.warn(
+        "dbt job file is invalid; keeping the last indexed settings",
+        {
+          workspaceId,
+          path,
+        },
+      );
       if (row) {
         row.definitionInvalid = {
           reason: "unparseable job file",
@@ -755,7 +754,10 @@ async function syncDbtConfigNow(
           path,
         };
         row.enabled = false;
-        await row.save();
+        await dbtRepo.updateJob(row._id, {
+          enabled: false,
+          definitionInvalid: row.definitionInvalid,
+        });
       }
       continue;
     }
@@ -773,46 +775,38 @@ async function syncDbtConfigNow(
       continue;
     }
     const scheduleChanged = !row || scheduleDiffers(row, parsed);
-    const doc =
-      row ??
-      new DbtJob({
-        // The id GET/list already handed out for this git-only file: a tab
-        // opened before the push landed keeps resolving after it.
-        _id: derivedJobId(workspaceId, slug),
-        workspaceId: project.workspaceId,
-        projectId: project._id,
-        slug,
-        createdBy: "sync",
-      });
-    doc.name = parsed.name;
-    doc.environment = parsed.environment;
-    doc.commands = parsed.commands;
-    doc.schedule = parsed.schedule
-      ? { cron: parsed.schedule.cron, timezone: parsed.schedule.timezone }
-      : undefined;
-    doc.enabled = parsed.enabled;
-    doc.deferToProduction = parsed.deferToProduction;
-    doc.sourceBlobSha = sha;
-    const clearInvalid = isMarkedInvalid(doc);
-    await doc.save();
-    if (clearInvalid) {
-      // Assigning undefined to a nested path persists `{}`; unset it.
-      await DbtJob.updateOne(
-        { _id: doc._id },
-        { $unset: { definitionInvalid: 1 } },
-      );
-    }
-    if (scheduleChanged) await applyJobScheduleChange(doc);
+    const fields = {
+      name: parsed.name,
+      environment: parsed.environment,
+      commands: parsed.commands,
+      enabled: parsed.enabled,
+      deferToProduction: parsed.deferToProduction,
+      sourceBlobSha: sha,
+    };
+    const doc = row
+      ? await dbtRepo.updateJob(row._id, {
+          ...fields,
+          schedule: parsed.schedule ?? null,
+          definitionInvalid: null,
+        })
+      : await dbtRepo.createJob({
+          ...fields,
+          _id: derivedJobId(workspaceId, slug),
+          workspaceId,
+          projectId: project._id,
+          slug,
+          createdBy: "sync",
+          schedule: parsed.schedule ?? undefined,
+        });
+    if (doc && scheduleChanged) await applyJobScheduleChange(doc);
     logger.info("dbt job synced from repo", { workspaceId, slug });
   }
 
   // A job file removed on main removes the job (runs keep their history).
-  const stale = await DbtJob.find({
-    projectId: project._id,
-    slug: { $exists: true, $nin: [...seenSlugs] },
-  }).select("slug name");
-  for (const doc of stale) {
-    await DbtJob.deleteOne({ _id: doc._id });
+  const indexed = await dbtRepo.listJobsByProject(project._id);
+  for (const doc of indexed) {
+    if (!doc.slug || seenSlugs.has(doc.slug)) continue;
+    await dbtRepo.deleteJob(doc._id);
     logger.info("dbt job removed (file deleted on main)", {
       workspaceId,
       slug: doc.slug,
@@ -831,8 +825,8 @@ export async function adoptDbtConfig(workspaceId: string): Promise<{
 }> {
   const repoDir = await repoDirIfExists(workspaceId);
   if (repoDir == null) return { jobs: 0, written: 0 };
-  const project = await DbtProject.findOne({
-    workspaceId: new Types.ObjectId(workspaceId),
+  const [project] = await dbtRepo.listProjectsByWorkspace(workspaceId, {
+    limit: 1,
   });
   if (!project) return { jobs: 0, written: 0 };
   const head = await resolveCommit(repoDir, `refs/heads/${DEFAULT_BRANCH}`);
@@ -841,7 +835,7 @@ export async function adoptDbtConfig(workspaceId: string): Promise<{
   );
 
   const writes: Record<string, string> = {};
-  const jobs = await DbtJob.find({ projectId: project._id });
+  const jobs = await dbtRepo.listJobsByProject(project._id);
   for (const job of jobs) {
     if (!job.slug) {
       job.slug = await reserveJobSlug(project._id, job.name);
@@ -849,7 +843,10 @@ export async function adoptDbtConfig(workspaceId: string): Promise<{
     const path = jobFilePath(job.slug);
     const contents = serializeJobFile(jobToFile(job));
     job.sourceBlobSha = blobOid(contents);
-    await job.save();
+    await dbtRepo.updateJob(job._id, {
+      slug: job.slug,
+      sourceBlobSha: job.sourceBlobSha,
+    });
     if (!existing.has(path)) writes[path] = contents;
   }
   if (!existing.has(DBT_ENVIRONMENTS_PATH)) {

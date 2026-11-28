@@ -7,13 +7,12 @@
  * connection decryption, and command allowlisting.
  */
 
-import { Types } from "mongoose";
 import {
-  DbtProject,
-  type IDatabaseConnection,
-  type IDbtEnvironment,
-  type IDbtProject,
-} from "../database/workspace-schema";
+  dbtRepo,
+  type DbtEnvironmentRecord,
+  type DbtProjectRecord,
+} from "../repositories/dbt";
+import type { IDatabaseConnection } from "../database/workspace-schema";
 import { connectionsRepo } from "../repositories/connections";
 import {
   getCheckoutBranch,
@@ -50,8 +49,8 @@ import { loggers } from "../logging";
 const logger = loggers.app();
 
 export interface DbtProjectSnapshot {
-  project: IDbtProject;
-  environment: IDbtEnvironment;
+  project: DbtProjectRecord;
+  environment: DbtEnvironmentRecord;
   files: Array<{ path: string; content: string }>;
   profile: RenderedProfile;
   /**
@@ -87,10 +86,10 @@ export async function loadDbtProjectSnapshot(params: {
    */
   overlay?: LocalOverlay;
 }): Promise<DbtProjectSnapshot> {
-  const project = await DbtProject.findOne({
-    _id: new Types.ObjectId(params.projectId),
-    workspaceId: new Types.ObjectId(params.workspaceId),
-  });
+  const project = await dbtRepo.findProjectById(
+    params.projectId,
+    params.workspaceId,
+  );
   if (!project) {
     throw new Error("dbt project not found");
   }

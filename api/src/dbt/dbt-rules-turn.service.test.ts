@@ -1,15 +1,13 @@
 /**
  * Turn-level .makorules resolution: hinted project > sole workspace project >
- * nothing. Runs against an ephemeral Mongo (DbtProject lookups), PGlite (the workspace
- * repo binding, test-support/pg-test.ts) plus a bare
+ * nothing. Runs against PGlite for dbt projects and workspace repo bindings, plus a bare
  * workspace repo (the rules file lives in git — apps.md §20).
  */
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import mongoose, { Types } from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { Types } from "mongoose";
 import {
   ensureTestDatabaseConnection,
   ensureTestWorkspace,
@@ -18,16 +16,15 @@ import {
 } from "../test-support/pg-test";
 
 import { resolveDbtRulesBlockForTurn } from "./dbt-rules-turn.service";
-import { DbtProject } from "../database/workspace-schema";
+import { dbtRepo } from "../repositories/dbt";
 import { seedDbtGitTree } from "./test-support/git-tree";
 import { bindTestWorkspaceRepo } from "../apps/bind-test-workspace-repo";
 
-let mongo: MongoMemoryServer;
 let pgh: PgTestDb;
 let tmpRoot: string;
-const WS = new Types.ObjectId();
-const OTHER_WS = new Types.ObjectId();
-const CONN = new Types.ObjectId();
+const WS = new Types.ObjectId().toString();
+const OTHER_WS = new Types.ObjectId().toString();
+const CONN = new Types.ObjectId().toString();
 const USER = "u1";
 
 beforeAll(async () => {
@@ -35,15 +32,11 @@ beforeAll(async () => {
   process.env.APPS_GIT_ROOT = path.join(tmpRoot, "repos");
   process.env.APPS_SANDBOX_PROVIDER = "local";
   delete process.env.APPS_REQUIRE_CONNECTED_REPO;
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
   pgh = await setupPgTestDb();
 }, 120_000);
 
 afterAll(async () => {
   await pgh.close();
-  await mongoose.disconnect();
-  await mongo.stop();
   await fs.rm(tmpRoot, {
     recursive: true,
     force: true,
@@ -55,22 +48,21 @@ afterAll(async () => {
 beforeEach(async () => {
   await pgh.reset();
   await ensureTestDatabaseConnection(pgh.db, {
-    workspaceId: WS.toString(),
-    id: CONN.toString(),
+    workspaceId: WS,
+    id: CONN,
   });
-  await ensureTestWorkspace(pgh.db, { id: OTHER_WS.toString() });
-  await DbtProject.deleteMany({});
+  await ensureTestWorkspace(pgh.db, { id: OTHER_WS });
   await fs.rm(path.join(tmpRoot, "repos"), {
     recursive: true,
     force: true,
     maxRetries: 5,
     retryDelay: 100,
   });
-  await bindTestWorkspaceRepo(WS.toString());
+  await bindTestWorkspaceRepo(WS);
 });
 
 async function seedProject(name: string, workspaceId = WS, rules?: string) {
-  const project = await DbtProject.create({
+  const project = await dbtRepo.createProject({
     workspaceId,
     name,
     environments: [
@@ -97,7 +89,7 @@ describe("resolveDbtRulesBlockForTurn", () => {
   it("returns '' when the workspace has no dbt projects", async () => {
     expect(
       await resolveDbtRulesBlockForTurn({
-        workspaceId: WS.toString(),
+        workspaceId: WS,
         userId: USER,
       }),
     ).toBe("");
@@ -106,7 +98,7 @@ describe("resolveDbtRulesBlockForTurn", () => {
   it("uses the sole workspace project when no hint is given", async () => {
     await seedProject("Analytics", WS, "- never select *");
     const block = await resolveDbtRulesBlockForTurn({
-      workspaceId: WS.toString(),
+      workspaceId: WS,
       userId: USER,
     });
     expect(block).toContain("- never select *");
@@ -118,7 +110,7 @@ describe("resolveDbtRulesBlockForTurn", () => {
     await seedProject("Finance", WS, "- rule b");
     expect(
       await resolveDbtRulesBlockForTurn({
-        workspaceId: WS.toString(),
+        workspaceId: WS,
         userId: USER,
       }),
     ).toBe("");
@@ -128,7 +120,7 @@ describe("resolveDbtRulesBlockForTurn", () => {
     await seedProject("Analytics", WS, "- rule a");
     const financeId = await seedProject("Finance", WS, "- rule b");
     const block = await resolveDbtRulesBlockForTurn({
-      workspaceId: WS.toString(),
+      workspaceId: WS,
       userId: USER,
       dbtProjectId: financeId,
     });
@@ -140,7 +132,7 @@ describe("resolveDbtRulesBlockForTurn", () => {
     const id = await seedProject("Analytics", WS);
     expect(
       await resolveDbtRulesBlockForTurn({
-        workspaceId: WS.toString(),
+        workspaceId: WS,
         userId: USER,
         dbtProjectId: id,
       }),
@@ -151,7 +143,7 @@ describe("resolveDbtRulesBlockForTurn", () => {
     const foreignId = await seedProject("Foreign", OTHER_WS, "- leaked");
     expect(
       await resolveDbtRulesBlockForTurn({
-        workspaceId: WS.toString(),
+        workspaceId: WS,
         userId: USER,
         dbtProjectId: foreignId,
       }),
@@ -162,7 +154,7 @@ describe("resolveDbtRulesBlockForTurn", () => {
     await seedProject("Analytics", WS, "- rule a");
     expect(
       await resolveDbtRulesBlockForTurn({
-        workspaceId: WS.toString(),
+        workspaceId: WS,
         userId: USER,
         dbtProjectId: "not-an-object-id",
       }),
