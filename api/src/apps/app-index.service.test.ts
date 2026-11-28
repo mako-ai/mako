@@ -18,6 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import mongoose, { Types } from "mongoose";
+import { Hono } from "hono";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { and, eq } from "drizzle-orm";
 import { generateUuidv7, objectIdToUuid } from "../database/pg/id-codec";
@@ -25,6 +26,10 @@ import { appIndex, appIndexHeads } from "../database/pg/schema";
 import { appsMetadataRepo } from "../repositories/apps-metadata";
 import { authRepo } from "../repositories/auth";
 import { workspaceRepo } from "../repositories/workspaces";
+import { createAppsTools } from "../agent-lib/tools/apps-tools";
+import type { AuthEnv } from "../openapi/core";
+import { appsHomeRoutes } from "../routes/apps/home";
+import { appsProjectRoutes } from "../routes/apps/projects";
 import {
   ensureTestUser,
   ensureTestWorkspace,
@@ -594,6 +599,147 @@ describe("discovery facts", () => {
     expect(searchDiscoveryApps(mine, "sales").map(a => a.path)).toEqual([
       "apps/Sales/CH/b",
     ]);
+  });
+
+  it("reads grants and revocations afresh while keeping Git-only apps visible", async () => {
+    const other = generateUuidv7();
+    const email = "other@acme.test";
+    await ensureTestUser(pg.db, { id: other, email });
+    await workspaceRepo.addMember({
+      workspaceId: WS,
+      userId: other,
+      role: "member",
+      joinedAt: new Date(1),
+    });
+    const api = new Hono<AuthEnv>();
+    api.use("*", async (c, next) => {
+      c.set("user", { id: other, email });
+      c.set("memberRole", "member");
+      await next();
+    });
+    const paths = "/workspaces/:workspaceId/apps";
+    api.route(paths, appsProjectRoutes);
+    api.route(paths, appsHomeRoutes);
+    const list = createAppsTools({
+      workspaceId: WS,
+      userId: other,
+    }).app_list_apps;
+    type AppResult = {
+      success: boolean;
+      apps: Array<{ id: string; path: string; publicShare?: unknown }>;
+    };
+    const listForOther = async (expected: string[]) => {
+      const prefix = `/workspaces/${WS}/apps`;
+      const [explorerResponse, homeResponse, mcpResponse] = await Promise.all([
+        api.request(prefix),
+        api.request(`${prefix}/discovery`),
+        list.execute?.(
+          {},
+          { toolCallId: "list-fixture", messages: [], context: undefined },
+        ),
+      ]);
+      expect(explorerResponse.status).toBe(200);
+      expect(homeResponse.status).toBe(200);
+      const explorer = (await explorerResponse.json()) as AppResult;
+      const home = (await homeResponse.json()) as AppResult;
+      const mcp = mcpResponse as AppResult;
+      for (const response of [explorer, home, mcp]) {
+        expect(response.success).toBe(true);
+        expect(response.apps.map(app => app.path).sort()).toEqual(expected);
+      }
+      return { explorer, home };
+    };
+
+    const readyAt = new Date("2026-09-01T00:00:00Z");
+    await appsMetadataRepo.recordBindingRun(
+      B_ID,
+      "rows",
+      { at: readyAt, status: "ready" },
+      WS,
+    );
+    await appsMetadataRepo.recordBindingRun(
+      B_ID,
+      "rows",
+      {
+        at: new Date("2026-09-02T00:00:00Z"),
+        status: "error",
+      },
+      WS,
+    );
+    const before = await listForOther(["apps/Sales/CH/b", "apps/a"]);
+    expect(before.home.apps.find(app => app.id === B_ID)).toMatchObject({
+      dataRefreshedAt: readyAt.toISOString(),
+      health: { bindingErrors: ["rows"] },
+    });
+    const sha = (await loadAppsIndex(WS)).sha;
+    const createdAt = new Date("2026-09-03T00:00:00Z");
+    await appsMetadataRepo.createProject({
+      id: B_ID,
+      workspaceId: WS,
+      path: "apps/Sales/CH/b",
+      slug: "b",
+      title: "B",
+      access: "private",
+      owner_id: USER,
+      createdBy: USER,
+      publishedSha: sha,
+      publishedAt: createdAt,
+      chatEnabled: true,
+      lastDeployError: {
+        sha,
+        stage: "build",
+        message: "fixture build error",
+        at: createdAt,
+      },
+      publicShare: {
+        enabled: true,
+        token: "fixture-share",
+        passwordHash: "fixture-hash",
+        passwordEncrypted: "fixture-encrypted",
+        createdAt,
+        allowLiveQueries: true,
+      },
+    });
+    await listForOther(["apps/a"]);
+
+    await appsMetadataRepo.updateProjectSharing(WS, B_ID, {
+      sharedWith: [{ userId: other, role: "viewer", addedAt: createdAt }],
+    });
+    const granted = await listForOther(["apps/Sales/CH/b", "apps/a"]);
+    const shared = granted.explorer.apps.find(app => app.id === B_ID);
+    expect(shared).toMatchObject({
+      access: "private",
+      owner_id: USER,
+      publishedSha: sha,
+      publishedAt: createdAt.toISOString(),
+      chatEnabled: true,
+    });
+    expect(shared?.publicShare).toEqual({
+      enabled: true,
+      token: "fixture-share",
+      hasPassword: true,
+      createdAt: createdAt.toISOString(),
+      allowLiveQueries: true,
+    });
+    expect(granted.home.apps.find(app => app.id === B_ID)).toMatchObject({
+      access: "private",
+      publishedSha: sha,
+      dataRefreshedAt: readyAt.toISOString(),
+      health: {
+        bindingErrors: ["rows"],
+        deployError: { stage: "build", at: createdAt.toISOString() },
+      },
+    });
+
+    await appsMetadataRepo.updateProjectSharing(WS, B_ID, { sharedWith: [] });
+    await listForOther(["apps/a"]);
+    expect((await loadAppsIndex(WS)).sha).toBe(sha);
+    expect(
+      await appsMetadataRepo.findProjectById(
+        derivedAppId(WS, "a").toHexString(),
+        WS,
+      ),
+    ).toBeNull();
   });
 });
 

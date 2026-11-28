@@ -15,8 +15,8 @@ import { parseEntityId } from "../database/pg/id-codec";
 import { type IAppProject } from "../database/workspace-schema";
 import {
   appsMetadataRepo,
-  toAppProjectCompat,
   toMongoObjectId,
+  type AppProjectDiscoveryRecord,
 } from "../repositories/apps-metadata";
 import { authRepo } from "../repositories/auth";
 import { canSeeIndexedApp } from "./app-authorization";
@@ -94,22 +94,9 @@ const iso = (d: Date | string | undefined | null) =>
  * The fields of an app's state row that visibility and the cards read. Kept
  * to these so the per-request read stays small.
  */
-export const APP_STATE_FIELDS =
-  "_id access workspaceRole sharedWith owner_id createdBy publishedSha publishedAt lastDeployError createdAt";
-
-export type AppStateRow = Pick<
-  IAppProject,
-  | "_id"
-  | "access"
-  | "workspaceRole"
-  | "sharedWith"
-  | "owner_id"
-  | "createdBy"
-  | "publishedSha"
-  | "publishedAt"
-  | "lastDeployError"
-  | "createdAt"
->;
+export type AppStateRow = Omit<AppProjectDiscoveryRecord, "id"> & {
+  _id: string;
+};
 
 /**
  * Every state row of the workspace. Visibility is ALWAYS judged on a fresh
@@ -123,10 +110,8 @@ export function loadAppStates(workspaceId: string): Promise<AppStateRow[]> {
   if (pending) return pending;
   const run = timed("states", () =>
     appsMetadataRepo
-      .listProjectsByWorkspace(workspaceId)
-      .then(rows =>
-        rows.map(r => toAppProjectCompat(r) as unknown as AppStateRow),
-      ),
+      .listProjectDiscoveryStates(workspaceId)
+      .then(rows => rows.map(({ id, ...state }) => ({ _id: id, ...state }))),
   ).finally(() => statesInFlight.delete(workspaceId));
   statesInFlight.set(workspaceId, run);
   return run;

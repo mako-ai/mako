@@ -65,6 +65,7 @@ import {
   pgAppIndexEntryToRecord,
   pgAppIndexHeadToRecord,
   pgAppLifecycleToRecord,
+  pgAppProjectAccessToRecord,
   pgAppProjectToRecord,
   pgAppWorktreeToRecord,
   serializeBindingRefreshErrors,
@@ -93,6 +94,9 @@ import type {
   AppLastDeployErrorRecord,
   AppLifecyclePatch,
   AppLifecycleRecord,
+  AppProjectAccessRecord,
+  AppProjectDiscoveryRecord,
+  AppProjectListingRecord,
   AppProjectRecord,
   AppWorktreeRecord,
   AppsMetadataRepository,
@@ -120,6 +124,15 @@ const SYSTEM_ACTORS = new Set([
   "worker",
   "app-chat",
 ]);
+
+const projectAccessColumns = {
+  id: appProjects.id,
+  access: appProjects.access,
+  workspaceRole: appProjects.workspaceRole,
+  sharedWith: appProjects.sharedWith,
+  ownerId: appProjects.ownerId,
+  createdBy: appProjects.createdBy,
+};
 
 export class PgAppsMetadataRepository implements AppsMetadataRepository {
   private readonly getDb: () => MakoPgDb;
@@ -421,6 +434,81 @@ export class PgAppsMetadataRepository implements AppsMetadataRepository {
       .from(appProjects)
       .where(eq(appProjects.workspaceId, wsUuid));
     return rows.map(pgAppProjectToRecord);
+  }
+
+  async listProjectAccessByWorkspace(
+    workspaceId: string,
+  ): Promise<AppProjectAccessRecord[]> {
+    const rows = await this.getDb()
+      .select(projectAccessColumns)
+      .from(appProjects)
+      .where(eq(appProjects.workspaceId, entityIdToPgUuid(workspaceId)));
+    return rows.map(pgAppProjectAccessToRecord);
+  }
+
+  async listProjectListingStates(
+    workspaceId: string,
+  ): Promise<AppProjectListingRecord[]> {
+    const rows = await this.getDb()
+      .select({
+        ...projectAccessColumns,
+        publishedSha: appProjects.publishedSha,
+        publishedAt: appProjects.publishedAt,
+        chatEnabled: appProjects.chatEnabled,
+        shareEnabled: appProjects.publicShareEnabled,
+        shareToken: appProjects.publicShareToken,
+        shareHasPassword: sql<boolean>`coalesce(${appProjects.publicSharePasswordHash} <> '', false)`,
+        shareCreatedAt: appProjects.publicShareCreatedAt,
+        shareAllowLiveQueries: appProjects.publicShareAllowLiveQueries,
+      })
+      .from(appProjects)
+      .where(eq(appProjects.workspaceId, entityIdToPgUuid(workspaceId)));
+    return rows.map(row => ({
+      ...pgAppProjectAccessToRecord(row),
+      publishedSha: row.publishedSha ?? undefined,
+      publishedAt: row.publishedAt ?? undefined,
+      chatEnabled: row.chatEnabled ?? undefined,
+      publicShare:
+        row.shareEnabled && row.shareToken
+          ? {
+              enabled: true,
+              token: row.shareToken,
+              hasPassword: row.shareHasPassword,
+              createdAt: row.shareCreatedAt ?? undefined,
+              allowLiveQueries: row.shareAllowLiveQueries,
+            }
+          : undefined,
+    }));
+  }
+
+  async listProjectDiscoveryStates(
+    workspaceId: string,
+  ): Promise<AppProjectDiscoveryRecord[]> {
+    const rows = await this.getDb()
+      .select({
+        ...projectAccessColumns,
+        publishedSha: appProjects.publishedSha,
+        publishedAt: appProjects.publishedAt,
+        createdAt: appProjects.createdAt,
+        deployErrorStage: sql<
+          AppLastDeployErrorRecord["stage"] | null
+        >`${appProjects.lastDeployError}->>'stage'`,
+        deployErrorAt: sql<
+          string | null
+        >`${appProjects.lastDeployError}->>'at'`,
+      })
+      .from(appProjects)
+      .where(eq(appProjects.workspaceId, entityIdToPgUuid(workspaceId)));
+    return rows.map(row => ({
+      ...pgAppProjectAccessToRecord(row),
+      publishedSha: row.publishedSha ?? undefined,
+      publishedAt: row.publishedAt ?? undefined,
+      createdAt: row.createdAt,
+      lastDeployError:
+        row.deployErrorStage && row.deployErrorAt
+          ? { stage: row.deployErrorStage, at: new Date(row.deployErrorAt) }
+          : undefined,
+    }));
   }
 
   async listProjectsByIds(

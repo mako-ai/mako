@@ -161,7 +161,7 @@ beforeEach(() => {
 describe("app tool repository consistency", () => {
   it("lists from the repo primitive, which freshens the mirror itself (throttled)", async () => {
     const listProjects = vi
-      .spyOn(appsMetadataRepo, "listProjectsByWorkspace")
+      .spyOn(appsMetadataRepo, "listProjectAccessByWorkspace")
       .mockResolvedValue([]);
     const result = await tools().app_list_apps.execute({});
     expect(listProjects).toHaveBeenCalledWith("6a9411eb4c8b33609a65e666");
