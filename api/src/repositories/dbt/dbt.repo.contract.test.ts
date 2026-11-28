@@ -175,6 +175,56 @@ describe("dbt persistence", () => {
       expect(result?.scheduledRun.runCount).toBe(3);
     });
 
+    it("orders run history in both directions and finds the latest run with an artifact", async () => {
+      const p = await project("history");
+      const input = {
+        workspaceId: workspace.oid,
+        projectId: p._id,
+        environment: "dev",
+        trigger: "manual" as const,
+        triggeredBy: userId,
+        commands: ["build"],
+      };
+      const query = { workspaceId: workspace.oid, projectId: p._id };
+      const middle = await repo.createRun({ ...input, _id: newDualId().oid });
+      const newest = await repo.createRun({ ...input, _id: newDualId().oid });
+      const oldest = await repo.createRun({ ...input, _id: newDualId().oid });
+      for (const [offset, run] of [oldest, middle, newest].entries()) {
+        const createdAt = new Date(+at + offset * 1000);
+        if (repo === pgRepo) {
+          await db
+            .update(schema.dbtRuns)
+            .set({ createdAt })
+            .where(eq(schema.dbtRuns.id, dbtUuid(run._id)));
+        } else {
+          await mongoose.connection
+            .collection("dbt_runs")
+            .updateOne(
+              { _id: new mongoose.Types.ObjectId(run._id) },
+              { $set: { createdAt } },
+            );
+        }
+      }
+      await repo.updateRun(oldest._id, { artifactKeys: { manifest: "old" } });
+      await repo.updateRun(middle._id, {
+        artifactKeys: { manifest: "latest" },
+      });
+
+      expect(
+        (await repo.listRuns(query, { limit: 2 })).map(r => r._id),
+      ).toEqual([newest._id, middle._id]);
+      expect(
+        (await repo.listRuns(query, { limit: 2, sort: "createdAtAsc" })).map(
+          r => r._id,
+        ),
+      ).toEqual([oldest._id, middle._id]);
+      expect(
+        await repo.findLatestArtifactRun({ ...query, hasManifest: true }),
+      ).toMatchObject({
+        artifactKeys: { manifest: "latest" },
+      });
+    });
+
     it("excludes running lane and job peers, and claims each deploy release once", async () => {
       const p = await project("queue");
       const job = await repo.createJob({

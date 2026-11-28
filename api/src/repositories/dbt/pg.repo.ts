@@ -608,7 +608,13 @@ export class PgDbtRepository implements DbtRepository {
       })
       .from(runs)
       .where(runWhere(query))
-      .orderBy(desc(runs.createdAt))
+      // A key lookup can miss across the entire history. Keep its existing
+      // sort so the planner can choose a sequential scan for that case.
+      .orderBy(
+        query.manifestKey !== undefined
+          ? desc(runs.createdAt)
+          : sql`${runs.createdAt} DESC NULLS LAST`,
+      )
       .limit(1);
     return row ?? null;
   }
@@ -623,9 +629,10 @@ export class PgDbtRepository implements DbtRepository {
       .from(runs)
       .where(runWhere(q))
       .orderBy(
+        // The ascending order is the backward scan of the same index.
         options.sort === "createdAtAsc"
-          ? asc(runs.createdAt)
-          : desc(runs.createdAt),
+          ? sql`${runs.createdAt} ASC NULLS FIRST`
+          : sql`${runs.createdAt} DESC NULLS LAST`,
       );
     return (
       await (options.limit ? query.limit(Math.abs(options.limit)) : query)
