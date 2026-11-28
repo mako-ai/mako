@@ -33,7 +33,7 @@ CI (`deploy-app.yml`) builds once on the runner with `pnpm run build:ci`, then p
 ### Docker Compose (Development)
 
 ```bash
-# Start MongoDB + app
+# Start the notebook kernel and local platform Postgres
 pnpm run docker:up
 
 # Stop
@@ -68,9 +68,9 @@ Set these in Cloud Run's environment configuration (`deploy.sh` generates the se
 | Variable                       | Required    | Purpose                                  |
 | ------------------------------ | ----------- | ---------------------------------------- |
 | `DATABASE_URL`                 | Yes         | MongoDB connection string                |
-| `POSTGRES_URL`                 | Yes         | Platform Postgres (Neon pooled/PgBouncer URL, or a local Postgres). The control-plane repositories (users and sessions, workspaces, connections, consoles, chats, apps metadata, MCP, notifications, usage stats, dbt runs) read and write here only; the API throws `POSTGRES_URL is not set` on first use without it. Remote hosts use TLS `verify-full` |
-| `POSTGRES_DIRECT_URL`          | Optional    | Direct (non-pooled) Postgres URL for `pg:migrate` and bulk backfills; falls back to `POSTGRES_URL` |
-| `PG_DRIVER`                    | Optional    | `postgres` (default, TCP over PgBouncer) or `neon-ws` (WebSocket over port 443, for networks that block outbound 5432). Local hosts always use `postgres` |
+| `POSTGRES_URL`                 | Yes         | Platform Postgres (Neon pooled/PgBouncer URL). Migrated control-plane repositories (users and sessions, workspaces, connections, consoles, chats, apps metadata, MCP, notifications, usage stats, dbt runs) read and write here after cutover. The API throws `POSTGRES_URL is not set` on first use without it. Remote `postgres.js` connections use TLS `verify-full` |
+| `POSTGRES_DIRECT_URL`          | Optional    | Direct (non-pooled) Postgres URL for `pg:migrate` and bulk backfills. These commands use TCP and fall back to `POSTGRES_URL` |
+| `PG_DRIVER`                    | Optional    | Runtime driver. `postgres` (default, TCP over PgBouncer) or `neon-ws` (WebSocket over port 443, for networks that block outbound 5432). Local hosts always use `postgres` |
 | `ENCRYPTION_KEY`               | Yes         | Credential encryption                    |
 | `SESSION_SECRET`               | Yes         | Session security                         |
 | `BASE_URL`                     | Yes         | Public URL (e.g., `https://app.mako.ai`) |

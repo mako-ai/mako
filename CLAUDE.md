@@ -231,7 +231,7 @@ MONGODB_CONNECTION_STRING=mongodb://localhost:27018
 # Platform Postgres (control-plane repositories — required; local docker-compose service on port 5433)
 POSTGRES_URL=postgresql://mako:mako@localhost:5433/mako
 # POSTGRES_DIRECT_URL=   # unpooled URL for migrations/backfills (falls back to POSTGRES_URL)
-# PG_DRIVER=postgres     # or neon-ws (WSS on 443) when outbound 5432 is blocked
+# PG_DRIVER=postgres     # Runtime only. Use neon-ws (WSS on 443) for remote Neon when outbound 5432 is blocked
 
 # OAuth
 GOOGLE_CLIENT_ID=your_google_client_id
