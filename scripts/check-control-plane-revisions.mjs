@@ -33,7 +33,16 @@ export function checkControlPlaneRevisions(
     ) {
       prepared.add(name);
     } else if (
-      !revision.conditions?.some(c => c.revisionReason === "RETIRED")
+      !revision.conditions?.some(c => {
+        if (c.revisionReason !== "RETIRED") return false;
+        if (marker !== dbtMarker) return true;
+        // Active/RETIRED records traffic withdrawal while existing requests
+        // can still run. Wait for the revision's compute resources to retire.
+        return (
+          c.type === "ResourcesAvailable" &&
+          ["CONDITION_RECONCILING", "CONDITION_FAILED"].includes(c.state)
+        );
+      })
     ) {
       throw new Error(
         "Unprepared revision lacks confirmed retirement: " + name,
